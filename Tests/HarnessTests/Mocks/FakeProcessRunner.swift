@@ -82,8 +82,6 @@ final class FakeToolLocator: ToolLocating, @unchecked Sendable {
     init(paths: ToolPaths = ToolPaths(
         xcrun: URL(fileURLWithPath: "/usr/bin/xcrun"),
         xcodebuild: URL(fileURLWithPath: "/usr/bin/xcodebuild"),
-        idb: nil,
-        idbCompanion: nil,
         brew: nil
     )) {
         self._paths = OSAllocatedUnfairLock(initialState: paths)

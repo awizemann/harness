@@ -75,7 +75,8 @@ final class AppContainer {
         self.appState = AppState(
             keychain: keychain,
             toolLocator: toolLocator,
-            simulatorDriver: simulatorDriver
+            simulatorDriver: simulatorDriver,
+            wdaBuilder: wdaBuilder
         )
         self.appCoordinator = AppCoordinator()
     }

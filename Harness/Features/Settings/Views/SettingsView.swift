@@ -76,17 +76,18 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                     HStack {
-                        Image(systemName: state.idbHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(state.idbHealthy ? .green : .orange)
-                        Text("idb")
+                        Image(systemName: state.wdaReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(state.wdaReady ? .green : .orange)
+                        Text(state.wdaBuildInProgress ? "WebDriverAgent (building…)" : "WebDriverAgent")
                         Spacer()
-                        Text(state.toolPaths?.idb?.path ?? "—")
+                        Text(state.wdaReady ? "ready" : "not built for selected simulator")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                     Button("Re-detect tools") {
                         Task {
                             await state.refreshTooling(forceFresh: true)
                             await state.refreshSimulators()
+                            await state.refreshWDA()
                         }
                     }
                 }

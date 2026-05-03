@@ -27,7 +27,10 @@ struct SidebarView: View {
             Section("Health") {
                 healthRow(label: "API key", ok: state.apiKeyPresent)
                 healthRow(label: "xcodebuild", ok: state.xcodebuildAvailable)
-                healthRow(label: "idb", ok: state.idbHealthy)
+                healthRow(
+                    label: state.wdaBuildInProgress ? "WebDriverAgent (building…)" : "WebDriverAgent",
+                    ok: state.wdaReady
+                )
                 if !state.simulators.isEmpty {
                     Label("\(state.simulators.count) simulators", systemImage: "iphone.gen3")
                         .font(.callout)

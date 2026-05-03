@@ -27,7 +27,14 @@ final class AppState {
     /// Most recent `ToolPaths` snapshot. Nil until `refreshTooling()` runs.
     var toolPaths: ToolPaths?
 
-    var idbHealthy: Bool { toolPaths?.idb != nil && toolPaths?.idbCompanion != nil }
+    /// True if a WebDriverAgent xctestrun has been built for the currently
+    /// selected simulator's iOS version. Refreshed by `refreshWDA()`.
+    var wdaReady: Bool = false
+
+    /// True while `WDABuilder.ensureBuilt(...)` is running. The wizard / sidebar
+    /// surface this so the user knows why a first run takes ~1–2 min.
+    var wdaBuildInProgress: Bool = false
+
     var xcodebuildAvailable: Bool { toolPaths?.xcodebuild != nil }
 
     // MARK: Defaults
@@ -58,15 +65,18 @@ final class AppState {
     private let keychain: any KeychainStoring
     private let toolLocator: any ToolLocating
     private let simulatorDriver: any SimulatorDriving
+    private let wdaBuilder: any WDABuilding
 
     init(
         keychain: any KeychainStoring,
         toolLocator: any ToolLocating,
-        simulatorDriver: any SimulatorDriving
+        simulatorDriver: any SimulatorDriving,
+        wdaBuilder: any WDABuilding
     ) {
         self.keychain = keychain
         self.toolLocator = toolLocator
         self.simulatorDriver = simulatorDriver
+        self.wdaBuilder = wdaBuilder
     }
 
     // MARK: Refresh
@@ -119,6 +129,31 @@ final class AppState {
         await refreshAPIKeyPresence()
     }
 
+    /// Refresh the WDA-readiness flag for the currently selected simulator.
+    /// Cheap — checks for the existence of a cached xctestrun on disk.
+    func refreshWDA() async {
+        guard let udid = defaultSimulatorUDID,
+              let sim = simulators.first(where: { $0.udid == udid }) else {
+            wdaReady = false
+            return
+        }
+        wdaReady = await wdaBuilder.isReady(forSimulator: sim)
+    }
+
+    /// Build WebDriverAgent for the currently selected simulator. Surfaces
+    /// `wdaBuildInProgress` so the wizard / sidebar can render a spinner.
+    /// First build is ~1–2 min; subsequent runs hit the cache.
+    func buildWDA() async throws {
+        guard let udid = defaultSimulatorUDID,
+              let sim = simulators.first(where: { $0.udid == udid }) else {
+            return
+        }
+        wdaBuildInProgress = true
+        defer { wdaBuildInProgress = false }
+        _ = try await wdaBuilder.ensureBuilt(forSimulator: sim)
+        await refreshWDA()
+    }
+
     /// Run all refreshes in parallel. Safe to call from app launch and from
     /// the first-run wizard.
     func refreshAll() async {
@@ -127,5 +162,7 @@ final class AppState {
         _ = await (api, tools)
         // Simulator listing depends on xcrun, so run after tooling resolves.
         await refreshSimulators()
+        // WDA readiness depends on which simulator is selected.
+        await refreshWDA()
     }
 }

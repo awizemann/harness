@@ -17,6 +17,7 @@ struct FirstRunWizard: View {
     @State private var apiKey: String = ""
     @State private var isSaving = false
     @State private var saveError: String?
+    @State private var wdaBuildError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -96,30 +97,59 @@ struct FirstRunWizard: View {
     private var toolingSection: some View {
         SectionCard(
             title: "External tools",
-            subtitle: "Harness drives your iOS Simulator via xcodebuild + idb. Both must be installed."
+            subtitle: "Harness drives your iOS Simulator via xcodebuild + WebDriverAgent (vendored as a submodule)."
         ) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 StatusLine(ok: state.xcodebuildAvailable,
                            label: state.xcodebuildAvailable ? "xcodebuild available" : "xcodebuild not found")
                 if !state.xcodebuildAvailable {
                     InstallHint(text: "Install Xcode from the App Store, then run:",
                                 command: "xcode-select --install")
                 }
-                StatusLine(ok: state.idbHealthy,
-                           label: state.idbHealthy ? "idb installed" : "idb / idb_companion not found")
-                if !state.idbHealthy {
-                    InstallHint(text: "Install via Homebrew + pip:",
-                                command: "brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb")
+
+                StatusLine(
+                    ok: state.wdaReady,
+                    label: wdaStatusLabel
+                )
+                if !state.wdaReady, !state.wdaBuildInProgress {
+                    Text("First build takes 1–2 minutes. Cached per iOS version after that.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Build WebDriverAgent for this simulator") {
+                        Task { await buildWDA() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.defaultSimulatorUDID == nil)
                 }
+                if let err = wdaBuildError {
+                    Text(err).font(.callout).foregroundStyle(.red)
+                }
+
                 Button("Re-check") {
                     Task {
                         await state.refreshTooling(forceFresh: true)
                         await state.refreshSimulators()
+                        await state.refreshWDA()
                     }
                 }
                 .buttonStyle(.borderless)
                 .padding(.top, 4)
             }
+        }
+    }
+
+    private var wdaStatusLabel: String {
+        if state.wdaBuildInProgress { return "Building WebDriverAgent… (~1–2 min first run)" }
+        if state.wdaReady { return "WebDriverAgent ready" }
+        return "WebDriverAgent not built for this simulator"
+    }
+
+    private func buildWDA() async {
+        wdaBuildError = nil
+        do {
+            try await state.buildWDA()
+        } catch {
+            wdaBuildError = "Build failed: \(error.localizedDescription)"
         }
     }
 

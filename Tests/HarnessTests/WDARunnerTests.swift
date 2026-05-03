@@ -52,7 +52,7 @@ struct WDARunnerInvocationTests {
         let locator = FakeToolLocator(paths: ToolPaths(
             xcrun: URL(fileURLWithPath: "/usr/bin/xcrun"),
             xcodebuild: nil,
-            idb: nil, idbCompanion: nil, brew: nil
+            brew: nil
         ))
         let wda = WDARunner(processRunner: runner, toolLocator: locator)
 

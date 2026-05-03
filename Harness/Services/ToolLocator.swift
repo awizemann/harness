@@ -11,6 +11,11 @@
 //  app launch (~50ms saved). Surface missing tools as actionable errors with
 //  the exact `brew install` command users need.
 //
+//  As of Phase 5 (idb→WDA migration), the only required external CLIs are
+//  `xcrun` and `xcodebuild` — Apple-supplied. WebDriverAgent is built
+//  in-tree from the `vendor/WebDriverAgent` submodule and managed by
+//  `WDABuilder`, not surfaced through the locator.
+//
 
 import Foundation
 import os
@@ -19,31 +24,25 @@ import os
 struct ToolPaths: Sendable, Codable, Hashable {
     let xcrun: URL?
     let xcodebuild: URL?
-    let idb: URL?
-    let idbCompanion: URL?
     let brew: URL?
 
     var allMissing: [Tool] {
         var missing: [Tool] = []
         if xcrun == nil { missing.append(.xcrun) }
         if xcodebuild == nil { missing.append(.xcodebuild) }
-        if idb == nil { missing.append(.idb) }
-        if idbCompanion == nil { missing.append(.idbCompanion) }
         // brew is optional — only used to surface install commands. Don't gate on it.
         return missing
     }
 }
 
 enum Tool: String, Sendable, Hashable, CaseIterable {
-    case xcrun, xcodebuild, idb, idbCompanion, brew
+    case xcrun, xcodebuild, brew
 
     /// User-facing display name.
     var displayName: String {
         switch self {
         case .xcrun: return "xcrun"
         case .xcodebuild: return "xcodebuild"
-        case .idb: return "idb"
-        case .idbCompanion: return "idb_companion"
         case .brew: return "Homebrew"
         }
     }
@@ -53,10 +52,6 @@ enum Tool: String, Sendable, Hashable, CaseIterable {
         switch self {
         case .xcrun, .xcodebuild:
             return "Install Xcode from the App Store, then run: xcode-select --install"
-        case .idb:
-            return "brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb"
-        case .idbCompanion:
-            return "brew tap facebook/fb && brew install idb-companion"
         case .brew:
             return "Install Homebrew from https://brew.sh"
         }
@@ -100,18 +95,8 @@ actor ToolLocator: ToolLocating {
     /// Re-probe every candidate. Cheap (sub-10ms) — no shell-out unless the
     /// `xcrun --find` fallback path is taken for xcodebuild.
     private func probeAll() async throws -> ToolPaths {
-        // Order of candidates matters — Apple Silicon Homebrew
-        // (`/opt/homebrew/bin`) before Intel Homebrew (`/usr/local/bin`).
-        // For `idb` we also enumerate user-site Python directories because
-        // `pip3 install fb-idb` lands the CLI in `~/Library/Python/<ver>/bin/idb`
-        // by default on Apple's bundled Python (PEP 668 user-install path).
         async let xcrun = locate(.xcrun, candidates: ["/usr/bin/xcrun"])
         async let xcodebuild = locateViaXcrun(.xcodebuild)
-        async let idb = locate(.idb, candidates: Self.idbCandidates())
-        async let idbCompanion = locate(.idbCompanion, candidates: [
-            "/opt/homebrew/bin/idb_companion",
-            "/usr/local/bin/idb_companion"
-        ])
         async let brew = locate(.brew, candidates: [
             "/opt/homebrew/bin/brew",
             "/usr/local/bin/brew"
@@ -120,42 +105,11 @@ actor ToolLocator: ToolLocating {
         let paths = ToolPaths(
             xcrun: await xcrun,
             xcodebuild: await xcodebuild,
-            idb: await idb,
-            idbCompanion: await idbCompanion,
             brew: await brew
         )
         cached = paths
         try? persist(paths)
         Self.logger.info("Tools resolved. Missing: \(paths.allMissing.map(\.rawValue).joined(separator: ", "), privacy: .public)")
-        return paths
-    }
-
-    /// All probable filesystem locations for the `idb` Python CLI.
-    /// - `/opt/homebrew/bin/idb` — Apple Silicon Homebrew Python or pipx symlink.
-    /// - `/usr/local/bin/idb` — Intel Homebrew or older system pip install.
-    /// - `~/.local/bin/idb` — pipx default user install.
-    /// - `~/Library/Python/<ver>/bin/idb` — Apple's system Python user-install
-    ///   (where `pip3 install fb-idb` lands by default).
-    /// - `/Library/Frameworks/Python.framework/Versions/<ver>/bin/idb` — official
-    ///   python.org installer.
-    nonisolated static func idbCandidates() -> [String] {
-        var paths: [String] = [
-            "/opt/homebrew/bin/idb",
-            "/usr/local/bin/idb"
-        ]
-        let home = NSHomeDirectory()
-        paths.append("\(home)/.local/bin/idb")
-
-        let userPython = "\(home)/Library/Python"
-        if let versions = try? FileManager.default.contentsOfDirectory(atPath: userPython) {
-            for v in versions {
-                paths.append("\(userPython)/\(v)/bin/idb")
-            }
-        }
-        // python.org versions in canonical order — newer first.
-        for v in ["3.13", "3.12", "3.11", "3.10", "3.9"] {
-            paths.append("/Library/Frameworks/Python.framework/Versions/\(v)/bin/idb")
-        }
         return paths
     }
 
@@ -191,9 +145,9 @@ actor ToolLocator: ToolLocating {
 
     private func whichOnPath(_ name: String) async -> URL? {
         // Apps launched from Finder inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
-        // — they don't see Homebrew, pipx, or user-site Python. We enrich PATH
-        // with the locations where the missing tools commonly live, so `which`
-        // can still find shell-installed binaries.
+        // — they don't see Homebrew or pipx. Enrich PATH with the locations
+        // where shell-installed binaries commonly live so `which` can still
+        // find them.
         let home = NSHomeDirectory()
         let enrichedPath = [
             "/opt/homebrew/bin",
