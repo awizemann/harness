@@ -65,6 +65,10 @@ enum Tool: String, Sendable, Hashable, CaseIterable {
 
 protocol ToolLocating: Sendable {
     func locateAll() async throws -> ToolPaths
+    /// Bypass the in-memory cache and re-probe every candidate. The first-run
+    /// wizard's "Re-check" and Settings's "Re-detect tools" call this so the
+    /// user gets up-to-date results after installing missing tools.
+    func forceRefresh() async throws -> ToolPaths
     func resolved() async -> ToolPaths?
 }
 
@@ -85,17 +89,25 @@ actor ToolLocator: ToolLocating {
         if let cached, isCacheFresh(cached) {
             return cached
         }
+        return try await probeAll()
+    }
 
-        // Probe each tool. Order of candidates matters — Apple Silicon Homebrew
+    func forceRefresh() async throws -> ToolPaths {
+        cached = nil
+        return try await probeAll()
+    }
+
+    /// Re-probe every candidate. Cheap (sub-10ms) — no shell-out unless the
+    /// `xcrun --find` fallback path is taken for xcodebuild.
+    private func probeAll() async throws -> ToolPaths {
+        // Order of candidates matters — Apple Silicon Homebrew
         // (`/opt/homebrew/bin`) before Intel Homebrew (`/usr/local/bin`).
+        // For `idb` we also enumerate user-site Python directories because
+        // `pip3 install fb-idb` lands the CLI in `~/Library/Python/<ver>/bin/idb`
+        // by default on Apple's bundled Python (PEP 668 user-install path).
         async let xcrun = locate(.xcrun, candidates: ["/usr/bin/xcrun"])
         async let xcodebuild = locateViaXcrun(.xcodebuild)
-        async let idb = locate(.idb, candidates: [
-            "/opt/homebrew/bin/idb",
-            "/usr/local/bin/idb",
-            "/Library/Frameworks/Python.framework/Versions/3.11/bin/idb",
-            "/Library/Frameworks/Python.framework/Versions/3.12/bin/idb"
-        ])
+        async let idb = locate(.idb, candidates: Self.idbCandidates())
         async let idbCompanion = locate(.idbCompanion, candidates: [
             "/opt/homebrew/bin/idb_companion",
             "/usr/local/bin/idb_companion"
@@ -115,6 +127,35 @@ actor ToolLocator: ToolLocating {
         cached = paths
         try? persist(paths)
         Self.logger.info("Tools resolved. Missing: \(paths.allMissing.map(\.rawValue).joined(separator: ", "), privacy: .public)")
+        return paths
+    }
+
+    /// All probable filesystem locations for the `idb` Python CLI.
+    /// - `/opt/homebrew/bin/idb` — Apple Silicon Homebrew Python or pipx symlink.
+    /// - `/usr/local/bin/idb` — Intel Homebrew or older system pip install.
+    /// - `~/.local/bin/idb` — pipx default user install.
+    /// - `~/Library/Python/<ver>/bin/idb` — Apple's system Python user-install
+    ///   (where `pip3 install fb-idb` lands by default).
+    /// - `/Library/Frameworks/Python.framework/Versions/<ver>/bin/idb` — official
+    ///   python.org installer.
+    nonisolated static func idbCandidates() -> [String] {
+        var paths: [String] = [
+            "/opt/homebrew/bin/idb",
+            "/usr/local/bin/idb"
+        ]
+        let home = NSHomeDirectory()
+        paths.append("\(home)/.local/bin/idb")
+
+        let userPython = "\(home)/Library/Python"
+        if let versions = try? FileManager.default.contentsOfDirectory(atPath: userPython) {
+            for v in versions {
+                paths.append("\(userPython)/\(v)/bin/idb")
+            }
+        }
+        // python.org versions in canonical order — newer first.
+        for v in ["3.13", "3.12", "3.11", "3.10", "3.9"] {
+            paths.append("/Library/Frameworks/Python.framework/Versions/\(v)/bin/idb")
+        }
         return paths
     }
 
@@ -149,9 +190,27 @@ actor ToolLocator: ToolLocating {
     }
 
     private func whichOnPath(_ name: String) async -> URL? {
+        // Apps launched from Finder inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
+        // — they don't see Homebrew, pipx, or user-site Python. We enrich PATH
+        // with the locations where the missing tools commonly live, so `which`
+        // can still find shell-installed binaries.
+        let home = NSHomeDirectory()
+        let enrichedPath = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "\(home)/.local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin"
+        ].joined(separator: ":")
+
         let spec = ProcessSpec(
             executable: URL(fileURLWithPath: "/usr/bin/which"),
             arguments: [name],
+            environment: ["PATH": enrichedPath, "HOME": home],
             timeout: .seconds(2)
         )
         do {

@@ -77,9 +77,14 @@ final class AppState {
     }
 
     /// Resolve external CLI paths.
-    func refreshTooling() async {
+    /// - Parameter forceFresh: bypass the in-memory cache and re-probe every
+    ///   candidate. The "Re-check" / "Re-detect tools" buttons pass `true` so
+    ///   the user sees up-to-date results after installing a missing tool.
+    func refreshTooling(forceFresh: Bool = false) async {
         do {
-            let paths = try await toolLocator.locateAll()
+            let paths = forceFresh
+                ? try await toolLocator.forceRefresh()
+                : try await toolLocator.locateAll()
             self.toolPaths = paths
         } catch {
             Self.logger.warning("Tool resolution failed: \(error.localizedDescription, privacy: .public)")

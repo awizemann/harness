@@ -111,9 +111,14 @@ struct FirstRunWizard: View {
                     InstallHint(text: "Install via Homebrew + pip:",
                                 command: "brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb")
                 }
-                Button("Re-check") { Task { await state.refreshTooling(); await state.refreshSimulators() } }
-                    .buttonStyle(.borderless)
-                    .padding(.top, 4)
+                Button("Re-check") {
+                    Task {
+                        await state.refreshTooling(forceFresh: true)
+                        await state.refreshSimulators()
+                    }
+                }
+                .buttonStyle(.borderless)
+                .padding(.top, 4)
             }
         }
     }

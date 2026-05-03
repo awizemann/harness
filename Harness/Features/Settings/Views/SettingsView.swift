@@ -82,7 +82,10 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                     Button("Re-detect tools") {
-                        Task { await state.refreshTooling(); await state.refreshSimulators() }
+                        Task {
+                            await state.refreshTooling(forceFresh: true)
+                            await state.refreshSimulators()
+                        }
                     }
                 }
             }
