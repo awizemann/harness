@@ -7,9 +7,13 @@ Status legend: ⏳ planned · 🚧 in progress · ✅ shipped.
 | Status | Service | File | Isolation | Purpose |
 |---|---|---|---|---|
 | ✅ | `ProcessRunner` | `Harness/Services/ProcessRunner.swift` | `actor` | The only owner of `Process()` in Harness. One-shot + streaming variants. SIGTERM/SIGKILL on cancel; explicit Pipe close in `defer`. See [`../standards/03-subprocess-and-filesystem.md`](../standards/03-subprocess-and-filesystem.md). |
-| ✅ | `ToolLocator` | `Harness/Services/ToolLocator.swift` | `actor` | Resolves paths for `xcrun`, `xcodebuild`, `idb`, `idb_companion`, `brew` at app launch. Caches in `tools.json` with a 12h TTL. |
+| ✅ | `ToolLocator` | `Harness/Services/ToolLocator.swift` | `actor` | Resolves paths for `xcrun`, `xcodebuild`, `brew` at app launch. Caches in `tools.json` with a 12h TTL. |
 | ✅ | `XcodeBuilder` | `Harness/Services/XcodeBuilder.swift` | `Sendable struct` | Wraps `xcodebuild` with derived data isolated per run. Streams the build log to disk; maps signing-required errors specifically. Returns `(.app URL, bundle id, duration, log path)`. See [Xcode-Builder](Xcode-Builder.md). |
-| ✅ | `SimulatorDriver` | `Harness/Services/SimulatorDriver.swift` | `Sendable struct` | Wraps `simctl` (lifecycle) + `idb` (input). Pixel→point conversion lives in `toPoints(_:scaleFactor:)` — the one place that math runs. Idempotent boot tolerated. See [Simulator-Driver](Simulator-Driver.md) and [`../standards/12-simulator-control.md`](../standards/12-simulator-control.md). |
+| ✅ | `SimulatorDriver` | `Harness/Services/SimulatorDriver.swift` | `actor` | Wraps `simctl` (lifecycle) + WebDriverAgent (input). Pixel→point conversion lives in `toPoints(_:scaleFactor:)` — the one place that math runs. Idempotent boot tolerated. Owns the active WDA runner handle. See [Simulator-Driver](Simulator-Driver.md) and [`../standards/12-simulator-control.md`](../standards/12-simulator-control.md). |
+| ✅ | `WDABuilder` | `Harness/Services/WDABuilder.swift` | `actor` | Builds + caches the WebDriverAgent xctestrun once per iOS major.minor under `~/Library/Application Support/Harness/wda-build/iOS-<ver>/`. SHA-gated rebuild. |
+| ✅ | `WDARunner` | `Harness/Services/WDARunner.swift` | `actor` | Manages the lifecycle of the `xcodebuild test-without-building` process that hosts WDA inside the simulator. Cancellation flows through the streaming task → SIGTERM. |
+| ✅ | `WDAClient` | `Harness/Services/WDAClient.swift` | `actor` | URLSession HTTP client for WDA's W3C / `/wda/*` endpoints. Retries 5xx + connection-refused. Tested with URLProtocol stubs. |
+| ✅ | `SimulatorWindowController` | `Harness/Services/SimulatorWindowController.swift` | `Sendable struct` | Hides / unhides Simulator.app's macOS window during runs via `NSWorkspace.runningApplications`. |
 | ✅ | `ClaudeClient` | `Harness/Services/ClaudeClient.swift` | `actor` | Anthropic SDK wrapper. Single-shot `step(_:)` with prompt caching markers and full tool-call parsing. Wrapped by `AgentLoop`. See [Claude-Client](Claude-Client.md) and [`../standards/07-ai-integration.md`](../standards/07-ai-integration.md). |
 | ✅ | `KeychainStore` | `Harness/Services/KeychainStore.swift` | `Sendable struct` | Thin wrapper around `SecItemAdd` / `SecItemUpdate` / `SecItemCopyMatching` / `SecItemDelete`. Convenience methods for the Anthropic key (service `com.harness.anthropic`, account `default`). |
 | ✅ | `RunLogger` | `Harness/Services/RunLogger.swift` | `actor` | Append-only JSONL writer + screenshot dump per run. One actor per active run. Per-row `synchronize()`. Order-invariant (single `runStarted`, terminal `runCompleted`). See [Run-Logger](Run-Logger.md) and [`../standards/14-run-logging-format.md`](../standards/14-run-logging-format.md). |
@@ -30,7 +34,7 @@ These also landed alongside the services, supporting the layer above:
 ## Phase 3 (still planned)
 
 - App shell + AppCoordinator + AppState.
-- First-run wizard (API key, idb health, default sim).
+- First-run wizard (API key, WebDriverAgent build, default sim).
 - Feature modules: `GoalInput`, `RunSession`, `RunHistory`, `RunReplay`, `FrictionReport`, `Settings`.
 
 ## Adding a service
@@ -47,4 +51,4 @@ See [Adding-a-Service](Adding-a-Service.md) for the full recipe.
 
 ---
 
-_Last updated: 2026-05-03 — Phase 2 agent loop end-to-end. RunLogger / RunLogParser / RunHistoryStore / AgentLoop / RunCoordinator / PromptLibrary shipped. 50 tests green._
+_Last updated: 2026-05-03 — Phase 5 idb→WebDriverAgent migration shipped. Added WDABuilder / WDARunner / WDAClient / SimulatorWindowController; SimulatorDriver is now an actor. 105 tests green._

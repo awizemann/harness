@@ -11,8 +11,15 @@ How to build Harness from source.
 | Command Line Tools | `xcode-select --install` |
 | Homebrew | https://brew.sh |
 | `xcodegen` | `brew install xcodegen` — used to generate `Harness.xcodeproj` from `project.yml` |
-| `idb` + `idb_companion` | `brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb` |
-| Anthropic API key | https://console.anthropic.com — added via the first-run wizard (lands Phase 3); for Phase 1 dev, set via `security add-generic-password -s com.harness.anthropic -a default -w <key>` |
+| Anthropic API key | https://console.anthropic.com — added via the first-run wizard; for headless dev, set via `security add-generic-password -s com.harness.anthropic -a default -w <key>` |
+
+Harness drives the simulator via WebDriverAgent, which is vendored as a git submodule under `vendor/WebDriverAgent`. After cloning:
+
+```bash
+git submodule update --init --recursive
+```
+
+The WDA runner is built on first use against the iOS version of the simulator you pick (~1–2 min) and cached under `~/Library/Application Support/Harness/wda-build/iOS-<ver>/` for reuse.
 
 The first-run wizard (Phase 3) checks all of the above on launch and surfaces actionable errors with copy-pasteable install commands when something's missing.
 
@@ -52,9 +59,9 @@ xcodebuild \
   test
 ```
 
-Phase 1 tests cover: HarnessPaths math, ProcessRunner cancellation + streaming, KeychainStore round-trip, SimulatorDriver coordinate scaling + simctl JSON parsing, AgentTools schema invariants. ~28 tests, runs in <1s.
+Tests cover: HarnessPaths math, ProcessRunner cancellation + streaming, KeychainStore round-trip, SimulatorDriver coordinate scaling + simctl JSON parsing, AgentTools schema invariants, WDABuilder version-key normalization, WDAClient request shapes (URLProtocol-mocked), WDARunner xcodebuild invocation shape, and end-to-end RunCoordinator replay via fakes. ~105 tests, runs in <3s.
 
-Simulator-integration tests (full sim boot + screenshot + idb) are gated behind a `requiresSimulator` tag — opt in via `-only-testing:HarnessTests/RequiresSim/...`.
+Simulator-integration tests (full sim boot + screenshot + WDA round-trip) are gated behind a `requiresSimulator` tag — opt in via `-only-testing:HarnessTests/RequiresSim/...`.
 
 ## Run against a sample app
 
@@ -85,7 +92,8 @@ The project uses Xcode's modern file-system-synchronized groups (via xcodegen's 
 | Error | Likely cause | Fix |
 |---|---|---|
 | "xcodegen: command not found" | Tooling not installed | `brew install xcodegen` |
-| "idb_companion not found" | Homebrew install missing | Run the brew install command above |
+| "WebDriverAgent source not found" | Submodule not initialized | `git submodule update --init --recursive` from the repo root |
+| "WebDriverAgent did not become ready" | First WDA build still compiling, or xcodebuild test runner crashed | Wait ~1–2 min on first run; check the `build.log` under the WDA cache dir |
 | "Failed to boot simulator" | Sim already booted in Xcode and grabbing focus | Quit Simulator.app, retry — though `SimulatorDriver.boot` is idempotent and tolerates the already-booted state |
 | "Build failed: signing required" | Project's xcconfig requires a dev team | `XcodeBuilder` passes `CODE_SIGNING_ALLOWED=NO` and surfaces a typed `BuildFailure.signingRequired`. See [Xcode-Builder](Xcode-Builder.md). |
 | "Authentication failed" from Claude | API key bad/expired or absent | Settings → API Key (Phase 3) or `security add-generic-password -s com.harness.anthropic -a default -w <key>` for Phase 1 dev |
@@ -100,12 +108,16 @@ Harness/
 │   ├── HarnessPaths.swift        every filesystem path constant
 │   └── Models.swift              domain types (Run, Step, ToolCall, FrictionKind, etc.)
 ├── Services/
-│   ├── ProcessRunner.swift       the only owner of Process()
-│   ├── ToolLocator.swift         resolves xcrun/idb/brew paths
-│   ├── KeychainStore.swift       Anthropic API key store
-│   ├── XcodeBuilder.swift        xcodebuild wrapper
-│   ├── SimulatorDriver.swift     simctl + idb wrapper, coord scaling
-│   └── ClaudeClient.swift        Anthropic API wrapper, single-shot
+│   ├── ProcessRunner.swift            the only owner of Process()
+│   ├── ToolLocator.swift              resolves xcrun/xcodebuild/brew paths
+│   ├── KeychainStore.swift            Anthropic API key store
+│   ├── XcodeBuilder.swift             xcodebuild wrapper
+│   ├── SimulatorDriver.swift          simctl + WDA wrapper, coord scaling
+│   ├── WDABuilder.swift               builds + caches WebDriverAgent xctestrun
+│   ├── WDARunner.swift                xcodebuild test-without-building lifecycle
+│   ├── WDAClient.swift                URLSession HTTP client for WDA
+│   ├── SimulatorWindowController.swift hides Simulator.app during runs
+│   └── ClaudeClient.swift             Anthropic API wrapper, single-shot
 ├── Tools/AgentTools.swift        tool schema (model-facing contract)
 └── Resources/Harness.entitlements
 ```
@@ -114,7 +126,7 @@ Tests at `Tests/HarnessTests/`. Design system + screen drafts at `HarnessDesign/
 
 ## Cross-references
 
-- [Simulator-Driver](Simulator-Driver.md) — `idb` install + daemon detail.
+- [Simulator-Driver](Simulator-Driver.md) — WDA lifecycle + coord scaling detail.
 - [Xcode-Builder](Xcode-Builder.md) — `xcodebuild` flag set.
 - [Testing](Testing.md) — test-running specifics.
 - [`../docs/ROADMAP.md`](../docs/ROADMAP.md) — what's available to run when.

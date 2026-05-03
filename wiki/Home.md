@@ -19,7 +19,7 @@ This wiki is the in-tree reference for **where things live, why they work that w
 - [Run-Replay-Format](Run-Replay-Format.md) — JSONL schema reference
 
 ### Per-service deep dives
-- [Simulator-Driver](Simulator-Driver.md) — `simctl` + `idb` specifics
+- [Simulator-Driver](Simulator-Driver.md) — `simctl` + WebDriverAgent specifics
 - [Xcode-Builder](Xcode-Builder.md) — `xcodebuild` flags + derived-data math
 - [Claude-Client](Claude-Client.md) — Anthropic SDK wrapper, prompt caching, history compactor
 - [Run-Logger](Run-Logger.md) — JSONL writer + screenshot dump

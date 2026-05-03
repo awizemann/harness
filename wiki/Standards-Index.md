@@ -26,7 +26,7 @@ Standards are **load-bearing**. Disagreement = a PR amending the standard, not s
 | 08 | [Run Log Integrity](../standards/08-run-log-integrity.md) | rewritten | Append-only JSONL; screenshot durability; round-trip tests; replay invariants. |
 | 09 | [Performance](../standards/09-performance.md) | borrowed | View complexity; state ownership; agent loop cost; mirror polling. |
 | 10 | [Testing](../standards/10-testing.md) | borrowed | Swift Testing; protocol mocks; no timing-dependent tests; replay-based agent tests. |
-| 12 | [Simulator Control](../standards/12-simulator-control.md) | NEW | `simctl` + `idb`; `SimulatorRef`; coordinate space; daemon liveness; AppleScript fallback. |
+| 12 | [Simulator Control](../standards/12-simulator-control.md) | NEW | `simctl` + WebDriverAgent; `SimulatorRef`; coordinate space; WDA build/runner/session lifecycle. |
 | 13 | [Agent Loop](../standards/13-agent-loop.md) | NEW | The loop; cycle detector; budgets; approval gate; friction taxonomy; system prompt structure. |
 | 14 | [Run Logging Format](../standards/14-run-logging-format.md) | NEW | JSONL row schema; screenshot conventions; versioning rules; replay invariants. |
 

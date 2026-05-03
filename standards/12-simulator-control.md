@@ -8,14 +8,18 @@ How Harness drives the iOS Simulator. Pairs with `03-subprocess-and-filesystem.m
 
 ## 1. Why two tools
 
-`xcrun simctl` and `idb` are complementary. Don't pick one — use both.
+`xcrun simctl` and **WebDriverAgent** (vendored as `vendor/WebDriverAgent`, run via `xcodebuild test-without-building`) are complementary. Don't pick one — use both.
 
 | Tool | Owns |
 |---|---|
-| `xcrun simctl` | Lifecycle: list devices, boot, install `.app`, launch by bundle id, terminate, screenshot, erase, set status bar overrides. |
-| `idb` (+ `idb_companion`) | Input: `tap`, `swipe`, `text`, `key`. Plus `ui describe-all` for accessibility-tree fallback. |
+| `xcrun simctl` | Lifecycle: list devices, boot, install `.app`, launch by bundle id, terminate, screenshot, erase, status bar overrides. |
+| WebDriverAgent | Input: `tap`, `swipe`, `keys`, `pressButton`. Drives the simulator through `XCUICoordinate.tap` etc., so events flow through the UIKit responder chain — not raw HID injection. |
 
-`simctl` ships with Xcode (always present); `idb` ships via Homebrew (must be installed first-run). The simulator UI itself is `Simulator.app`, which we drive only through the two CLIs above — we don't AppleScript it as a primary path.
+`simctl` ships with Xcode (always present). WebDriverAgent is vendored as a git submodule and built once per iOS version into `~/Library/Application Support/Harness/wda-build/iOS-<ver>/`.
+
+The simulator UI itself is `Simulator.app`. We hide its window during runs (Harness's mirror is the source of truth) but never script it.
+
+> **Why not idb?** As of iOS 26+, `idb`'s HID-injection input layer renders the green tap dot but doesn't reach the responder chain — `idb ui tap` reports success, the simulator visualizes the touch, and the running app never sees a UIEvent. WDA goes through the XCTest framework's `XCUIApplication` / `XCUIElement` APIs — the path Apple supports and updates per iOS release. Harness migrated in Phase 5.
 
 ---
 
@@ -34,6 +38,8 @@ struct SimulatorRef: Sendable, Hashable, Codable {
 ```
 
 Resolved from `xcrun simctl list devices --json` at app launch and after the user changes the simulator selection. Never inferred from a name string at call time — the user can have multiple devices with the same name across runtimes.
+
+The runtime label is the cache key for the WDA build (`iOS-18.4` for `runtime == "iOS 18.4"`). One build serves all simulators of that runtime.
 
 ---
 
@@ -56,25 +62,32 @@ protocol SimulatorDriving: Sendable {
     func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws
     func type(_ text: String, on ref: SimulatorRef) async throws
     func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws
+
+    func startInputSession(_ ref: SimulatorRef) async throws
+    func endInputSession() async
+    func cleanupWDA(udid: String) async
 }
 ```
 
 Concrete invocations:
 
-| Op | Command |
+| Op | Command / Endpoint |
 |---|---|
 | List | `xcrun simctl list devices --json` |
-| Boot | `xcrun simctl boot <udid>` (idempotent — already-booted is a warning, not an error) |
+| Boot | `xcrun simctl boot <udid>` (idempotent) |
 | Install | `xcrun simctl install <udid> <app-bundle-path>` |
 | Launch | `xcrun simctl launch <udid> <bundle-id>` |
 | Terminate | `xcrun simctl terminate <udid> <bundle-id>` |
-| Erase | `xcrun simctl erase <udid>` (must be shut down first) |
+| Erase | `xcrun simctl erase <udid>` |
 | Screenshot | `xcrun simctl io <udid> screenshot <out-path>` |
-| Tap | `idb ui tap <x> <y> --udid <udid>` |
-| DoubleTap | `idb ui tap <x> <y> --udid <udid>` (twice with 80ms gap, internal) |
-| Swipe | `idb ui swipe <x1> <y1> <x2> <y2> --udid <udid> --duration <s>` |
-| Type | `idb ui text <string> --udid <udid>` |
-| Button | `idb ui button <home\|lock\|side\|siri> --udid <udid>` |
+| Build WDA | `xcodebuild build-for-testing -project vendor/WebDriverAgent/WebDriverAgent.xcodeproj -scheme WebDriverAgentRunner -destination 'id=<udid>' -derivedDataPath <cache>` |
+| Start runner | `xcodebuild test-without-building -xctestrun <path> -destination 'id=<udid>'` |
+| Open session | `POST http://127.0.0.1:8100/session` |
+| Tap | `POST /session/<id>/wda/tap` body `{x, y}` |
+| DoubleTap | Two `tap` calls with 80ms gap (no native double-tap-by-coord endpoint) |
+| Swipe | `POST /session/<id>/wda/dragfromtoforduration` body `{fromX, fromY, toX, toY, duration}` |
+| Type | `POST /session/<id>/wda/keys` body `{value: [String], frequency}` |
+| Button | `POST /session/<id>/wda/pressButton` body `{name}` |
 
 Every command above is wrapped in a typed Swift function; the call site uses the function, never a raw string.
 
@@ -85,61 +98,47 @@ Every command above is wrapped in a typed Swift function; the call site uses the
 This is the #1 expected failure mode. **Test it.**
 
 - `xcrun simctl io booted screenshot` writes a PNG at the device's **pixel** resolution (e.g., 1290 × 2796 for iPhone 16 Pro).
-- `idb ui tap` takes coordinates in **points** (e.g., 430 × 932 for iPhone 16 Pro).
-- The model returns coordinates in **points** (per the system prompt; we tell it the device's logical resolution at run start).
+- WDA's coordinate endpoints take **points** (e.g., 430 × 932 for iPhone 16 Pro).
+- The model returns coordinates in **points** (per the system prompt; we tell it the device's logical resolution at run start, and we downscale screenshots to point dimensions before sending).
 
-`SimulatorDriver` divides any pixel-derived coordinate by `SimulatorRef.scaleFactor` before issuing the tap. There is exactly one place this conversion happens; everywhere else uses points.
+`SimulatorDriver.toPoints(_:scaleFactor:)` is the single place pixel→point conversion happens. Everywhere else uses points.
 
-A unit test (`SimulatorDriverCoordinateTests`) constructs a `SimulatorRef` with scaleFactor 3.0 and asserts:
-
-- A pixel-space (1200, 2400) tap converts to point-space (400, 800).
-- A point-space (200, 400) tap passes through unchanged.
-
-Off-by-2x bugs would show as "agent always taps in the upper left" — visually obvious in the live mirror, but defended-in-depth here.
+`SimulatorDriverCoordinateTests` covers the conversion at scale 2 (SE) and 3 (Pro). Off-by-2x bugs would show as "agent always taps in the upper left" — visually obvious in the live mirror, but defended-in-depth here.
 
 ---
 
-## 5. idb daemon liveness
+## 5. WDA lifecycle
 
-`idb_companion` is a per-simulator process that bridges `idb` CLI calls to the simulator. It can:
+WDA is a real test bundle running inside the simulator. Each run goes through:
 
-- Not be installed at all → fail at `which idb`.
-- Be installed but not running → fail with a connection error on first command.
-- Be running but unresponsive → command times out.
+1. **`cleanupWDA(udid:)`** — `pkill -f "xcodebuild.*test-without-building.*<udid>"` to remove any orphan runner from a previous crash. Tolerates "no matches" silently.
+2. **`startInputSession(_:)`** —
+   - `WDABuilder.ensureBuilt(forSimulator:)`: returns the cached `.xctestrun` if the WDA submodule SHA is unchanged; otherwise runs `xcodebuild build-for-testing` (~1–2 min).
+   - `WDARunner.start(udid:xctestrun:port:)`: spawns `xcodebuild test-without-building` via `ProcessRunner.runStreaming`. The runner is a long-lived subprocess; cancellation flows through the streaming task → SIGTERM.
+   - `WDAClient.waitForReady(timeout:)`: polls `GET http://127.0.0.1:8100/status` until 200 (typically 3–8s).
+   - `WDAClient.createSession()`: `POST /session` with W3C capabilities; stores the session id internally.
+3. (Run loop — `tap`/`swipe`/`type`/`pressButton` calls flow through `WDAClient` against the open session.)
+4. **`endInputSession()`** — `DELETE /session/<id>`, then cancel the runner Task. Always called, including on failure paths.
 
-`SimulatorDriver` checks daemon health before each run:
-
-1. `idb list-targets --udid <udid>` with a 3s timeout.
-2. If failed: attempt `idb_companion --udid <udid> &` to launch.
-3. Re-check.
-4. If still failed: surface the error to the UI with the exact command for the user to run manually.
-
-The first-run wizard runs the full check at app launch and offers `brew install idb-companion` if not installed.
+Errors are typed: `WDABuildFailure`, `WDARunnerError`, `WDAClientError`, `SimulatorError`. The Run UI surfaces the most actionable case (e.g., `WDABuildFailure.compileFailed`'s `recoverySuggestion` includes the full xcodebuild log path).
 
 ---
 
-## 6. AppleScript fallback (degraded mode)
+## 6. Hiding Simulator.app
 
-If `idb` itself fails to install or run on the user's machine (rare, but happens after macOS upgrades), Harness has a degraded **AppleScript fallback**:
+By default, Harness hides Simulator.app's macOS window when a run starts (`SimulatorWindowController.hide()` via `NSWorkspace.runningApplications`) and unhides it on run end. The simulator process and WDA inside it keep running — only the AppKit window is hidden.
 
-- Drive `Simulator.app` through Accessibility / UI scripting.
-- Tap is approximated by clicking the simulator window at the screen-space mapped coordinates (less precise; subject to window position).
-- Text input goes through CGEvent keyboard synthesis with the simulator window focused.
-- Swipes are not supported in degraded mode.
-
-When fallback is active, the live UI shows a banner: "AppleScript fallback active — swipes disabled." The user can still complete tap/type-only goals.
-
-`SimulatorDriver` exposes its current backend (`idb` vs `appleScriptFallback`) so the UI knows which mode it's in.
+The opt-out is `AppState.keepSimulatorVisible` (Settings toggle). Useful when debugging WDA's behavior directly.
 
 ---
 
 ## 7. Erase between runs
 
-By default, the simulator state is **left in place** between runs so the user can iterate (e.g., test "re-open the app, did onboarding stick"). The goal-input form has an "Erase simulator before run" toggle (per project, persisted on `ProjectRef`).
+By default, the simulator state is **left in place** between runs so the user can iterate (e.g., "re-open the app, did onboarding stick"). The goal-input form has an "Erase simulator before run" toggle.
 
 When erase is selected: shut down → `simctl erase <udid>` → boot → install → launch.
 
-When erase is off: the previous run's state stays. If the simulator was already booted and the same app installed, install is still re-run (`simctl install` is idempotent and overwrites).
+When erase is off: previous state stays. If the simulator is already booted and the same app installed, install is re-run (`simctl install` is idempotent).
 
 ---
 
@@ -151,7 +150,9 @@ After `xcodebuild` (see `wiki/Xcode-Builder.md`), the `.app` lives at:
 <derivedDataPath>/Build/Products/Debug-iphonesimulator/<TargetName>.app
 ```
 
-`XcodeBuilder` returns this URL directly — never run `find` or `glob` on derived data. Failure to find the artifact at the expected path is a typed error (`BuildFailure.artifactNotFound`) with the searched path included.
+`XcodeBuilder` returns this URL directly — never run `find` or `glob` on derived data. Failure to find the artifact at the expected path is a typed error (`BuildFailure.artifactNotFound`).
+
+The same path math finds the `.xctestrun` for the WDA build, except under the WDA cache directory (`~/Library/Application Support/Harness/wda-build/iOS-<ver>/Build/Products/`).
 
 The bundle id is read from the `.app/Info.plist` (`CFBundleIdentifier`) at install time. The user does not enter it manually.
 
@@ -177,11 +178,12 @@ Run once at boot. Reset on run end (`xcrun simctl status_bar <udid> clear`). Red
 
 When reviewing simulator-control code:
 
-- [ ] Do all `simctl` and `idb` calls go through `ProcessRunner`?
+- [ ] Do all `simctl` and `xcodebuild` calls go through `ProcessRunner`?
+- [ ] Do all WDA HTTP calls go through `WDAClient` (no ad-hoc URLSession.shared)?
 - [ ] Is the coordinate conversion (pixel → point) confined to one place?
 - [ ] Is `SimulatorRef.scaleFactor` populated from `simctl list devices --json` (not assumed)?
-- [ ] Is `idb_companion` health-checked before each run?
-- [ ] Does the AppleScript fallback path exist and is it covered by at least a smoke test?
+- [ ] Is `cleanupWDA(udid:)` called BEFORE boot at run start?
+- [ ] Does `endInputSession` run on every exit path (success / failure / cancellation)?
 - [ ] Is the `.app` artifact picked up by deterministic path computation, not `find`?
 - [ ] Is the status bar override applied at boot for production runs?
-- [ ] Are typed errors (`SimulatorError.*`) used, not raw `ProcessFailure`, at the boundary into the agent loop?
+- [ ] Are typed errors (`SimulatorError.*`, `WDA*Error`) used, not raw `ProcessFailure`, at the boundary into the agent loop?

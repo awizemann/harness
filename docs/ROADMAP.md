@@ -94,7 +94,22 @@ Wiki updates carrying forward: `Adding-a-Feature.md` will be filled with the Goa
 
 ---
 
-## Phase 5+ — deferred
+## Phase 5 — WebDriverAgent migration ✅ shipped 2026-05-03
+
+Replaces idb (broken on iOS 26+ — taps render the green dot but never reach the responder chain) with WebDriverAgent. Same `SimulatorDriving` protocol surface; only the implementation changes.
+
+- [x] Phase A — vendor `appium/WebDriverAgent` at v12.2.0 as a git submodule (`vendor/WebDriverAgent`).
+- [x] Phase B — `WDABuilder` builds + caches the `.xctestrun` per iOS version under `~/Library/Application Support/Harness/wda-build/iOS-<ver>/`. Submodule SHA gates rebuild.
+- [x] Phase C — `WDARunner` spawns / stops the long-running `xcodebuild test-without-building`. Cancellation flows through the streaming task → SIGTERM.
+- [x] Phase D — `WDAClient` URLSession HTTP client for WDA's W3C / `/wda/*` endpoints. Retries 5xx + connection-refused; URLProtocol-mocked tests assert request shapes.
+- [x] Phase E + F — `SimulatorDriver` becomes an actor; input methods route to `WDAClient`. New `startInputSession` / `endInputSession` / `cleanupWDA`. RunCoordinator's lifecycle is now `cleanupWDA → boot → install → launch → startInputSession → loop → endInputSession` (the last always runs, even on failure).
+- [x] Phase G — `SimulatorWindowController` hides Simulator.app at run start so Harness's mirror is the only visible surface. Toggle via `AppState.keepSimulatorVisible`.
+- [x] Phase H — drop idb / idb_companion from `ToolLocator`, AppState, FirstRunWizard, SidebarView, Settings. WebDriverAgent readiness shows in their place.
+- [x] Phase I — standards / wiki / docs / tests rewritten for the new pipeline.
+
+---
+
+## Phase 6+ — deferred
 
 See `PRD.md` "Deferred / future ideas." Track as GitHub issues once the repo is public.
 

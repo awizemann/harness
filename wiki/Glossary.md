@@ -92,7 +92,10 @@ The protocol-conforming type that runs the iteration logic per `standards/13-age
 The actor that owns every `Process()` invocation in Harness. Per `standards/03-subprocess-and-filesystem.md`, no other code spawns subprocesses directly.
 
 ### `ToolLocator`
-The service that resolves external CLI paths (`xcrun`, `xcodebuild`, `idb`, `idb_companion`, `brew`) at app launch and caches them in `tools.json`. Surfaces missing tools as actionable errors in the first-run wizard.
+The service that resolves external CLI paths (`xcrun`, `xcodebuild`, `brew`) at app launch and caches them in `tools.json`. Surfaces missing tools as actionable errors in the first-run wizard.
+
+### WebDriverAgent (WDA)
+Vendored at `vendor/WebDriverAgent` (submodule pinned to `appium/WebDriverAgent` v12.2.0). Drives the iOS Simulator's input via XCTest's `XCUICoordinate` APIs — events flow through the UIKit responder chain, unlike `idb`'s HID injection which iOS 26+ silently drops. Built into `~/Library/Application Support/Harness/wda-build/iOS-<ver>/` once per iOS major.minor.
 
 ### Step-mode / Autonomous-mode
 Synonyms for `stepByStep` / `autonomous` modes (see `Mode`). Used colloquially in UI and docs; the canonical names are the camelCase forms.
