@@ -53,8 +53,8 @@ struct FrictionReportView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.harnessWarning.opacity(0.30), lineWidth: 0.5))
     }
 
-    private var uniqueKinds: [FrictionKind] {
-        var seen = Set<FrictionKind>(); var out: [FrictionKind] = []
+    private var uniqueKinds: [PreviewFrictionKind] {
+        var seen = Set<PreviewFrictionKind>(); var out: [PreviewFrictionKind] = []
         for e in vm.run.friction where !seen.contains(e.kind) { seen.insert(e.kind); out.append(e.kind) }
         return out
     }

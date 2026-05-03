@@ -6,7 +6,7 @@ import SwiftUI
 
 /// Color-coded pill: Success / Blocked / Failed.
 struct VerdictPill: View {
-    let verdict: Verdict
+    let verdict: PreviewVerdict
 
     private var color: Color {
         switch verdict {

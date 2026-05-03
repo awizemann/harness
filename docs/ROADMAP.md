@@ -16,22 +16,26 @@ A condensed roadmap matching the implementation plan at `~/.claude/plans/harness
 
 ---
 
-## Phase 1 — Plumbing (≈1–2 days)
+## Phase 1 — Plumbing ✅ shipped 2026-05-03
 
-Deliverable: an Xcode project that builds, with `ProcessRunner` + `ToolLocator` + `XcodeBuilder` + `SimulatorDriver` + `ClaudeClient` skeletons, all runnable in isolation but not yet wired into a UI.
+Deliverable: an Xcode project that builds, with the service skeletons wired up and unit-tested in isolation.
 
-- [ ] Create `Harness.xcodeproj` (single Mac target, non-sandboxed entitlements).
-- [ ] Wire `HarnessDesign/` as a local Swift Package dependency.
-- [ ] `Harness/Core/HarnessPaths.swift` + `Harness/Core/Models.swift` (Run, Step, Action, Friction, Verdict, FrictionKind, Persona).
-- [ ] `Harness/Services/ProcessRunner.swift` (actor, with cancellation + timeout + streaming variant).
-- [ ] `Harness/Services/ToolLocator.swift` (xcrun, idb, idb_companion, brew).
-- [ ] `Harness/Services/XcodeBuilder.swift` (build with derived data isolated to run dir).
-- [ ] `Harness/Services/SimulatorDriver.swift` (full protocol per standard 12; coord scaling unit-tested).
-- [ ] `Harness/Services/ClaudeClient.swift` (single message + tool use; prompt caching wired; no loop yet).
-- [ ] `Harness/Services/KeychainStore.swift` (read/write `com.harness.anthropic`).
-- [ ] Smoke target: a tiny CLI-callable test target that boots a sim, takes a screenshot, sends to Claude, prints the response.
+- [x] Create `Harness.xcodeproj` (single Mac target, non-sandboxed entitlements). Generated from `project.yml` via xcodegen.
+- [x] Include `HarnessDesign/` source in the main app target. *(Revised from "Swift Package" — graduated to Package later if/when we add a second target.)*
+- [x] `Harness/Core/HarnessPaths.swift` — every filesystem-path constant.
+- [x] `Harness/Core/Models.swift` — `GoalRequest`, `ProjectRequest`, `SimulatorRef`, `Step`, `ToolCall`, `ToolKind`, `ToolInput`, `ToolResult`, `FrictionEvent`, `FrictionKind`, `Verdict`, `RunOutcome`, `RunEvent`, `UserApproval`.
+- [x] `Harness/Services/ProcessRunner.swift` — actor; cancellation; timeout; streaming variant; explicit Pipe close on `defer`.
+- [x] `Harness/Services/ToolLocator.swift` — actor; resolves xcrun / xcodebuild / idb / idb_companion / brew; 12h cache.
+- [x] `Harness/Services/KeychainStore.swift` — `SecItem*` wrapper; convenience methods for the Anthropic key.
+- [x] `Harness/Services/XcodeBuilder.swift` — `xcodebuild` wrapper; derived data isolated; signing-error mapping; `.app` artifact pickup.
+- [x] `Harness/Services/SimulatorDriver.swift` — full `SimulatorDriving` protocol; pixel→point conversion in `toPoints` (unit-tested); idempotent boot.
+- [x] `Harness/Services/ClaudeClient.swift` — single-shot `step(_:)`; prompt-caching markers; full tool-call parsing; typed `ClaudeError` cases.
+- [x] `Harness/Tools/AgentTools.swift` — `ToolSchema.toolDefinitions(cacheControl:)` matching `wiki/Tool-Schema.md`.
+- [x] Tests: 28 across `HarnessPaths`, `ProcessRunner` (cancellation, streaming), `KeychainStore` (round-trip), `SimulatorDriver` (coord scaling, simctl JSON parsing), `AgentTools` (schema invariants).
 
-Wiki updates this phase: `Core-Services.md` populated with each service's row; `Build-and-Run.md` filled in; `Simulator-Driver.md` filled with concrete flag set.
+Wiki updates landed: `Core-Services.md` with shipped status, `Build-and-Run.md` filled in, `Design-System.md` reconciled to actual API names (`Theme.*` / `HFont.*` / `Color.harness*`), `Simulator-Driver.md` linked.
+
+**Carries forward into Phase 2:** the smoke "boot sim → screenshot → send to Claude → print response" CLI is deferred to Phase 2 — once `RunCoordinator` exists, it's a thin orchestration on top, not an independent target.
 
 ---
 

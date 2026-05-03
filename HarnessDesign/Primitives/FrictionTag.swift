@@ -5,7 +5,7 @@
 import SwiftUI
 
 struct FrictionTag: View {
-    let kind: FrictionKind
+    let kind: PreviewFrictionKind
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "exclamationmark.triangle.fill")

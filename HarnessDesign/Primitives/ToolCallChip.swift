@@ -7,7 +7,7 @@ import SwiftUI
 /// Small monospaced pill rendering a tool call: `tap (124, 480)`, `type "milk"`, `swipe ↑`.
 /// Color-coded by action kind.
 struct ToolCallChip: View {
-    let kind: ToolKind
+    let kind: PreviewToolKind
     let arg: String?
 
     private var color: Color {

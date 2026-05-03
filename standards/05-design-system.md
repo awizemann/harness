@@ -2,7 +2,9 @@
 
 Applies to: **Harness**
 
-All app UI uses the typed token bundle and primitive components in [`HarnessDesign/`](../HarnessDesign/). Reach for these tokens before inventing new colors, fonts, or spacings. The package was produced by Claude Design from the brief at [`design-prompt.md`](../design-prompt.md) and lives in-repo as the visual source of truth.
+All app UI uses the typed token bundle and primitive components in [`HarnessDesign/`](../HarnessDesign/). Reach for these tokens before inventing new colors, fonts, or spacings. The folder was produced by Claude Design from the brief at [`design-prompt.md`](../design-prompt.md) and lives in-repo as the visual source of truth.
+
+> **Phase 1 note:** HarnessDesign is included as a source folder in the main app target, not a separate Swift Package. Graduating to a Package is a single-target-app refactor we'll do if/when we add a second target (e.g. CLI). The architectural rules below are unchanged regardless.
 
 ---
 
@@ -45,15 +47,15 @@ The `Screens/` files are **layout drafts** with mock data — the application ta
 
 ## 2. Tokens, not literals
 
-Hardcoded `.padding(12)` or `cornerRadius: 8` is a code smell. Use:
+Hardcoded `.padding(12)` or `cornerRadius: 8` is a code smell. Use the typed tokens shipped in HarnessDesign — actual API names below match the source files.
 
-- **Spacing**: `HarnessSpace.s1...s10` (4 / 8 / 12 / 16 / 20 / 24 / 32 / 40 / 56 / 80).
-- **Radius**: `HarnessRadius.sm / md / lg / xl / xxl / pill`.
-- **Shadow**: `.harnessShadow(.sm / .md / .lg / .xl)`.
-- **Color**: `HarnessColor.accent`, `.foregroundPrimary / Muted / Faint`, `.backgroundPrimary / Secondary / Tertiary`, `.border / .borderStrong`, `.success / .danger / .warning / .info`, plus the semantic friction palette `.friction.deadEnd / .ambiguousLabel / .unresponsive / .confusingCopy / .unexpectedState`.
-- **Type**: `.harnessStyle(.title2)`, `.harnessStyle(.body)`, `.harnessStyle(.captionUppercase)`, `.harnessStyle(.mono)`, etc. Eleven preset styles cover the type scale.
+- **Spacing** (`Theme.spacing.xs/s/m/l/xl/xxl`) — 4 / 8 / 12 / 16 / 24 / 32. See `HarnessDesign/DesignSystem/Theme.swift`.
+- **Radius** (`Theme.radius.chip/pill/button/input/panel/sheet/window`) — 4–10. Same file.
+- **Shadow** (`Theme.shadow.*`) — material-aware drop shadows.
+- **Color** — extensions on `Color`: `.harnessAccent`, `.harnessAccentSecondary`, `.harnessText/2/3/4`, `.harnessBg/2/3`, `.harnessPanel/2`, `.harnessLine/Strong/Soft`, `.harnessSuccess/Failure/Blocked/Warning`, plus per-tool chip colors `.harnessTool{Tap,Type,Swipe,Scroll,Wait}`. All resolve light + dark via `Color(light:dark:)`. See `HarnessDesign/DesignSystem/Colors.swift`.
+- **Type** — `HFont.title1/title2/title3/headline/headlineMono/body/bodyMuted/caption/captionMono/micro/mono`. Used as `.font(HFont.body)`. See `HarnessDesign/DesignSystem/Typography.swift`.
 
-Adapt-to-system colors only — every color resolves from an asset catalog with explicit light/dark variants. No raw `Color(red:green:blue:)` literals in feature code.
+No raw `Color(red:green:blue:)` literals in feature code. No `.font(.system(size: 13.5))`. Light/dark variants are always defined where the color is.
 
 ---
 

@@ -1,0 +1,78 @@
+name: Harness
+options:
+  bundleIdPrefix: com.harness
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+  fileTypes:
+    md:
+      buildPhase: none
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    PRODUCT_BUNDLE_IDENTIFIER: com.harness.app
+    INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+    INFOPLIST_KEY_NSHumanReadableCopyright: ""
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+targets:
+  Harness:
+    type: application
+    platform: macOS
+    sources:
+      - path: Harness
+      - path: HarnessDesign
+    resources:
+      - path: docs/PROMPTS
+        type: folder
+    settings:
+      base:
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Harness/Resources/Harness.entitlements
+        INFOPLIST_KEY_NSMainStoryboardFile: ""
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
+        INFOPLIST_KEY_CFBundleName: Harness
+        INFOPLIST_KEY_CFBundleDisplayName: Harness
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+  HarnessTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/HarnessTests
+    dependencies:
+      - target: Harness
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Harness.app/Contents/MacOS/Harness"
+        PRODUCT_BUNDLE_IDENTIFIER: com.harness.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Harness:
+    build:
+      targets:
+        Harness: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - HarnessTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

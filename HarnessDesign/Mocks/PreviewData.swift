@@ -6,18 +6,22 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Models (placeholders — application layer will replace)
-enum Verdict: String, Hashable { case success, failure, blocked }
+// MARK: - Models (preview-only placeholders)
+//
+// These are scoped to HarnessDesign #Preview blocks. The application layer's
+// real types live in `Harness/Core/Models.swift` (Verdict, ToolKind, FrictionKind).
+// We prefix these `Preview*` to avoid type-name collisions with the app target.
+enum PreviewVerdict: String, Hashable { case success, failure, blocked }
 
-enum ToolKind: String { case tap, type, swipe, scroll, wait, complete }
+enum PreviewToolKind: String { case tap, type, swipe, scroll, wait, complete }
 
 struct PreviewToolCall: Hashable {
-    let kind: ToolKind
+    let kind: PreviewToolKind
     /// Free-form arg string: `"(124, 480)"`, `"\"milk\""`, `"300ms"`.
     let arg: String?
 }
 
-enum FrictionKind: String, Hashable {
+enum PreviewFrictionKind: String, Hashable {
     case ambiguousAffordance = "ambiguous-affordance"
     case missingUndo         = "missing-undo"
     case ambiguousLabel      = "ambiguous-label"
@@ -26,7 +30,7 @@ enum FrictionKind: String, Hashable {
 }
 
 struct PreviewFriction: Hashable {
-    let kind: FrictionKind
+    let kind: PreviewFrictionKind
     /// One-line summary the agent supplied for the row.
     let note: String
 }
@@ -45,7 +49,7 @@ struct PreviewFrictionEvent: Identifiable, Hashable {
     let id = UUID()
     let timestamp: String   // "00:14"
     let stepN: Int
-    let kind: FrictionKind
+    let kind: PreviewFrictionKind
     let title: String
     let detail: String
     let agentQuote: String
@@ -63,7 +67,7 @@ struct PreviewRun: Identifiable, Hashable {
     let startedAt: String
     let elapsed: String
     let stepBudget: Int
-    let verdict: Verdict
+    let verdict: PreviewVerdict
     var steps: [PreviewStep]
     var friction: [PreviewFrictionEvent]
 }

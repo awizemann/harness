@@ -4,6 +4,10 @@
 .AppleDouble
 .LSOverride
 
+# Generated Xcode project — regenerate via `xcodegen generate`.
+# The source of truth is project.yml.
+Harness.xcodeproj/
+
 # Xcode
 build/
 DerivedData/

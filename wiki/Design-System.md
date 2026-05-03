@@ -1,51 +1,65 @@
 # Design System
 
-Harness's visual language is the **HarnessDesign** Swift package at [`../HarnessDesign/`](../HarnessDesign/). This wiki page is the index — one-line descriptions per token and primitive with file links. The full source is in the package; the canonical guidance is in [`../standards/05-design-system.md`](../standards/05-design-system.md).
+Harness's visual language is the **HarnessDesign** source folder at [`../HarnessDesign/`](../HarnessDesign/), included directly in the main app target. The full canonical guidance is in [`../standards/05-design-system.md`](../standards/05-design-system.md). This page is the index — token + primitive names that match the actual code.
 
-## Tokens
+> **Note (Phase 1):** The standards originally framed HarnessDesign as a separate Swift Package. We pragmatically include the source files in the main target instead — the package framing required mass `public`-ifying every symbol with no architectural payoff for a single-target app. If we add a second target (e.g., a CLI), HarnessDesign graduates to a Package.
 
-All tokens are typed; no raw color/spacing/font literals in feature code.
+## Tokens — actual API
 
-### Colors
+### Colors (`HarnessDesign/DesignSystem/Colors.swift`)
 
-| Token | Use |
+All colors are extensions on `Color` that resolve light/dark via a `Color(light:dark:)` initializer wrapping `NSColor(name:)`.
+
+| Group | Tokens |
 |---|---|
-| `HarnessColor.accent` | Primary brand accent (filled buttons, focus rings, key highlights). |
-| `HarnessColor.foregroundPrimary / Muted / Faint` | Body, secondary, tertiary text. |
-| `HarnessColor.backgroundPrimary / Secondary / Tertiary` | Window background, panel, sub-panel. |
-| `HarnessColor.border / borderStrong` | Hairline + emphasized borders. |
-| `HarnessColor.success / danger / warning / info` | Verdict pills, alerts, banners. |
-| `HarnessColor.friction.deadEnd / ambiguousLabel / unresponsive / confusingCopy / unexpectedState` | Friction-pill colors, one per kind in `docs/PROMPTS/friction-vocab.md`. |
+| Backgrounds | `Color.harnessBg`, `harnessBg2`, `harnessBg3`, `harnessPanel`, `harnessPanel2`, `harnessElevated`, `harnessWindow` |
+| Lines | `harnessLine`, `harnessLineStrong`, `harnessLineSoft` |
+| Text | `harnessText`, `harnessText2`, `harnessText3`, `harnessText4` |
+| Accent (mint) | `harnessAccent`, `harnessAccentSecondary`, `harnessAccentForeground`, `harnessAccentSoft` |
+| Verdict semantics | `harnessSuccess`, `harnessWarning` (friction), `harnessFailure`, `harnessBlocked` |
+| Tool kinds (chip coding) | `harnessToolTap`, `harnessToolType`, `harnessToolSwipe`, `harnessToolScroll`, `harnessToolWait` |
 
-All colors resolve light + dark via the asset catalog at `HarnessDesign/DesignSystem/Colors.swift`.
-
-### Spacing / radius / shadow
+### Spacing / radius / fonts (`HarnessDesign/DesignSystem/Theme.swift`)
 
 | Token | Values |
 |---|---|
-| `HarnessSpace.s1 ... s10` | 4 / 8 / 12 / 16 / 20 / 24 / 32 / 40 / 56 / 80 |
-| `HarnessRadius.sm / md / lg / xl / xxl / pill` | 4 / 8 / 12 / 16 / 20 / 999 |
-| `.harnessShadow(.sm / .md / .lg / .xl)` | Material-aware drop shadows. |
+| `Theme.spacing.xs/s/m/l/xl/xxl` | 4 / 8 / 12 / 16 / 24 / 32 |
+| `Theme.radius.chip / pill / button / input / panel / sheet / window` | 4–10 |
+| `Theme.shadow.*` | Material-aware drop shadows |
 
-### Typography
+### Typography (`HarnessDesign/DesignSystem/Typography.swift`)
 
-`.harnessStyle(.title1 / .title2 / .title3 / .headline / .body / .bodyMuted / .caption / .captionUppercase / .mono / .monoSmall / .display)`. Eleven preset styles cover the type scale. Defined at `HarnessDesign/DesignSystem/Typography.swift`.
+`HFont.*` constants:
+
+- `.title1`, `.title2`, `.title3`
+- `.headline`, `.headlineMono`
+- `.body`, `.bodyMuted`
+- `.caption`, `.captionMono`
+- `.micro`
+- `.mono`
+
+Used as `.font(HFont.body)` etc.
+
+### Materials (`HarnessDesign/DesignSystem/Materials.swift`)
+
+`HarnessMaterial.*` enum + `View.harnessMaterial(_:)` modifier wrapping system materials.
 
 ## Primitives
 
 | Primitive | File | Used by |
 |---|---|---|
-| `PanelContainer` | `HarnessDesign/Primitives/PanelContainer.swift` | Every screen |
+| `PanelContainer<Content>` | `HarnessDesign/Primitives/PanelContainer.swift` | Every screen |
 | `StepFeedCell` | `HarnessDesign/Primitives/StepFeedCell.swift` | RunSession, RunReplay, FrictionReport |
 | `ToolCallChip` | `HarnessDesign/Primitives/ToolCallChip.swift` | StepFeedCell |
 | `VerdictPill` | `HarnessDesign/Primitives/VerdictPill.swift` | RunHistory, RunReplay header |
-| `SimulatorMirrorView` | `HarnessDesign/Primitives/SimulatorMirrorView.swift` | RunSession center pane, RunReplay center pane |
+| `FrictionTag` | `HarnessDesign/Primitives/FrictionTag.swift` | FrictionReport, StepFeed |
+| `SimulatorMirrorView` | `HarnessDesign/Primitives/SimulatorMirrorView.swift` | RunSession, RunReplay |
 | `ApprovalCard` | `HarnessDesign/Primitives/ApprovalCard.swift` | RunSession (step mode) |
 | `PersonaGoalForm` | `HarnessDesign/Primitives/PersonaGoalForm.swift` | GoalInput |
-| `SegmentedToggle<T>` | `HarnessDesign/Primitives/SegmentedToggle.swift` | GoalInput (mode toggle), RunReplay (speed) |
+| `SegmentedToggle<T>` | `HarnessDesign/Primitives/SegmentedToggle.swift` | GoalInput, RunReplay |
 | `TimelineScrubber` | `HarnessDesign/Primitives/TimelineScrubber.swift` | RunReplay |
 | `SidebarRow` | `HarnessDesign/Primitives/SidebarRow.swift` | RunHistory |
-| `EmptyStateView` | `HarnessDesign/Primitives/EmptyStateView.swift` | First-run, empty history, no friction in run |
+| `EmptyStateView` | `HarnessDesign/Primitives/EmptyStateView.swift` | First-run, empty history, no friction |
 | `StatusChip` | `HarnessDesign/Primitives/StatusChip.swift` | RunSession (top-right of mirror) |
 
 ## Screens
@@ -58,19 +72,29 @@ Layout drafts in `HarnessDesign/Screens/` — composed from primitives, bound to
 - `RunReplayView`
 - `FrictionReportView`
 
-When the application target imports `HarnessDesign`, real view-models replace the mock data. Layouts stay.
+Phase 3 wires real view-models in place of the mock data. The primitives themselves don't change.
 
-## When the design changes
+## Mock data
 
-See [`../standards/05-design-system.md §10`](../standards/05-design-system.md). Briefly: PR against `HarnessDesign/`, update affected feature views, update this index page.
+`HarnessDesign/Mocks/PreviewData.swift` provides `Preview*` placeholder types:
+
+- `PreviewVerdict`, `PreviewToolKind`, `PreviewFrictionKind` (renamed Phase 1 to avoid collisions with the production enums in `Harness/Core/Models.swift`)
+- `PreviewToolCall`, `PreviewFriction`, `PreviewStep`, `PreviewFrictionEvent`, `PreviewRun`
+- `.mocks` and `.mock` static fixtures
+
+These are HarnessDesign-internal — production code uses the real domain types in `Harness/Core/Models.swift` (`Verdict`, `ToolKind`, `FrictionKind`, `ToolCall`, etc.).
 
 ## Don'ts
 
-- No hardcoded colors / fonts / spacings in feature code.
-- No new button styles — use primary / secondary / ghost / destructive.
-- No `Color(red:green:blue:)` literals.
-- No emoji in chrome.
-- No purple / violet — Harness's accent is the one defined in `HarnessColor.accent`.
+- Don't introduce new button styles — use the existing primary / secondary / ghost in `ButtonStyles.swift`.
+- Don't use raw `Color(red:green:blue:)` literals in feature code.
+- Don't bypass the type scale with `.font(.system(size:))` — use `HFont.*`.
+- Don't add purple / violet — Harness's accent is the mint green in `Color.harnessAccent`.
+- Don't override radii inline — extend `Theme.radius` if you need a new value.
+
+## When the design changes
+
+See [`../standards/05-design-system.md §10`](../standards/05-design-system.md). Briefly: edit `HarnessDesign/`, update affected feature views, update this index page.
 
 ## Cross-references
 
@@ -79,4 +103,4 @@ See [`../standards/05-design-system.md §10`](../standards/05-design-system.md).
 
 ---
 
-_Last updated: 2026-05-03 — initial scaffolding._
+_Last updated: 2026-05-03 — Phase 1 reconciled token names with the real code; HarnessDesign included in target rather than packaged._
