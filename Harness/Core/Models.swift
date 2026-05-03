@@ -120,9 +120,23 @@ struct ToolCall: Sendable, Hashable, Codable {
     let intent: String
 }
 
+/// The model-facing tool vocabulary. **Raw values are the snake_case names
+/// that match `wiki/Tool-Schema.md` and `Harness/Tools/AgentTools.swift`** —
+/// these are what Claude emits in `tool_use.name` and what we encode in
+/// JSONL `tool` fields. Bug fixed in commit a08b2a6+1: defaults to Swift
+/// identifiers (`noteFriction`, `doubleTap`, etc.) silently broke 5 of 9
+/// tools because the model called them by snake_case names that
+/// `ToolKind(rawValue:)` rejected.
 enum ToolKind: String, Sendable, Hashable, Codable, CaseIterable {
-    case tap, doubleTap, swipe, type, pressButton, wait, readScreen
-    case noteFriction, markGoalDone
+    case tap            = "tap"
+    case doubleTap      = "double_tap"
+    case swipe          = "swipe"
+    case type           = "type"
+    case pressButton    = "press_button"
+    case wait           = "wait"
+    case readScreen     = "read_screen"
+    case noteFriction   = "note_friction"
+    case markGoalDone   = "mark_goal_done"
 }
 
 /// Tagged-union payload for any tool. Field names match `wiki/Tool-Schema.md`.

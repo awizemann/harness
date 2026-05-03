@@ -21,6 +21,33 @@ struct AgentToolsSchemaTests {
         #expect(definedNames == kindNames)
     }
 
+    @Test("Each tool's actual schema 'name' field equals its ToolKind rawValue")
+    func schemaNamesMatchToolKindRawValues() {
+        // This is the test that would have caught the Phase-1 ToolKind
+        // rawValue bug: previously ToolKind defaulted to Swift-identifier
+        // raw values (`noteFriction`, `doubleTap`, ...) but the schema's
+        // `name` fields were snake_case. Round-trip parse failed for 5/9
+        // tools.
+        let defs = ToolSchema.toolDefinitions(cacheControl: false)
+        let schemaNames = Set(defs.compactMap { $0["name"] as? String })
+        let kindRawValues = Set(ToolKind.allCases.map(\.rawValue))
+        #expect(schemaNames == kindRawValues,
+                "Schema names \(schemaNames.sorted()) must equal ToolKind rawValues \(kindRawValues.sorted()).")
+    }
+
+    @Test("ToolKind(rawValue:) round-trips every snake_case name from the schema")
+    func toolKindRoundTrip() {
+        let defs = ToolSchema.toolDefinitions(cacheControl: false)
+        for def in defs {
+            guard let name = def["name"] as? String else {
+                Issue.record("definition missing name field")
+                continue
+            }
+            #expect(ToolKind(rawValue: name) != nil,
+                    "ToolKind(rawValue: \"\(name)\") returned nil — Claude calls this tool by name and we'd fail the request.")
+        }
+    }
+
     @Test("Each definition has name, description, input_schema with required[] non-empty")
     func definitionShape() {
         let defs = ToolSchema.toolDefinitions(cacheControl: false)
