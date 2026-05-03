@@ -50,8 +50,33 @@ struct RunReplayView: View {
                 Text(err).font(.callout).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if vm.steps.isEmpty {
+        } else if vm.isLoading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if vm.steps.isEmpty {
+            // Run logged a `runStarted` row but never reached `step_started` —
+            // typical for runs that crashed during build/install or were stopped
+            // before the first agent decision. Show what we know instead of
+            // spinning forever.
+            VStack(spacing: 10) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.tertiary)
+                Text("No steps recorded for this run.").font(.headline)
+                if let summary = vm.meta.flatMap({ _ in
+                    vm.summary.isEmpty ? nil : vm.summary
+                }) {
+                    Text(summary)
+                        .font(.callout).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                } else {
+                    Text("The run may have crashed before reaching the first step, or its events.jsonl is missing.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             HSplitView {
                 screenshotPane
@@ -137,26 +162,45 @@ struct RunReplayView: View {
         }
     }
 
+    @ViewBuilder
     private var scrubber: some View {
-        HStack(spacing: 12) {
-            Button { vm.step(forward: false) } label: { Image(systemName: "chevron.left") }
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .disabled(vm.currentStepIndex == 0)
-            Button { vm.step(forward: true) } label: { Image(systemName: "chevron.right") }
-                .keyboardShortcut(.rightArrow, modifiers: [])
-                .disabled(vm.currentStepIndex >= vm.steps.count - 1)
-            Slider(
-                value: Binding(
-                    get: { Double(vm.currentStepIndex) },
-                    set: { vm.currentStepIndex = Int($0) }
-                ),
-                in: 0...Double(max(0, vm.steps.count - 1)),
-                step: 1
-            )
-            Text("\(vm.currentStepIndex + 1)/\(vm.steps.count)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+        // Don't render the scrubber when there's nothing to scrub. Old runs
+        // that crashed before any step landed (or runs whose events.jsonl
+        // got truncated) parse to zero steps; SwiftUI's Slider asserts on a
+        // zero-width range with a positive step (`0...0` with `step: 1`),
+        // which used to crash this view on load.
+        if vm.steps.isEmpty {
+            EmptyView()
+        } else if vm.steps.count == 1 {
+            // Single-step replay: show the count, skip the slider entirely.
+            HStack(spacing: 12) {
+                Text("Step 1/1")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(12)
+        } else {
+            HStack(spacing: 12) {
+                Button { vm.step(forward: false) } label: { Image(systemName: "chevron.left") }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(vm.currentStepIndex == 0)
+                Button { vm.step(forward: true) } label: { Image(systemName: "chevron.right") }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(vm.currentStepIndex >= vm.steps.count - 1)
+                Slider(
+                    value: Binding(
+                        get: { Double(min(max(0, vm.currentStepIndex), vm.steps.count - 1)) },
+                        set: { vm.currentStepIndex = max(0, min(Int($0), vm.steps.count - 1)) }
+                    ),
+                    in: 0...Double(vm.steps.count - 1),
+                    step: 1
+                )
+                Text("\(vm.currentStepIndex + 1)/\(vm.steps.count)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
         }
-        .padding(12)
     }
 }

@@ -31,6 +31,10 @@ final class RunReplayViewModel {
     var steps: [StepView] = []
     var currentStepIndex: Int = 0
     var loadError: String?
+    /// True while the initial parse is in flight. The view distinguishes
+    /// "still loading" from "loaded with zero steps" so the empty-state copy
+    /// doesn't flash before parsing finishes.
+    var isLoading: Bool = false
 
     var currentScreenshot: NSImage? {
         guard !steps.isEmpty,
@@ -46,6 +50,8 @@ final class RunReplayViewModel {
 
     func load(runID: UUID) async {
         loadError = nil
+        isLoading = true
+        defer { isLoading = false }
         do {
             let rows = try RunLogParser.parse(runID: runID)
             try? RunLogParser.validateInvariants(rows)
