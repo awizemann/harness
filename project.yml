@@ -10,6 +10,20 @@ options:
   fileTypes:
     md:
       buildPhase: none
+  # Seed the generated repo-root stub before xcodegen scans `sources:`. The
+  # actual value is overwritten on every build by the `Generate
+  # HarnessGeneratedRepoRoot.swift` pre-build script — this just guarantees the
+  # file exists so the source list picks it up.
+  preGenCommand: |
+    mkdir -p Harness/Generated
+    if [ ! -f Harness/Generated/HarnessGeneratedRepoRoot.swift ]; then
+      printf '%s\n' \
+        '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+        'enum HarnessGeneratedRepoRoot {' \
+        '    static let path = ""' \
+        '}' \
+        > Harness/Generated/HarnessGeneratedRepoRoot.swift
+    fi
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -47,13 +61,28 @@ targets:
         INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
         INFOPLIST_KEY_CFBundleName: Harness
         INFOPLIST_KEY_CFBundleDisplayName: Harness
-        # Bake the repo root into Info.plist so the running app can find
-        # `vendor/WebDriverAgent` for first-run WDA builds. Read at runtime via
-        # `HarnessPaths.repoRoot`. Regenerated per machine because
-        # Harness.xcodeproj is .gitignored.
-        INFOPLIST_KEY_HarnessRepoRoot: "$(SRCROOT)"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
+    preBuildScripts:
+      # Bake $SRCROOT into the generated Swift stub so the running app can find
+      # `vendor/WebDriverAgent` for first-run WDA builds. Read at runtime via
+      # `HarnessPaths.repoRoot`. The stub itself is gitignored under
+      # `Harness/Generated/` and seeded by xcodegen's preGenCommand; this
+      # script keeps its content current.
+      - name: Generate HarnessGeneratedRepoRoot.swift
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          DEST="$SRCROOT/Harness/Generated/HarnessGeneratedRepoRoot.swift"
+          mkdir -p "$(dirname "$DEST")"
+          NEW=$(printf '%s\n' \
+            '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+            'enum HarnessGeneratedRepoRoot {' \
+            "    static let path = \"$SRCROOT\"" \
+            '}')
+          if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
+            printf '%s\n' "$NEW" > "$DEST"
+          fi
   HarnessTests:
     type: bundle.unit-test
     platform: macOS

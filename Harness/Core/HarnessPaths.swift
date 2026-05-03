@@ -50,13 +50,13 @@ enum HarnessPaths {
         wdaRoot.appendingPathComponent("iOS-\(version)", isDirectory: true)
     }
 
-    /// Repo root, baked into Info.plist at build time via
-    /// `INFOPLIST_KEY_HarnessRepoRoot=$(SRCROOT)` (see `project.yml`). Nil only
-    /// if someone is running a binary built without that setting — shouldn't
-    /// happen for any `xcodegen generate`'d project.
+    /// Repo root, baked at build time via the `Generate
+    /// HarnessGeneratedRepoRoot.swift` pre-build script (see `project.yml`).
+    /// The generated file ships under `DERIVED_FILE_DIR` so it's not checked
+    /// into source.
     static var repoRoot: URL? {
-        guard let path = Bundle.main.infoDictionary?["HarnessRepoRoot"] as? String,
-              !path.isEmpty else { return nil }
+        let path = HarnessGeneratedRepoRoot.path
+        guard !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
