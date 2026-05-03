@@ -18,6 +18,9 @@ final class AppContainer {
     let toolLocator: any ToolLocating
     let keychain: any KeychainStoring
     let xcodeBuilder: any XcodeBuilding
+    let wdaBuilder: any WDABuilding
+    let wdaRunner: any WDARunning
+    let wdaClient: any WDAClienting
     let simulatorDriver: any SimulatorDriving
     let claudeClient: any LLMClient
     let runHistory: any RunHistoryStoring
@@ -32,7 +35,26 @@ final class AppContainer {
         self.toolLocator = ToolLocator(processRunner: runner)
         self.keychain = KeychainStore()
         self.xcodeBuilder = XcodeBuilder(processRunner: runner, toolLocator: toolLocator)
-        self.simulatorDriver = SimulatorDriver(processRunner: runner, toolLocator: toolLocator)
+
+        // WebDriverAgent stack — replaces idb in Phase 5.
+        // Discovery: HarnessPaths.wdaSourceURL is baked into Info.plist via
+        // INFOPLIST_KEY_HarnessRepoRoot=$(SRCROOT). For the (rare) case where
+        // it's not set — running a binary built outside xcodegen — fall back
+        // to a path relative to the launched bundle, which is enough for
+        // dev-mode runs from Xcode where the .app sits inside DerivedData.
+        let wdaSource = HarnessPaths.wdaSourceURL
+            ?? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("vendor/WebDriverAgent")
+        self.wdaBuilder = WDABuilder(processRunner: runner, toolLocator: toolLocator, sourceURL: wdaSource)
+        self.wdaRunner = WDARunner(processRunner: runner, toolLocator: toolLocator)
+        self.wdaClient = WDAClient()
+
+        self.simulatorDriver = SimulatorDriver(
+            processRunner: runner,
+            toolLocator: toolLocator,
+            wdaBuilder: wdaBuilder,
+            wdaRunner: wdaRunner,
+            wdaClient: wdaClient
+        )
         self.claudeClient = ClaudeClient(keychain: keychain)
         self.promptLibrary = PromptLibrary()
 

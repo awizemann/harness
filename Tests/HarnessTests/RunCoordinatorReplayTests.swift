@@ -9,6 +9,7 @@
 
 import Testing
 import Foundation
+import AppKit
 @testable import Harness
 
 @Suite("RunCoordinator end-to-end replay")
@@ -137,8 +138,8 @@ struct RunCoordinatorReplayTests {
         #expect(frictions.first?.kind == .agentBlocked)
     }
 
-    @Test("Coordinator cleans up orphan idb_companion BEFORE boot")
-    func cleanupBeforeBoot() async throws {
+    @Test("Lifecycle: cleanupWDA → boot → install → launch → startInputSession → … → endInputSession")
+    func wdaSessionLifecycle() async throws {
         // Single screenshot is fine — we're not exercising the agent loop here.
         let png = FakeSimulatorDriver.solidColorPNG(red: 50, green: 50, blue: 50)
         let driver = FakeSimulatorDriver(pngs: [png])
@@ -157,19 +158,47 @@ struct RunCoordinatorReplayTests {
 
         for try await _ in coordinator.run(request) { }
 
-        let cleanupCalls = await driver.cleanupCompanionCalls
+        let cleanupCalls = await driver.cleanupWDACalls
         let lifecycle = await driver.lifecycleEvents
         #expect(cleanupCalls == [request.simulator.udid],
-                "Coordinator must call cleanupCompanion exactly once with the run's UDID. Got: \(cleanupCalls)")
-        #expect(lifecycle.first == "cleanup",
-                "Cleanup must come before any other lifecycle call. Order was: \(lifecycle)")
-        #expect(lifecycle.contains("boot"),
-                "Boot must still be called.")
-        if let cleanupIdx = lifecycle.firstIndex(of: "cleanup"),
-           let bootIdx = lifecycle.firstIndex(of: "boot") {
-            #expect(cleanupIdx < bootIdx,
-                    "cleanup must precede boot in the lifecycle order. Got: \(lifecycle)")
+                "Coordinator must call cleanupWDA exactly once with the run's UDID. Got: \(cleanupCalls)")
+        let expected = ["cleanup", "boot", "install", "launch", "startInputSession", "endInputSession"]
+        #expect(lifecycle == expected,
+                "Lifecycle order must be \(expected). Got: \(lifecycle)")
+
+        let starts = await driver.startInputSessionCalls
+        let ends = await driver.endInputSessionCalls
+        #expect(starts == 1)
+        #expect(ends == 1)
+    }
+
+    @Test("endInputSession runs even when the loop throws")
+    func endInputSessionRunsOnThrow() async throws {
+        // Force the screenshot path to throw by giving the fake zero PNGs;
+        // the coordinator's `try await driver.screenshot(...)` will fail.
+        let driver = ThrowingScreenshotDriver()
+        let builder = FakeXcodeBuilder()
+        let llm = MockLLMClient(mode: .sequence([
+            .makingMarkDone(verdict: .success, summary: "x", frictionCount: 0)
+        ]))
+        let agent = AgentLoop(llm: llm, promptLibrary: StubPromptLibrary())
+        let history = try RunHistoryStore.inMemory()
+        let coordinator = RunCoordinator(
+            builder: builder, driver: driver, agent: agent, llm: llm, history: history
+        )
+
+        let request = Self.makeRequest(mode: .autonomous)
+        defer { try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: request.id)) }
+
+        var threw = false
+        do {
+            for try await _ in coordinator.run(request) { }
+        } catch {
+            threw = true
         }
+        #expect(threw == true, "screenshot failure should propagate")
+        let ended = await driver.endInputSessionCalls
+        #expect(ended == 1, "endInputSession must run on the failure path")
     }
 
     @Test("Step budget short-circuits with blocked verdict")
@@ -212,6 +241,29 @@ struct RunCoordinatorReplayTests {
         }
         #expect(outcome?.verdict == .blocked)
         #expect(outcome?.summary.contains("step budget") == true)
+    }
+
+    // MARK: Test-only fake — succeeds at lifecycle methods but fails screenshots.
+
+    private actor ThrowingScreenshotDriver: SimulatorDriving {
+        private(set) var endInputSessionCalls = 0
+        struct Boom: Error {}
+        func listDevices() async throws -> [SimulatorRef] { [] }
+        func boot(_ ref: SimulatorRef) async throws {}
+        func install(_ appBundle: URL, on ref: SimulatorRef) async throws {}
+        func launch(bundleID: String, on ref: SimulatorRef) async throws {}
+        func terminate(bundleID: String, on ref: SimulatorRef) async throws {}
+        func erase(_ ref: SimulatorRef) async throws {}
+        func screenshot(_ ref: SimulatorRef, into url: URL) async throws -> URL { throw Boom() }
+        func screenshotImage(_ ref: SimulatorRef) async throws -> NSImage { throw Boom() }
+        func tap(at point: CGPoint, on ref: SimulatorRef) async throws {}
+        func doubleTap(at point: CGPoint, on ref: SimulatorRef) async throws {}
+        func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws {}
+        func type(_ text: String, on ref: SimulatorRef) async throws {}
+        func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws {}
+        func startInputSession(_ ref: SimulatorRef) async throws {}
+        func endInputSession() async { endInputSessionCalls += 1 }
+        func cleanupWDA(udid: String) async {}
     }
 
     // MARK: Helper

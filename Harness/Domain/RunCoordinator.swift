@@ -108,19 +108,46 @@ actor RunCoordinator {
         )
         continuation.yield(.buildCompleted(appBundle: build.appBundle, bundleID: build.bundleIdentifier))
 
-        // Boot + install + launch.
-        // Kill any stale idb_companion attached to this UDID FIRST. A prior
-        // run (or a Mac restart that left the simulator shut down) can leave
-        // an orphan companion bound to the same gRPC socket; subsequent idb
-        // commands appear to succeed but silently route into the void —
-        // the agent fires taps, the simulator never sees them, and every run
-        // looks "blocked" with the same "I tapped and nothing happened"
-        // friction over and over.
-        await driver.cleanupCompanion(udid: request.simulator.udid)
+        // Lifecycle: cleanupWDA → boot → install → launch → startInputSession.
+        //
+        // WDA runs as `xcodebuild test-without-building` against the simulator;
+        // a prior crash can leave an orphan xcodebuild process bound to the
+        // same simulator. cleanupWDA pkills it before we boot so a fresh
+        // session opens cleanly. (We migrated away from idb in Phase 5
+        // because idb's HID injection no longer reaches the responder chain
+        // on iOS 26+. WDA goes through XCUICoordinate.tap, which does.)
+        await driver.cleanupWDA(udid: request.simulator.udid)
         try await driver.boot(request.simulator)
         try await driver.install(build.appBundle, on: request.simulator)
         try await driver.launch(bundleID: build.bundleIdentifier, on: request.simulator)
+        try await driver.startInputSession(request.simulator)
         continuation.yield(.simulatorReady(request.simulator))
+
+        // From here down, the WDA input session is live. Whatever happens —
+        // success, failure, cancellation — `endInputSession` must run before
+        // we return so the xcodebuild test runner doesn't outlive the run.
+        do {
+            try await runLoop(
+                request: request,
+                approvals: approvals,
+                continuation: continuation,
+                logger: logger
+            )
+        } catch {
+            await driver.endInputSession()
+            throw error
+        }
+        await driver.endInputSession()
+    }
+
+    // MARK: - Run loop
+
+    private func runLoop(
+        request: GoalRequest,
+        approvals: AsyncStream<UserApproval>?,
+        continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation,
+        logger: RunLogger
+    ) async throws {
 
         // Approval-stream iterator (step mode only).
         var approvalIterator = approvals?.makeAsyncIterator()

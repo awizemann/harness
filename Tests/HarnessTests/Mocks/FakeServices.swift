@@ -62,8 +62,11 @@ actor FakeSimulatorDriver: SimulatorDriving {
     private(set) var installCalls = 0
     private(set) var launchCalls = 0
     private(set) var screenshotCalls = 0
-    private(set) var cleanupCompanionCalls: [String] = []
-    /// In-test ordering log — useful when verifying cleanup happens BEFORE boot.
+    private(set) var cleanupWDACalls: [String] = []
+    private(set) var startInputSessionCalls = 0
+    private(set) var endInputSessionCalls = 0
+    /// In-test ordering log — useful when verifying lifecycle order
+    /// (cleanupWDA → boot → install → launch → startInputSession → … → endInputSession).
     private(set) var lifecycleEvents: [String] = []
 
     init(pngs: [Data]) {
@@ -104,9 +107,19 @@ actor FakeSimulatorDriver: SimulatorDriving {
     }
     func terminate(bundleID: String, on ref: SimulatorRef) async throws { }
     func erase(_ ref: SimulatorRef) async throws { }
-    func cleanupCompanion(udid: String) async {
-        cleanupCompanionCalls.append(udid)
+    func cleanupWDA(udid: String) async {
+        cleanupWDACalls.append(udid)
         lifecycleEvents.append("cleanup")
+    }
+
+    func startInputSession(_ ref: SimulatorRef) async throws {
+        startInputSessionCalls += 1
+        lifecycleEvents.append("startInputSession")
+    }
+
+    func endInputSession() async {
+        endInputSessionCalls += 1
+        lifecycleEvents.append("endInputSession")
     }
 
     func screenshot(_ ref: SimulatorRef, into url: URL) async throws -> URL {
@@ -129,6 +142,4 @@ actor FakeSimulatorDriver: SimulatorDriving {
     func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws { swipes.append((from, to)) }
     func type(_ text: String, on ref: SimulatorRef) async throws { typed.append(text) }
     func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws { }
-
-    func probeIDB(_ ref: SimulatorRef, timeout: Duration) async -> Bool { true }
 }

@@ -2,15 +2,22 @@
 //  SimulatorDriver.swift
 //  Harness
 //
-//  Wraps `xcrun simctl` (lifecycle) and `idb` (input). The standard at
-//  `standards/12-simulator-control.md` is the invariants reference. The
-//  per-method command mapping lives in `wiki/Simulator-Driver.md`.
+//  Wraps `xcrun simctl` (lifecycle) and a WebDriverAgent test runner (input).
+//  The standard at `standards/12-simulator-control.md` is the invariants
+//  reference. The per-method command mapping lives in
+//  `wiki/Simulator-Driver.md`.
 //
 //  Coordinate-space rule (the #1 expected failure mode): screenshots from
-//  `simctl io booted screenshot` are at PIXEL resolution. `idb tap` takes
-//  POINTS. `SimulatorDriver` divides any pixel-derived coordinate by
-//  `SimulatorRef.scaleFactor` exactly once at the boundary into idb. Every
-//  other call site uses points. The conversion is unit-tested.
+//  `simctl io booted screenshot` are at PIXEL resolution. WDA's coordinate
+//  endpoints take POINTS. `SimulatorDriver` divides any pixel-derived
+//  coordinate by `SimulatorRef.scaleFactor` exactly once at the boundary
+//  into `WDAClient`. Every other call site uses points. The conversion is
+//  unit-tested.
+//
+//  WDA replaced idb in Phase 5 because idb's HID injection on iOS 26+
+//  rendered the green tap dot but never reached the responder chain. WDA
+//  goes through `XCUICoordinate.tap` etc., so taps fire UIKit events the
+//  same way a real touch would.
 //
 
 import Foundation
@@ -20,7 +27,7 @@ import os
 // MARK: - Errors
 
 enum SimulatorError: Error, Sendable, LocalizedError {
-    case idbUnavailable
+    case wdaUnavailable
     case xcrunUnavailable
     case deviceNotFound(udid: String)
     case bootFailed(detail: String)
@@ -28,12 +35,12 @@ enum SimulatorError: Error, Sendable, LocalizedError {
     case launchFailed(bundleID: String, detail: String)
     case screenshotFailed(detail: String)
     case actionFailed(action: String, detail: String)
-    case daemonUnreachable(detail: String)
+    case inputSessionNotStarted
 
     var errorDescription: String? {
         switch self {
-        case .idbUnavailable:
-            return "idb is not installed. Run: brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb"
+        case .wdaUnavailable:
+            return "WebDriverAgent isn't built yet for this iOS version. Open Settings → 'Build WebDriverAgent' to fix."
         case .xcrunUnavailable:
             return "xcrun is not available. Install Xcode and run `xcode-select --install`."
         case .deviceNotFound(let udid):
@@ -48,8 +55,8 @@ enum SimulatorError: Error, Sendable, LocalizedError {
             return "Screenshot capture failed. \(detail)"
         case .actionFailed(let action, let detail):
             return "Simulator action '\(action)' failed. \(detail)"
-        case .daemonUnreachable(let detail):
-            return "idb_companion is unreachable. \(detail)"
+        case .inputSessionNotStarted:
+            return "Input session was not started. Call `startInputSession(_:)` after `launch(_:)`."
         }
     }
 }
@@ -73,28 +80,48 @@ protocol SimulatorDriving: Sendable {
     func type(_ text: String, on ref: SimulatorRef) async throws
     func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws
 
-    /// Daemon-health probe. Returns true if `idb_companion` answers within `timeout`.
-    func probeIDB(_ ref: SimulatorRef, timeout: Duration) async -> Bool
+    /// Build (if needed) and launch the WDA test runner, then open a session
+    /// so the input methods can target it. Call after `launch(_:)`.
+    func startInputSession(_ ref: SimulatorRef) async throws
 
-    /// Kill any `idb_companion` process attached to the given UDID. Called at
-    /// run start so a stale companion from a prior run (perhaps one whose
-    /// simulator was shut down or whose Mac was rebooted) doesn't intercept
-    /// taps and silently route them into the void.
-    func cleanupCompanion(udid: String) async
+    /// Tear down the active WDA session and runner. Idempotent — safe to call
+    /// even if `startInputSession` was never called or already ended.
+    func endInputSession() async
+
+    /// Kill any orphan xcodebuild test runner attached to this UDID. Called
+    /// at run start so a stale runner from a prior crash doesn't intercept
+    /// our session.
+    func cleanupWDA(udid: String) async
 }
 
 // MARK: - Implementation
 
-struct SimulatorDriver: SimulatorDriving {
+actor SimulatorDriver: SimulatorDriving {
 
     private static let logger = Logger(subsystem: "com.harness.app", category: "SimulatorDriver")
 
     private let processRunner: any ProcessRunning
     private let toolLocator: any ToolLocating
+    private let wdaBuilder: any WDABuilding
+    private let wdaRunner: any WDARunning
+    private let wdaClient: any WDAClienting
 
-    init(processRunner: any ProcessRunning, toolLocator: any ToolLocating) {
+    /// Active runner handle. Non-nil between `startInputSession` and
+    /// `endInputSession`. Holds the xcodebuild test process Task.
+    private var activeRunner: WDARunnerHandle?
+
+    init(
+        processRunner: any ProcessRunning,
+        toolLocator: any ToolLocating,
+        wdaBuilder: any WDABuilding,
+        wdaRunner: any WDARunning,
+        wdaClient: any WDAClienting
+    ) {
         self.processRunner = processRunner
         self.toolLocator = toolLocator
+        self.wdaBuilder = wdaBuilder
+        self.wdaRunner = wdaRunner
+        self.wdaClient = wdaClient
     }
 
     // MARK: Coordinate scaling — the unit-tested boundary
@@ -107,9 +134,9 @@ struct SimulatorDriver: SimulatorDriving {
         return CGPoint(x: pixel.x / scaleFactor, y: pixel.y / scaleFactor)
     }
 
-    // MARK: Lifecycle
+    // MARK: Lifecycle (simctl)
 
-    func listDevices() async throws -> [SimulatorRef] {
+    nonisolated func listDevices() async throws -> [SimulatorRef] {
         try Task.checkCancellation()
         let xcrun = try await requireXcrun()
         let result = try await processRunner.run(ProcessSpec(
@@ -120,7 +147,7 @@ struct SimulatorDriver: SimulatorDriving {
         return try Self.parseSimctlList(result.stdout)
     }
 
-    func boot(_ ref: SimulatorRef) async throws {
+    nonisolated func boot(_ ref: SimulatorRef) async throws {
         let xcrun = try await requireXcrun()
         do {
             _ = try await processRunner.run(ProcessSpec(
@@ -139,7 +166,7 @@ struct SimulatorDriver: SimulatorDriving {
         }
     }
 
-    func install(_ appBundle: URL, on ref: SimulatorRef) async throws {
+    nonisolated func install(_ appBundle: URL, on ref: SimulatorRef) async throws {
         let xcrun = try await requireXcrun()
         do {
             _ = try await processRunner.run(ProcessSpec(
@@ -152,7 +179,7 @@ struct SimulatorDriver: SimulatorDriving {
         }
     }
 
-    func launch(bundleID: String, on ref: SimulatorRef) async throws {
+    nonisolated func launch(bundleID: String, on ref: SimulatorRef) async throws {
         let xcrun = try await requireXcrun()
         do {
             _ = try await processRunner.run(ProcessSpec(
@@ -165,7 +192,7 @@ struct SimulatorDriver: SimulatorDriving {
         }
     }
 
-    func terminate(bundleID: String, on ref: SimulatorRef) async throws {
+    nonisolated func terminate(bundleID: String, on ref: SimulatorRef) async throws {
         let xcrun = try await requireXcrun()
         // simctl terminate returns non-zero if the app isn't running. Best-effort.
         _ = try? await processRunner.run(ProcessSpec(
@@ -175,7 +202,7 @@ struct SimulatorDriver: SimulatorDriving {
         ))
     }
 
-    func erase(_ ref: SimulatorRef) async throws {
+    nonisolated func erase(_ ref: SimulatorRef) async throws {
         let xcrun = try await requireXcrun()
         do {
             _ = try await processRunner.run(ProcessSpec(
@@ -190,7 +217,7 @@ struct SimulatorDriver: SimulatorDriving {
 
     // MARK: Screenshot
 
-    func screenshot(_ ref: SimulatorRef, into url: URL) async throws -> URL {
+    nonisolated func screenshot(_ ref: SimulatorRef, into url: URL) async throws -> URL {
         let xcrun = try await requireXcrun()
         do {
             _ = try await processRunner.run(ProcessSpec(
@@ -204,9 +231,7 @@ struct SimulatorDriver: SimulatorDriving {
         return url
     }
 
-    func screenshotImage(_ ref: SimulatorRef) async throws -> NSImage {
-        // Write to a temp file under app support; caller can choose their own
-        // location via `screenshot(_:into:)` if they want durability.
+    nonisolated func screenshotImage(_ ref: SimulatorRef) async throws -> NSImage {
         try HarnessPaths.ensureDirectory(HarnessPaths.appSupport)
         let tmp = HarnessPaths.appSupport.appendingPathComponent("tmp-screenshot-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: tmp) }
@@ -219,158 +244,93 @@ struct SimulatorDriver: SimulatorDriving {
 
     // MARK: Input — coords are POINTS at this boundary
 
-    func tap(at point: CGPoint, on ref: SimulatorRef) async throws {
-        let idb = try await requireIDB()
+    nonisolated func tap(at point: CGPoint, on ref: SimulatorRef) async throws {
         do {
-            _ = try await processRunner.run(ProcessSpec(
-                executable: idb,
-                arguments: ["ui", "tap", "\(Int(point.x))", "\(Int(point.y))", "--udid", ref.udid],
-                timeout: .seconds(10)
-            ))
-        } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
-            throw SimulatorError.actionFailed(action: "tap", detail: so + se)
-        }
-    }
-
-    func doubleTap(at point: CGPoint, on ref: SimulatorRef) async throws {
-        try await tap(at: point, on: ref)
-        try? await Task.sleep(for: .milliseconds(80))
-        try await tap(at: point, on: ref)
-    }
-
-    func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws {
-        let idb = try await requireIDB()
-        let durationSeconds = Self.seconds(of: duration)
-        do {
-            _ = try await processRunner.run(ProcessSpec(
-                executable: idb,
-                arguments: [
-                    "ui", "swipe",
-                    "\(Int(from.x))", "\(Int(from.y))",
-                    "\(Int(to.x))", "\(Int(to.y))",
-                    "--udid", ref.udid,
-                    "--duration", String(format: "%.2f", durationSeconds)
-                ],
-                timeout: .seconds(15)
-            ))
-        } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
-            throw SimulatorError.actionFailed(action: "swipe", detail: so + se)
-        }
-    }
-
-    func type(_ text: String, on ref: SimulatorRef) async throws {
-        let idb = try await requireIDB()
-        do {
-            _ = try await processRunner.run(ProcessSpec(
-                executable: idb,
-                arguments: ["ui", "text", text, "--udid", ref.udid],
-                timeout: .seconds(15)
-            ))
-        } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
-            throw SimulatorError.actionFailed(action: "type", detail: so + se)
-        }
-    }
-
-    func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws {
-        let idb = try await requireIDB()
-        do {
-            _ = try await processRunner.run(ProcessSpec(
-                executable: idb,
-                arguments: ["ui", "button", button.rawValue, "--udid", ref.udid],
-                timeout: .seconds(10)
-            ))
-        } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
-            throw SimulatorError.actionFailed(action: "pressButton", detail: so + se)
-        }
-    }
-
-    // MARK: Companion cleanup
-
-    /// pkill any `idb_companion` matching the supplied UDID AND remove the
-    /// stale gRPC socket file at `/tmp/idb/<udid>_companion.sock`. Without
-    /// the socket cleanup, killing the process alone leaves the socket file
-    /// behind; the next idb invocation finds the dead socket, tries to
-    /// connect to it (`[Errno 61] Connection refused`), and never falls
-    /// through to spawning a fresh companion — every tap fails until the
-    /// file is gone.
-    ///
-    /// Tolerates "no processes matched" silently (the success case on a
-    /// fresh machine).
-    func cleanupCompanion(udid: String) async {
-        // 1. Kill any companion process attached to this UDID.
-        let pkill = URL(fileURLWithPath: "/usr/bin/pkill")
-        // -f matches against the full command line; idb_companion is started
-        // with `--udid <UDID>` so this pattern is unambiguous.
-        let pattern = "idb_companion.*\(udid)"
-        do {
-            _ = try await processRunner.run(ProcessSpec(
-                executable: pkill,
-                arguments: ["-f", pattern],
-                timeout: .seconds(5)
-            ))
-            // Give the daemon a moment to release its grpc socket.
-            try? await Task.sleep(for: .milliseconds(250))
-            Self.logger.info("Killed orphan idb_companion for \(udid, privacy: .public)")
-        } catch ProcessFailure.nonZeroExit(let code, _, _, _) where code == 1 {
-            // pkill exit-1 = no processes matched. Normal case; fine.
+            try await wdaClient.tap(at: point)
         } catch {
-            Self.logger.warning("cleanupCompanion (pkill) failed: \(error.localizedDescription, privacy: .public)")
-        }
-
-        // 2. Remove the stale unix-domain socket file. idb tries to connect
-        // before considering a fresh spawn; an orphaned socket file makes
-        // every tap fail with ECONNREFUSED.
-        let socketPath = "/tmp/idb/\(udid)_companion.sock"
-        if FileManager.default.fileExists(atPath: socketPath) {
-            do {
-                try FileManager.default.removeItem(atPath: socketPath)
-                Self.logger.info("Removed stale companion socket \(socketPath, privacy: .public)")
-            } catch {
-                Self.logger.warning("cleanupCompanion (socket rm) failed at \(socketPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            }
+            throw SimulatorError.actionFailed(action: "tap", detail: error.localizedDescription)
         }
     }
 
-    // MARK: Health probe
-
-    func probeIDB(_ ref: SimulatorRef, timeout: Duration) async -> Bool {
-        guard let idb = try? await requireIDB() else { return false }
+    nonisolated func doubleTap(at point: CGPoint, on ref: SimulatorRef) async throws {
         do {
-            _ = try await processRunner.run(ProcessSpec(
-                executable: idb,
-                arguments: ["list-targets", "--udid", ref.udid],
-                timeout: timeout
-            ))
-            return true
+            try await wdaClient.doubleTap(at: point)
         } catch {
-            return false
+            throw SimulatorError.actionFailed(action: "doubleTap", detail: error.localizedDescription)
         }
+    }
+
+    nonisolated func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws {
+        do {
+            try await wdaClient.swipe(from: from, to: to, duration: duration)
+        } catch {
+            throw SimulatorError.actionFailed(action: "swipe", detail: error.localizedDescription)
+        }
+    }
+
+    nonisolated func type(_ text: String, on ref: SimulatorRef) async throws {
+        do {
+            try await wdaClient.type(text)
+        } catch {
+            throw SimulatorError.actionFailed(action: "type", detail: error.localizedDescription)
+        }
+    }
+
+    nonisolated func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws {
+        do {
+            try await wdaClient.pressButton(button)
+        } catch {
+            throw SimulatorError.actionFailed(action: "pressButton", detail: error.localizedDescription)
+        }
+    }
+
+    // MARK: Input session
+
+    func startInputSession(_ ref: SimulatorRef) async throws {
+        try Task.checkCancellation()
+        // Build (or pull from cache) the WDA xctestrun for this iOS version.
+        let buildResult = try await wdaBuilder.ensureBuilt(forSimulator: ref)
+
+        // Spawn the xcodebuild test runner. It comes up on port 8100 by default.
+        let handle = try await wdaRunner.start(
+            udid: ref.udid,
+            xctestrun: buildResult.xctestrun,
+            port: WDARunner.defaultPort
+        )
+
+        // Wait for /status before opening a session.
+        do {
+            try await wdaClient.waitForReady(timeout: .seconds(45))
+            _ = try await wdaClient.createSession()
+        } catch {
+            // Don't leak the xcodebuild runner on session-open failure.
+            await wdaRunner.stop(handle)
+            throw error
+        }
+        activeRunner = handle
+        Self.logger.info("WDA input session started for \(ref.udid, privacy: .public)")
+    }
+
+    func endInputSession() async {
+        await wdaClient.endSession()
+        if let handle = activeRunner {
+            await wdaRunner.stop(handle)
+        }
+        activeRunner = nil
+    }
+
+    nonisolated func cleanupWDA(udid: String) async {
+        await wdaRunner.cleanupOrphans(udid: udid)
     }
 
     // MARK: Tool resolution
 
-    private func requireXcrun() async throws -> URL {
+    nonisolated private func requireXcrun() async throws -> URL {
         let tools = try await toolLocator.locateAll()
         guard let xcrun = tools.xcrun else {
             throw SimulatorError.xcrunUnavailable
         }
         return xcrun
-    }
-
-    private func requireIDB() async throws -> URL {
-        let tools = try await toolLocator.locateAll()
-        guard let idb = tools.idb else {
-            throw SimulatorError.idbUnavailable
-        }
-        return idb
-    }
-
-    // MARK: Duration helpers
-
-    private static func seconds(of duration: Duration) -> Double {
-        // Duration → Double seconds. `Duration` is `(seconds, attoseconds)`.
-        let comps = duration.components
-        return Double(comps.seconds) + Double(comps.attoseconds) / 1_000_000_000_000_000_000.0
     }
 }
 
