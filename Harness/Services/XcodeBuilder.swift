@@ -152,14 +152,24 @@ struct XcodeBuilder: XcodeBuilding {
         defer { try? logHandle.close() }
 
         let projectFlag = projectOrWorkspaceFlag(for: project)
+        // Ad-hoc sign (CODE_SIGN_IDENTITY=-) instead of disabling signing.
+        // Simulator apps that use entitlements (keychain-access-groups,
+        // associated-domains, app-groups, etc.) silently misbehave when the
+        // entitlements file isn't applied — the most common symptom is
+        // `errSecMissingEntitlement` (-34018) from any Keychain call. Ad-hoc
+        // signing on the simulator applies the entitlements file without
+        // needing a real Apple Developer team, so the app behaves the same
+        // way it does when launched from Xcode.
         var arguments: [String] = projectFlag + [
             "-scheme", scheme,
             "-destination", "generic/platform=iOS Simulator",
             "-derivedDataPath", derivedData.path,
             "-configuration", "Debug",
-            "CODE_SIGNING_ALLOWED=NO",
-            "CODE_SIGN_IDENTITY=",
-            "CODE_SIGNING_REQUIRED=NO",
+            "CODE_SIGN_IDENTITY=-",
+            "CODE_SIGNING_REQUIRED=YES",
+            "CODE_SIGNING_ALLOWED=YES",
+            "CODE_SIGN_STYLE=Manual",
+            "DEVELOPMENT_TEAM=",
             "ONLY_ACTIVE_ARCH=YES",
             "build"
         ]

@@ -143,9 +143,13 @@ actor WDABuilder: WDABuilding {
             "-destination", "id=\(ref.udid)",
             "-derivedDataPath", derivedData.path,
             "-configuration", "Debug",
-            "CODE_SIGNING_ALLOWED=NO",
-            "CODE_SIGN_IDENTITY=",
-            "CODE_SIGNING_REQUIRED=NO"
+            // Ad-hoc sign (matches XcodeBuilder; lets the test bundle load
+            // its entitlements without a real Apple Developer team).
+            "CODE_SIGN_IDENTITY=-",
+            "CODE_SIGNING_REQUIRED=YES",
+            "CODE_SIGNING_ALLOWED=YES",
+            "CODE_SIGN_STYLE=Manual",
+            "DEVELOPMENT_TEAM="
         ]
 
         let spec = ProcessSpec(
