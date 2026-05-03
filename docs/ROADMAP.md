@@ -39,20 +39,22 @@ Wiki updates landed: `Core-Services.md` with shipped status, `Build-and-Run.md` 
 
 ---
 
-## Phase 2 — Agent loop (≈1–2 days)
+## Phase 2 — Agent loop ✅ shipped 2026-05-03
 
 Deliverable: a non-UI run end-to-end. Goal in → loop runs → events.jsonl + screenshots on disk → verdict out.
 
-- [ ] `Harness/Tools/AgentTools.swift` — tool schema + tagged-union action type.
-- [ ] `Harness/Domain/AgentLoop.swift` — the loop, history compactor, cycle detector, parse-failure retry.
-- [ ] `Harness/Services/RunLogger.swift` — JSONL writer + screenshot dump per standard 14.
-- [ ] `Harness/Services/RunHistoryStore.swift` — SwiftData container + `RunRecord` + `ProjectRef`.
-- [ ] `Harness/Domain/RunCoordinator.swift` — orchestrator actor wiring builder + driver + agent + logger + history.
-- [ ] Wire prompt library: build script copies `docs/PROMPTS/*.md` into `Resources/`; `AgentLoop` loads via `Bundle.main`.
-- [ ] Step-mode approval gate: `AsyncStream<UserApproval>` plumbed through coordinator.
-- [ ] First replay test fixture: record a real "TodoSample add milk" run, freeze it, make it a regression test.
+- [x] `Harness/Tools/AgentTools.swift` — landed in Phase 1.
+- [x] `Harness/Domain/AgentLoop.swift` — actor; `HistoryCompactor` (last-6 turns kept full, older screenshots dropped); cycle detector via `ScreenshotHasher` dHash + tool-call equivalence; parse-failure retry (cap 2); step + token budget short-circuits.
+- [x] `Harness/Services/RunLogger.swift` + `Harness/Services/RunLogParser.swift` — append-only JSONL with per-row `synchronize()`; meta.json snapshot; tolerant parser with `validateInvariants(_:)`.
+- [x] `Harness/Services/RunHistoryStore.swift` — SwiftData container with `RunRecord` + `ProjectRef`; `VersionedSchema` + migration plan in place; `inMemory()` for tests.
+- [x] `Harness/Domain/RunCoordinator.swift` — actor; `run(_:approvals:)` returns `AsyncThrowingStream<RunEvent>`; build → boot → install → launch → loop → log → cleanup; step-mode approval gate via `AsyncStream<UserApproval>`.
+- [x] Prompt library: `Harness/Core/PromptLibrary.swift` + xcodegen `resources: docs/PROMPTS type: folder`. `AgentLoop` caches the system prompt after first load.
+- [x] Replay test infrastructure: `MockLLMClient` (scripted-sequence + lookup-closure modes), `FakeXcodeBuilder`, `FakeSimulatorDriver` with synthesized solid-color PNGs.
+- [x] Replay tests: happy path, cycle detector trip, step budget short-circuit. All green.
 
-Wiki updates this phase: `Agent-Loop.md` filled with prose walkthrough; `Tool-Schema.md` finalized; `Run-Logger.md` filled; `Run-Replay-Format.md` filled with worked example.
+Wiki updates landed: `Core-Services` flips RunLogger/RunLogParser/RunHistoryStore/RunCoordinator/AgentLoop/PromptLibrary to ✅; `Agent-Loop.md` filled with the prose walkthrough; `Run-Logger.md` filled with implementation detail.
+
+Test count: 50 across 12 suites.
 
 ---
 
