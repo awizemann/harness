@@ -40,6 +40,31 @@ enum HarnessPaths {
     /// `<App Support>/Harness/tools.json`
     static var toolsCacheFile: URL { appSupport.appendingPathComponent("tools.json") }
 
+    /// `<App Support>/Harness/wda-build/`. Houses the per-iOS-version WebDriverAgent
+    /// build cache. One subdirectory per iOS major.minor — e.g. `iOS-26.2/`.
+    static var wdaRoot: URL { appSupport.appendingPathComponent("wda-build", isDirectory: true) }
+
+    /// `<App Support>/Harness/wda-build/iOS-<version>/`. Pass the major.minor
+    /// extracted from `SimulatorRef.runtime` (e.g. `"18.4"`).
+    static func wdaBuildDir(forIOSVersion version: String) -> URL {
+        wdaRoot.appendingPathComponent("iOS-\(version)", isDirectory: true)
+    }
+
+    /// Repo root, baked into Info.plist at build time via
+    /// `INFOPLIST_KEY_HarnessRepoRoot=$(SRCROOT)` (see `project.yml`). Nil only
+    /// if someone is running a binary built without that setting — shouldn't
+    /// happen for any `xcodegen generate`'d project.
+    static var repoRoot: URL? {
+        guard let path = Bundle.main.infoDictionary?["HarnessRepoRoot"] as? String,
+              !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// `<repo>/vendor/WebDriverAgent/`. Resolved from `repoRoot`.
+    static var wdaSourceURL: URL? {
+        repoRoot?.appendingPathComponent("vendor/WebDriverAgent", isDirectory: true)
+    }
+
     // MARK: Per-run paths
 
     /// `<App Support>/Harness/runs/<run-id>/`

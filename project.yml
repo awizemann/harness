@@ -47,6 +47,11 @@ targets:
         INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
         INFOPLIST_KEY_CFBundleName: Harness
         INFOPLIST_KEY_CFBundleDisplayName: Harness
+        # Bake the repo root into Info.plist so the running app can find
+        # `vendor/WebDriverAgent` for first-run WDA builds. Read at runtime via
+        # `HarnessPaths.repoRoot`. Regenerated per machine because
+        # Harness.xcodeproj is .gitignored.
+        INFOPLIST_KEY_HarnessRepoRoot: "$(SRCROOT)"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
   HarnessTests:
