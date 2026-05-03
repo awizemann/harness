@@ -41,6 +41,12 @@ final class AppState {
     /// Default mode for new runs.
     var defaultMode: RunMode = .stepByStep
 
+    /// Keep `Simulator.app`'s window visible while a run is in progress.
+    /// Defaults to false (Harness's mirror is the source of truth). Toggle
+    /// this if you're debugging WDA's behavior and need to peek at the live
+    /// simulator window directly.
+    var keepSimulatorVisible: Bool = false
+
     /// Discovered iPhone simulators. Refreshed via `refreshSimulators()`.
     var simulators: [SimulatorRef] = []
 

@@ -37,6 +37,8 @@ actor RunCoordinator {
     private let agent: any AgentLooping
     private let llm: any LLMClient
     private let history: any RunHistoryStoring
+    private let windowController: any SimulatorWindowControlling
+    private let hideSimulator: Bool
 
     // MARK: Init
 
@@ -45,13 +47,17 @@ actor RunCoordinator {
         driver: any SimulatorDriving,
         agent: any AgentLooping,
         llm: any LLMClient,
-        history: any RunHistoryStoring
+        history: any RunHistoryStoring,
+        windowController: any SimulatorWindowControlling = NoopWindowController(),
+        hideSimulator: Bool = false
     ) {
         self.builder = builder
         self.driver = driver
         self.agent = agent
         self.llm = llm
         self.history = history
+        self.windowController = windowController
+        self.hideSimulator = hideSimulator
     }
 
     // MARK: Run
@@ -121,6 +127,9 @@ actor RunCoordinator {
         try await driver.install(build.appBundle, on: request.simulator)
         try await driver.launch(bundleID: build.bundleIdentifier, on: request.simulator)
         try await driver.startInputSession(request.simulator)
+        if hideSimulator {
+            await windowController.hide()
+        }
         continuation.yield(.simulatorReady(request.simulator))
 
         // From here down, the WDA input session is live. Whatever happens —
@@ -135,9 +144,11 @@ actor RunCoordinator {
             )
         } catch {
             await driver.endInputSession()
+            if hideSimulator { await windowController.unhide() }
             throw error
         }
         await driver.endInputSession()
+        if hideSimulator { await windowController.unhide() }
     }
 
     // MARK: - Run loop

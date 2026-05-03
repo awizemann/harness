@@ -22,6 +22,7 @@ final class AppContainer {
     let wdaRunner: any WDARunning
     let wdaClient: any WDAClienting
     let simulatorDriver: any SimulatorDriving
+    let simulatorWindowController: any SimulatorWindowControlling
     let claudeClient: any LLMClient
     let runHistory: any RunHistoryStoring
     let promptLibrary: any PromptLoading
@@ -55,6 +56,7 @@ final class AppContainer {
             wdaRunner: wdaRunner,
             wdaClient: wdaClient
         )
+        self.simulatorWindowController = SimulatorWindowController()
         self.claudeClient = ClaudeClient(keychain: keychain)
         self.promptLibrary = PromptLibrary()
 
@@ -87,7 +89,9 @@ final class AppContainer {
             driver: simulatorDriver,
             agent: agent,
             llm: claudeClient,
-            history: runHistory
+            history: runHistory,
+            windowController: simulatorWindowController,
+            hideSimulator: !appState.keepSimulatorVisible
         )
     }
 

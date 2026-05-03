@@ -63,6 +63,8 @@ struct SettingsView: View {
                     Stepper(value: $state.defaultStepBudget, in: 5...200) {
                         Text("Step budget: \(state.defaultStepBudget)")
                     }
+                    Toggle("Keep iOS Simulator window visible during runs",
+                           isOn: $state.keepSimulatorVisible)
                 }
                 Section("Tooling") {
                     HStack {
