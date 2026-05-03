@@ -1,0 +1,46 @@
+# macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/*/.build/
+Package.resolved
+
+# CocoaPods / Carthage (not used, but defensively ignored)
+Pods/
+Carthage/Build/
+
+# Local Harness data (lives outside repo, but defensively ignored)
+runs/
+*.harness-run
+
+# Editor scratch
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local secrets / scratch
+.env
+.env.local
+*.local.md
+scratch/
+TODO.local.md
