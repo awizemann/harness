@@ -181,7 +181,9 @@ actor RunCoordinator {
             let stepStarted = ContinuousClock().now
 
             // Compress screenshot for the LLM call.
-            let jpegForLLM = Self.downscaleJPEG(screenshotData) ?? screenshotData
+            let jpegForLLM = Self.downscaleJPEG(screenshotData,
+                                                 toPointSize: request.simulator.pointSize)
+                ?? screenshotData
 
             // Decision.
             let decision: AgentDecision
@@ -419,14 +421,27 @@ actor RunCoordinator {
         }
     }
 
-    /// Downscale + JPEG-encode for the LLM call. Returns nil to fall through
-    /// to the original PNG bytes (correct but more expensive).
-    private static func downscaleJPEG(_ data: Data) -> Data? {
+    /// Downscale a retina screenshot to **exactly the device's point dimensions**
+    /// before sending to Claude. Returns nil to fall through to the original
+    /// PNG bytes if AppKit can't decode the input.
+    ///
+    /// **Why exact point dimensions:** the model needs to emit tap coordinates
+    /// in screen-point space (440 × 956 for iPhone 17 Pro Max). If we send a
+    /// differently-sized image (say 1024 wide), the model can't compute the
+    /// scale factor reliably and emits coordinates in image space — taps land
+    /// off-target or outside the screen rect. By making image dimensions ==
+    /// point dimensions, image-space and point-space are identical and the
+    /// model's coordinates flow straight to `idb tap` without conversion.
+    ///
+    /// **Anthropic-side resize:** Claude Vision resizes images to fit within
+    /// 1568px on the long edge before tokenization. Modern iPhone point
+    /// resolutions max out at ~956 on the long edge, so we stay under that
+    /// cap and the image isn't resized again on Anthropic's end. Bonus: ~3×
+    /// cheaper per image vs the prior 1024-wide downsample.
+    static func downscaleJPEG(_ data: Data, toPointSize pointSize: CGSize) -> Data? {
         #if canImport(AppKit)
         guard let image = NSImage(data: data) else { return nil }
-        let targetWidth: CGFloat = 1024
-        let aspect = image.size.height / max(image.size.width, 1)
-        let targetSize = NSSize(width: targetWidth, height: targetWidth * aspect)
+        let targetSize = NSSize(width: pointSize.width, height: pointSize.height)
 
         let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
