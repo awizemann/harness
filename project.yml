@@ -32,9 +32,9 @@ targets:
     sources:
       - path: Harness
       - path: HarnessDesign
-    resources:
       - path: docs/PROMPTS
         type: folder
+        buildPhase: resources
     settings:
       base:
         ENABLE_HARDENED_RUNTIME: YES

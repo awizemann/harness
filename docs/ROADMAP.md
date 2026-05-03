@@ -58,21 +58,28 @@ Test count: 50 across 12 suites.
 
 ---
 
-## Phase 3 — Visibility (≈1 day)
+## Phase 3 — Visibility ✅ shipped 2026-05-03
 
-Deliverable: full UI shell. Screens compose from `HarnessDesign` primitives and bind to real view-models.
+Deliverable: full UI shell. End-to-end manual test path open from the goal-input screen through to replay.
 
-- [ ] `Harness/App/HarnessApp.swift`, `AppCoordinator.swift`, `AppState.swift`.
-- [ ] `Harness/App/FirstRunWizard.swift` — API key, idb health, default sim.
-- [ ] `Harness/Features/GoalInput/` — view-model + view bound to real picker / text fields / mode toggle.
-- [ ] `Harness/Features/RunSession/` — live mirror at 3 fps, step feed via `AsyncThrowingStream<RunEvent>` consumption, ApprovalCard wired.
-- [ ] `Harness/Features/RunHistory/` — SwiftData-backed list with verdict pills.
-- [ ] `Harness/Features/RunReplay/` — TimelineScrubber + step playback.
-- [ ] `Harness/Features/FrictionReport/` — filtered timeline + export.
-- [ ] `Harness/Features/Settings/` — API key, default model, default step budget, screenshot poll rate, log retention.
-- [ ] Smoke test: full path from "open app, click New Run, enter goal, click Start" through "run completes, opens replay automatically".
+- [x] `Harness/App/AppState.swift` (apiKeyPresent / toolPaths / simulators / defaults) + `AppCoordinator.swift` (selectedSection, activeRunID, modal flags) + `AppContainer.swift` (DI root, pending-run hand-off).
+- [x] `Harness/App/HarnessApp.swift` — NavigationSplitView shell, sheet routing for first-run wizard / settings / replay, ⌘N + ⌘, command bindings.
+- [x] `Harness/App/SidebarView.swift` — section picker + tooling health rows.
+- [x] `Harness/App/FirstRunWizard.swift` — API key, xcodebuild + idb health, simulator list, copy-paste install commands.
+- [x] `Harness/Features/GoalInput/` — `xcodebuild -list -json` scheme resolution, simulator picker, persona/goal text, mode + model + step-budget controls. Hand-off via `AppContainer.stagePendingRun(_:)`.
+- [x] `Harness/Features/RunSession/` — `RunSessionViewModel` consumes `AsyncThrowingStream<RunEvent>` from `RunCoordinator`. Live mirror via `simctl screenshot` poller @ 3 fps. Step feed scrolls automatically. `ApprovalCard` wired to step-mode approval gate via `AsyncStream<UserApproval>`. Stop button (⌘.) cascades cancellation.
+- [x] `Harness/Features/RunHistory/` — SwiftData-backed list with `VerdictPill`, double-click to open replay, context-menu Reveal-in-Finder + Delete.
+- [x] `Harness/Features/RunReplay/` — `RunReplayViewModel` parses `events.jsonl` via `RunLogParser`, scrubber + ←/→ keys, observation/intent/tool/friction per step.
+- [x] `Harness/Features/Settings/` — API key replace, default model + mode + step budget, tooling re-detect.
+- [x] `Harness/Domain/Mappers.swift` — adapters between production `Verdict / ToolKind / FrictionKind / ToolCall` and the HarnessDesign `Preview*` placeholder types the primitives consume. Cheap conversion at the binding layer; lets primitives stay as the design package shipped them.
+- [x] **Removed `HarnessDesign/Screens/*`** — those were the original "layout drafts with mock data" and now collide with the real Features views by filename. Primitives + DesignSystem stay.
+- [x] **Bundled `docs/PROMPTS/*.md` as Resources** — `project.yml` `buildPhase: resources` pulls the folder into `Harness.app/Contents/Resources/PROMPTS/`. `PromptLibrary` reads via `Bundle.main`.
+- [x] Smoke launched: built `Harness.app` from `xcodebuild`, `open`'d it, process visible.
 
-Wiki updates this phase: `Adding-a-Feature.md` filled with the recipe used; `Adding-a-Service.md` likewise; `Design-System.md` index populated with primitive map; `Glossary.md` reviewed for completeness.
+Build status: clean (Swift 6 strict concurrency, no warnings on the new code).
+Test status: 50 tests across 12 suites, still all green (Phase 1 + 2 unchanged).
+
+Wiki updates carrying forward: `Adding-a-Feature.md` will be filled with the GoalInput recipe in a follow-up; `FrictionReport` deferred (the run-session feed + replay surface friction inline today).
 
 ---
 

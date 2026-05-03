@@ -2,8 +2,8 @@
 //  HarnessApp.swift
 //  Harness
 //
-//  Application entry point. Phase 1: minimal shell; the real RootView, AppCoordinator,
-//  and AppState land in Phase 3 alongside the feature modules.
+//  Application entry point. Builds the dependency graph and injects the
+//  shared coordinator/state into the environment.
 //
 
 import SwiftUI
@@ -11,49 +11,101 @@ import SwiftUI
 @main
 struct HarnessApp: App {
 
+    @State private var container = AppContainer()
+
     var body: some Scene {
         WindowGroup {
-            RootScaffoldView()
-                .frame(minWidth: 920, minHeight: 600)
+            RootView()
+                .environment(container.appCoordinator)
+                .environment(container.appState)
+                .environment(container)
+                .frame(minWidth: 1024, minHeight: 640)
+                .task { await container.appState.refreshAll() }
+                .onAppear {
+                    // First-run wizard if API key isn't set.
+                    Task { @MainActor in
+                        await container.appState.refreshAPIKeyPresence()
+                        if !container.appState.apiKeyPresent {
+                            container.appCoordinator.isFirstRunWizardOpen = true
+                        }
+                    }
+                }
         }
         .windowResizability(.contentSize)
         .commands {
-            CommandGroup(replacing: .newItem) { /* New Run wired in Phase 3 */ }
+            CommandGroup(replacing: .newItem) {
+                Button("New Run") {
+                    container.appCoordinator.selectedSection = .newRun
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+            }
+            CommandGroup(after: .appSettings) {
+                Button("Settings…") {
+                    container.appCoordinator.openSettings()
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+            }
         }
     }
 }
 
-/// Placeholder root view for Phase 1. Renders a one-screen "we're here, services
-/// are wired" panel so the app shell builds + launches without leaning on the
-/// HarnessDesign primitives yet (those compose into real screens in Phase 3).
-private struct RootScaffoldView: View {
+/// Top-level shell. Sidebar + detail. Sheets for first-run wizard, settings,
+/// and replay all live here.
+private struct RootView: View {
+    @Environment(AppCoordinator.self) private var coordinator
+    @Environment(AppState.self) private var state
+    @Environment(AppContainer.self) private var container
+
     var body: some View {
-        VStack(spacing: 24) {
-            Text("Harness")
-                .font(.system(size: 42, weight: .semibold, design: .default))
-                .foregroundStyle(.primary)
+        @Bindable var coord = coordinator
 
-            Text("Phase 1 — services scaffolding")
-                .font(.system(size: 14, weight: .regular, design: .monospaced))
-                .foregroundStyle(.secondary)
-
-            Text(
-                "Goal input, live mirror, step feed, run history and replay all land in Phase 3. " +
-                "Today this shell exists so the underlying services (ProcessRunner, ToolLocator, " +
-                "XcodeBuilder, SimulatorDriver, ClaudeClient) can be exercised from the test target."
-            )
-            .font(.body)
-            .multilineTextAlignment(.center)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: 560)
+        NavigationSplitView {
+            SidebarView()
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+        } detail: {
+            DetailRouter()
         }
-        .padding(48)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.thickMaterial)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    coord.openSettings()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .help("Settings (⌘,)")
+            }
+        }
+        .sheet(isPresented: $coord.isFirstRunWizardOpen) {
+            FirstRunWizard()
+                .frame(width: 560, height: 460)
+        }
+        .sheet(isPresented: $coord.isSettingsOpen) {
+            SettingsView()
+                .frame(width: 520, height: 480)
+        }
+        .sheet(item: Binding(
+            get: { coord.replayingRunID.map(IdentifiableUUID.init) },
+            set: { coord.replayingRunID = $0?.id }
+        )) { wrapped in
+            RunReplayView(runID: wrapped.id)
+                .frame(minWidth: 1100, minHeight: 740)
+        }
     }
 }
 
-#Preview {
-    RootScaffoldView()
-        .frame(width: 960, height: 600)
+private struct IdentifiableUUID: Identifiable, Hashable { let id: UUID }
+
+private struct DetailRouter: View {
+    @Environment(AppCoordinator.self) private var coordinator
+
+    var body: some View {
+        switch coordinator.selectedSection {
+        case .newRun:
+            GoalInputView()
+        case .activeRun:
+            RunSessionView()
+        case .history:
+            RunHistoryView()
+        }
+    }
 }
