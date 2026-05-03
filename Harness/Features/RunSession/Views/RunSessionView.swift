@@ -43,7 +43,10 @@ struct RunSessionView: View {
                     SimulatorMirrorView(
                         image: Binding(get: { vm.liveImage }, set: { vm.liveImage = $0 }),
                         lastTapPoint: vm.lastTapPoint,
-                        deviceSize: vm.request?.simulator.pointSize ?? CGSize(width: 393, height: 852)
+                        deviceSize: vm.request?.simulator.pointSize ?? CGSize(width: 393, height: 852),
+                        onTapForward: { point in
+                            vm.userForwardedTap(at: point)
+                        }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(16)

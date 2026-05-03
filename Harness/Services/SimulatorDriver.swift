@@ -286,11 +286,18 @@ struct SimulatorDriver: SimulatorDriving {
 
     // MARK: Companion cleanup
 
-    /// pkill any `idb_companion` matching the supplied UDID. Tolerates
-    /// "no processes matched" silently — that's the success case for a
-    /// freshly-booted Mac. Waits briefly after killing so the next idb
-    /// invocation gets a clean spawn.
+    /// pkill any `idb_companion` matching the supplied UDID AND remove the
+    /// stale gRPC socket file at `/tmp/idb/<udid>_companion.sock`. Without
+    /// the socket cleanup, killing the process alone leaves the socket file
+    /// behind; the next idb invocation finds the dead socket, tries to
+    /// connect to it (`[Errno 61] Connection refused`), and never falls
+    /// through to spawning a fresh companion — every tap fails until the
+    /// file is gone.
+    ///
+    /// Tolerates "no processes matched" silently (the success case on a
+    /// fresh machine).
     func cleanupCompanion(udid: String) async {
+        // 1. Kill any companion process attached to this UDID.
         let pkill = URL(fileURLWithPath: "/usr/bin/pkill")
         // -f matches against the full command line; idb_companion is started
         // with `--udid <UDID>` so this pattern is unambiguous.
@@ -307,7 +314,20 @@ struct SimulatorDriver: SimulatorDriving {
         } catch ProcessFailure.nonZeroExit(let code, _, _, _) where code == 1 {
             // pkill exit-1 = no processes matched. Normal case; fine.
         } catch {
-            Self.logger.warning("cleanupCompanion failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.warning("cleanupCompanion (pkill) failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        // 2. Remove the stale unix-domain socket file. idb tries to connect
+        // before considering a fresh spawn; an orphaned socket file makes
+        // every tap fail with ECONNREFUSED.
+        let socketPath = "/tmp/idb/\(udid)_companion.sock"
+        if FileManager.default.fileExists(atPath: socketPath) {
+            do {
+                try FileManager.default.removeItem(atPath: socketPath)
+                Self.logger.info("Removed stale companion socket \(socketPath, privacy: .public)")
+            } catch {
+                Self.logger.warning("cleanupCompanion (socket rm) failed at \(socketPath, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

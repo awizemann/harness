@@ -166,6 +166,20 @@ final class RunSessionViewModel {
     func skip() { approvalContinuation?.yield(.skip); status = .running }
     func reject(note: String) { approvalContinuation?.yield(.reject(note: note)); status = .running }
 
+    /// User clicked on the mirror — forward to the simulator via idb.
+    /// Best-effort: we don't surface tap errors here (the agent loop will
+    /// react to the next screenshot regardless). Updates the last-tap dot
+    /// so the user sees their click registered.
+    func userForwardedTap(at point: CGPoint) {
+        guard let request else { return }
+        self.lastTapPoint = point
+        let driver = container.simulatorDriver
+        let ref = request.simulator
+        Task.detached {
+            try? await driver.tap(at: point, on: ref)
+        }
+    }
+
     // MARK: Event handling
 
     private func handle(event: RunEvent) {
