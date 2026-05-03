@@ -90,4 +90,44 @@ struct ProcessRunnerTests {
         #expect(sawStdout)
         #expect(sawCompleted)
     }
+
+    // MARK: PATH enrichment
+
+    @Test("resolvedEnvironment prepends Homebrew + ~/.local/bin to PATH")
+    func resolvedEnvironmentPATH() {
+        let env = ProcessRunner.resolvedEnvironment(specEnv: [:])
+        let path = env["PATH"] ?? ""
+        #expect(path.contains("/opt/homebrew/bin"),
+                "PATH should include /opt/homebrew/bin so spawned tools can find Homebrew binaries — got: \(path)")
+        #expect(path.contains("/usr/local/bin"))
+        #expect(path.contains("\(NSHomeDirectory())/.local/bin"))
+    }
+
+    @Test("Caller-supplied PATH is preserved verbatim")
+    func resolvedEnvironmentRespectsCallerPATH() {
+        let env = ProcessRunner.resolvedEnvironment(specEnv: ["PATH": "/sandbox/only"])
+        #expect(env["PATH"] == "/sandbox/only",
+                "Caller-supplied PATH must not be augmented; this is the escape hatch for tests that want a known-empty environment.")
+    }
+
+    @Test("Other env vars from the caller override parent values")
+    func resolvedEnvironmentOverrides() {
+        let env = ProcessRunner.resolvedEnvironment(specEnv: ["HARNESS_TEST_VAR": "set"])
+        #expect(env["HARNESS_TEST_VAR"] == "set")
+    }
+
+    @Test("Spawned echo sees enriched PATH (regression for the idb-companion spawn failure)")
+    func childProcessSeesEnrichedPATH() async throws {
+        let runner = ProcessRunner()
+        // /usr/bin/env without args dumps the child's environment.
+        let result = try await runner.run(ProcessSpec(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: []
+        ))
+        let stdout = result.stdoutString
+        // We don't assert exact equality (the parent env might already have
+        // /opt/homebrew/bin), only that it's present in the child's PATH.
+        #expect(stdout.contains("/opt/homebrew/bin"),
+                "Child PATH must include /opt/homebrew/bin so idb can spawn idb_companion.")
+    }
 }

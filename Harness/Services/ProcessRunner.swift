@@ -128,9 +128,7 @@ actor ProcessRunner: ProcessRunning {
         process.executableURL = spec.executable
         process.arguments = spec.arguments
         process.currentDirectoryURL = spec.workingDirectory
-        if !spec.environment.isEmpty {
-            process.environment = spec.environment
-        }
+        process.environment = Self.resolvedEnvironment(specEnv: spec.environment)
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -230,9 +228,7 @@ actor ProcessRunner: ProcessRunning {
             process.executableURL = spec.executable
             process.arguments = spec.arguments
             process.currentDirectoryURL = spec.workingDirectory
-            if !spec.environment.isEmpty {
-                process.environment = spec.environment
-            }
+            process.environment = Self.resolvedEnvironment(specEnv: spec.environment)
 
             let stdoutPipe = Pipe()
             let stderrPipe = Pipe()
@@ -333,5 +329,43 @@ actor ProcessRunner: ProcessRunning {
     private static func closeBothEnds(_ pipe: Pipe) {
         try? pipe.fileHandleForReading.close()
         try? pipe.fileHandleForWriting.close()
+    }
+
+    // MARK: Environment resolution
+
+    /// Locations to prepend to `PATH` for every spawned subprocess. Apps
+    /// launched from Finder inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
+    /// that doesn't include Homebrew or pipx paths — but our tools (`idb`,
+    /// `idb_companion`, `xcodebuild`'s helpers) all live there. Without this,
+    /// `idb` finds itself but can't spawn `idb_companion`, every `tap` fails,
+    /// and the simulator gets wedged.
+    private static let pathPrefix: [String] = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin"
+    ]
+
+    /// Resolve the environment a child process should inherit. Combines the
+    /// parent app's environment with the caller's overrides, then prepends
+    /// `pathPrefix` to PATH unless the caller explicitly set their own PATH.
+    static func resolvedEnvironment(specEnv: [String: String]) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        for (key, value) in specEnv { env[key] = value }
+
+        // Add ~/.local/bin (pipx default) and the system path components.
+        var prefix = pathPrefix
+        let home = NSHomeDirectory()
+        if !home.isEmpty {
+            prefix.insert("\(home)/.local/bin", at: 0)
+        }
+
+        if specEnv["PATH"] == nil {
+            // Prepend our prefix; preserve everything that was already there.
+            let existing = env["PATH"] ?? ""
+            let prefixJoined = prefix.joined(separator: ":")
+            env["PATH"] = existing.isEmpty ? prefixJoined : "\(prefixJoined):\(existing)"
+        }
+        return env
     }
 }
