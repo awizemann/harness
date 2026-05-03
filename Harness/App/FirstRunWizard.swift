@@ -112,7 +112,7 @@ struct FirstRunWizard: View {
                     label: wdaStatusLabel
                 )
                 if !state.wdaReady, !state.wdaBuildInProgress {
-                    Text("First build takes 1–2 minutes. Cached per iOS version after that.")
+                    Text("Harness builds WebDriverAgent in-process — no shell command needed. First build takes 1–2 minutes; cached per iOS version after that.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Button("Build WebDriverAgent for this simulator") {
@@ -120,6 +120,13 @@ struct FirstRunWizard: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(state.defaultSimulatorUDID == nil)
+                }
+                if state.wdaBuildInProgress {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Running `xcodebuild build-for-testing` against vendor/WebDriverAgent…")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                 }
                 if let err = wdaBuildError {
                     Text(err).font(.callout).foregroundStyle(.red)

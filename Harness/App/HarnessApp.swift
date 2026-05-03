@@ -22,10 +22,16 @@ struct HarnessApp: App {
                 .frame(minWidth: 1024, minHeight: 640)
                 .task { await container.appState.refreshAll() }
                 .onAppear {
-                    // First-run wizard if API key isn't set.
+                    // First-run wizard if anything's not set up: API key
+                    // missing, xcodebuild missing, or WebDriverAgent hasn't
+                    // been built for the picked simulator's iOS version.
                     Task { @MainActor in
-                        await container.appState.refreshAPIKeyPresence()
-                        if !container.appState.apiKeyPresent {
+                        await container.appState.refreshAll()
+                        let state = container.appState
+                        let needsSetup = !state.apiKeyPresent
+                            || !state.xcodebuildAvailable
+                            || !state.wdaReady
+                        if needsSetup {
                             container.appCoordinator.isFirstRunWizardOpen = true
                         }
                     }

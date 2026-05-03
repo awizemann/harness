@@ -36,10 +36,21 @@ struct SidebarView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+                if !healthOK {
+                    Button("Open setup…") {
+                        coordinator.isFirstRunWizardOpen = true
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.callout)
+                }
             }
             .listSectionSeparator(.hidden)
         }
         .listStyle(.sidebar)
+    }
+
+    private var healthOK: Bool {
+        state.apiKeyPresent && state.xcodebuildAvailable && state.wdaReady
     }
 
     private func healthRow(label: String, ok: Bool) -> some View {
