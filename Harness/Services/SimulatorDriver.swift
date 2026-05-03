@@ -75,6 +75,12 @@ protocol SimulatorDriving: Sendable {
 
     /// Daemon-health probe. Returns true if `idb_companion` answers within `timeout`.
     func probeIDB(_ ref: SimulatorRef, timeout: Duration) async -> Bool
+
+    /// Kill any `idb_companion` process attached to the given UDID. Called at
+    /// run start so a stale companion from a prior run (perhaps one whose
+    /// simulator was shut down or whose Mac was rebooted) doesn't intercept
+    /// taps and silently route them into the void.
+    func cleanupCompanion(udid: String) async
 }
 
 // MARK: - Implementation
@@ -275,6 +281,33 @@ struct SimulatorDriver: SimulatorDriving {
             ))
         } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
             throw SimulatorError.actionFailed(action: "pressButton", detail: so + se)
+        }
+    }
+
+    // MARK: Companion cleanup
+
+    /// pkill any `idb_companion` matching the supplied UDID. Tolerates
+    /// "no processes matched" silently — that's the success case for a
+    /// freshly-booted Mac. Waits briefly after killing so the next idb
+    /// invocation gets a clean spawn.
+    func cleanupCompanion(udid: String) async {
+        let pkill = URL(fileURLWithPath: "/usr/bin/pkill")
+        // -f matches against the full command line; idb_companion is started
+        // with `--udid <UDID>` so this pattern is unambiguous.
+        let pattern = "idb_companion.*\(udid)"
+        do {
+            _ = try await processRunner.run(ProcessSpec(
+                executable: pkill,
+                arguments: ["-f", pattern],
+                timeout: .seconds(5)
+            ))
+            // Give the daemon a moment to release its grpc socket.
+            try? await Task.sleep(for: .milliseconds(250))
+            Self.logger.info("Killed orphan idb_companion for \(udid, privacy: .public)")
+        } catch ProcessFailure.nonZeroExit(let code, _, _, _) where code == 1 {
+            // pkill exit-1 = no processes matched. Normal case; fine.
+        } catch {
+            Self.logger.warning("cleanupCompanion failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

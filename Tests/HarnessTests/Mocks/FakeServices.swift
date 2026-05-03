@@ -62,6 +62,9 @@ actor FakeSimulatorDriver: SimulatorDriving {
     private(set) var installCalls = 0
     private(set) var launchCalls = 0
     private(set) var screenshotCalls = 0
+    private(set) var cleanupCompanionCalls: [String] = []
+    /// In-test ordering log — useful when verifying cleanup happens BEFORE boot.
+    private(set) var lifecycleEvents: [String] = []
 
     init(pngs: [Data]) {
         self.pngs = pngs
@@ -87,11 +90,24 @@ actor FakeSimulatorDriver: SimulatorDriving {
     }
 
     func listDevices() async throws -> [SimulatorRef] { [] }
-    func boot(_ ref: SimulatorRef) async throws { bootCalls += 1 }
-    func install(_ appBundle: URL, on ref: SimulatorRef) async throws { installCalls += 1 }
-    func launch(bundleID: String, on ref: SimulatorRef) async throws { launchCalls += 1 }
+    func boot(_ ref: SimulatorRef) async throws {
+        bootCalls += 1
+        lifecycleEvents.append("boot")
+    }
+    func install(_ appBundle: URL, on ref: SimulatorRef) async throws {
+        installCalls += 1
+        lifecycleEvents.append("install")
+    }
+    func launch(bundleID: String, on ref: SimulatorRef) async throws {
+        launchCalls += 1
+        lifecycleEvents.append("launch")
+    }
     func terminate(bundleID: String, on ref: SimulatorRef) async throws { }
     func erase(_ ref: SimulatorRef) async throws { }
+    func cleanupCompanion(udid: String) async {
+        cleanupCompanionCalls.append(udid)
+        lifecycleEvents.append("cleanup")
+    }
 
     func screenshot(_ ref: SimulatorRef, into url: URL) async throws -> URL {
         screenshotCalls += 1

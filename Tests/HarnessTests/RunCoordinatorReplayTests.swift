@@ -137,6 +137,41 @@ struct RunCoordinatorReplayTests {
         #expect(frictions.first?.kind == .agentBlocked)
     }
 
+    @Test("Coordinator cleans up orphan idb_companion BEFORE boot")
+    func cleanupBeforeBoot() async throws {
+        // Single screenshot is fine — we're not exercising the agent loop here.
+        let png = FakeSimulatorDriver.solidColorPNG(red: 50, green: 50, blue: 50)
+        let driver = FakeSimulatorDriver(pngs: [png])
+        let builder = FakeXcodeBuilder()
+        let llm = MockLLMClient(mode: .sequence([
+            .makingMarkDone(verdict: .success, summary: "no-op", frictionCount: 0)
+        ]))
+        let agent = AgentLoop(llm: llm, promptLibrary: StubPromptLibrary())
+        let history = try RunHistoryStore.inMemory()
+        let coordinator = RunCoordinator(
+            builder: builder, driver: driver, agent: agent, llm: llm, history: history
+        )
+
+        let request = Self.makeRequest(mode: .autonomous)
+        defer { try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: request.id)) }
+
+        for try await _ in coordinator.run(request) { }
+
+        let cleanupCalls = await driver.cleanupCompanionCalls
+        let lifecycle = await driver.lifecycleEvents
+        #expect(cleanupCalls == [request.simulator.udid],
+                "Coordinator must call cleanupCompanion exactly once with the run's UDID. Got: \(cleanupCalls)")
+        #expect(lifecycle.first == "cleanup",
+                "Cleanup must come before any other lifecycle call. Order was: \(lifecycle)")
+        #expect(lifecycle.contains("boot"),
+                "Boot must still be called.")
+        if let cleanupIdx = lifecycle.firstIndex(of: "cleanup"),
+           let bootIdx = lifecycle.firstIndex(of: "boot") {
+            #expect(cleanupIdx < bootIdx,
+                    "cleanup must precede boot in the lifecycle order. Got: \(lifecycle)")
+        }
+    }
+
     @Test("Step budget short-circuits with blocked verdict")
     func stepBudgetShortCircuit() async throws {
         // 3 distinct screenshots so cycle detector doesn't fire — but budget = 2.

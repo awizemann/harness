@@ -109,6 +109,14 @@ actor RunCoordinator {
         continuation.yield(.buildCompleted(appBundle: build.appBundle, bundleID: build.bundleIdentifier))
 
         // Boot + install + launch.
+        // Kill any stale idb_companion attached to this UDID FIRST. A prior
+        // run (or a Mac restart that left the simulator shut down) can leave
+        // an orphan companion bound to the same gRPC socket; subsequent idb
+        // commands appear to succeed but silently route into the void —
+        // the agent fires taps, the simulator never sees them, and every run
+        // looks "blocked" with the same "I tapped and nothing happened"
+        // friction over and over.
+        await driver.cleanupCompanion(udid: request.simulator.udid)
         try await driver.boot(request.simulator)
         try await driver.install(build.appBundle, on: request.simulator)
         try await driver.launch(bundleID: build.bundleIdentifier, on: request.simulator)
