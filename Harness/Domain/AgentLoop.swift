@@ -46,11 +46,24 @@ struct AgentDecision: Sendable {
 
 // MARK: - Errors
 
-enum AgentLoopError: Error, Sendable {
+enum AgentLoopError: Error, Sendable, LocalizedError {
     case parseFailureExhausted(lastDetail: String)
     case tokenBudgetExhausted(used: Int, budget: Int)
     case stepBudgetExhausted(budget: Int)
     case cycleDetected
+
+    var errorDescription: String? {
+        switch self {
+        case .parseFailureExhausted(let detail):
+            return "The agent kept emitting unparseable tool calls. Last error: \(detail)"
+        case .tokenBudgetExhausted(let used, let budget):
+            return "Token budget exhausted (\(used) / \(budget))."
+        case .stepBudgetExhausted(let budget):
+            return "Step budget exhausted (\(budget) steps)."
+        case .cycleDetected:
+            return "Cycle detected — the agent stayed on the same screen for 3 turns."
+        }
+    }
 }
 
 // MARK: - Protocol

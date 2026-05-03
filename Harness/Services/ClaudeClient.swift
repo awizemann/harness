@@ -21,7 +21,7 @@ import AppKit
 
 // MARK: - Errors
 
-enum ClaudeError: Error, Sendable {
+enum ClaudeError: Error, Sendable, LocalizedError {
     case authenticationFailed
     case rateLimited(retryAfter: Duration)
     case serverError(status: Int)
@@ -33,18 +33,28 @@ enum ClaudeError: Error, Sendable {
     case noToolCallReturned
     case unknownTool(String)
 
-    var localizedDescription: String {
+    var errorDescription: String? {
         switch self {
-        case .authenticationFailed: return "Authentication failed — check your Anthropic API key."
-        case .rateLimited(let retry): return "Rate limited. Retry after \(retry)."
-        case .serverError(let s): return "Anthropic server error \(s)."
-        case .malformedRequest(let d): return "Malformed request: \(d)"
-        case .invalidToolCall(let d): return "Invalid tool call: \(d)"
-        case .timeout: return "Request timed out."
-        case .missingAPIKey: return "No Anthropic API key in Keychain."
-        case .decodingFailed(let d): return "Failed to decode response: \(d)"
-        case .noToolCallReturned: return "Model did not return a tool call."
-        case .unknownTool(let n): return "Model called an unknown tool: \(n)"
+        case .authenticationFailed:
+            return "Anthropic API authentication failed. Check the key in Settings."
+        case .rateLimited(let retry):
+            return "Anthropic rate-limited the request. Retry after \(retry)."
+        case .serverError(let s):
+            return "Anthropic server error \(s). Try again in a moment."
+        case .malformedRequest(let d):
+            return "The request to Anthropic was malformed.\n\(d)"
+        case .invalidToolCall(let d):
+            return "Anthropic returned a tool call we couldn't parse.\n\(d)"
+        case .timeout:
+            return "Request to Anthropic timed out."
+        case .missingAPIKey:
+            return "No Anthropic API key in Keychain. Add one in Settings."
+        case .decodingFailed(let d):
+            return "Could not decode Anthropic's response.\n\(d)"
+        case .noToolCallReturned:
+            return "Anthropic responded without a tool call. The agent loop expects exactly one per turn."
+        case .unknownTool(let n):
+            return "Anthropic tried to call an unknown tool: '\(n)'."
         }
     }
 }

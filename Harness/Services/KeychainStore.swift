@@ -2,12 +2,22 @@
 //  KeychainStore.swift
 //  Harness
 //
-//  Thin wrapper over Security.framework. Used today for the Anthropic API key
-//  (service `com.harness.anthropic`, account `default`). Generic enough that
-//  future credential surfaces can reuse it.
+//  Thin wrapper over Security.framework. Used for the Anthropic API key
+//  (service `com.harness.anthropic`, account `default`) and generic enough
+//  for future credential surfaces.
 //
-//  Per `standards/03-subprocess-and-filesystem.md §11`, the API key is fetched
-//  on ClaudeClient init and never persisted to disk or logged.
+//  We use the legacy macOS keychain (no `kSecUseDataProtectionKeychain`)
+//  because the data-protection keychain requires the
+//  `keychain-access-groups` entitlement which itself requires a Developer
+//  Team for signing. With proper Apple Development signing (team set in
+//  project.yml), the legacy keychain's per-app ACL is stable across
+//  Debug rebuilds — the user clicks "Always Allow" once per app version
+//  and never again. With ad-hoc signing the ACL hash changes per build
+//  and prompts every time; if you hit that, set DEVELOPMENT_TEAM in
+//  project.yml or sign the build with a real cert.
+//
+//  Per `standards/03-subprocess-and-filesystem.md §11`, the API key is
+//  fetched on ClaudeClient init and never persisted to disk or logged.
 //
 
 import Foundation
@@ -20,7 +30,7 @@ protocol KeychainStoring: Sendable {
     func delete(service: String, account: String) throws
 }
 
-/// Production implementation backed by `SecItem*`.
+/// Production implementation backed by `SecItem*` (legacy macOS keychain).
 struct KeychainStore: KeychainStoring {
 
     private static let logger = Logger(subsystem: "com.harness.app", category: "KeychainStore")
@@ -98,8 +108,19 @@ struct KeychainStore: KeychainStoring {
     }
 }
 
-enum KeychainError: Error, Sendable {
+enum KeychainError: Error, Sendable, LocalizedError {
     case unhandled(status: OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .unhandled(let status):
+            // SecCopyErrorMessageString gives a readable line for most codes.
+            if let cf = SecCopyErrorMessageString(status, nil) {
+                return "Keychain error: \(cf as String) (\(status))"
+            }
+            return "Keychain error \(status)."
+        }
+    }
 }
 
 // MARK: - Convenience for the Anthropic API key

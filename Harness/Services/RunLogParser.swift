@@ -37,20 +37,20 @@ enum DecodedRow: Sendable {
     }
 }
 
-enum ParseError: Error, Sendable {
+enum ParseError: Error, Sendable, LocalizedError {
     case fileUnreadable(URL)
     case schemaVersionUnsupported(Int)
     case missingRunStarted
     case unexpectedRowAfterCompletion
     case stepGap(expected: Int, got: Int)
 
-    var localizedDescription: String {
+    var errorDescription: String? {
         switch self {
-        case .fileUnreadable(let u): return "Cannot read \(u.path)"
-        case .schemaVersionUnsupported(let v): return "Unsupported schema version: \(v)"
-        case .missingRunStarted: return "First row was not run_started"
-        case .unexpectedRowAfterCompletion: return "Row encountered after run_completed"
-        case .stepGap(let e, let g): return "Step gap: expected \(e), got \(g)"
+        case .fileUnreadable(let u): return "Cannot read run log at \(u.path)."
+        case .schemaVersionUnsupported(let v): return "This run uses an unsupported log schema (v\(v))."
+        case .missingRunStarted: return "Run log is malformed: the first row is not run_started."
+        case .unexpectedRowAfterCompletion: return "Run log is malformed: a row appears after run_completed."
+        case .stepGap(let e, let g): return "Run log step numbers have a gap: expected \(e), got \(g)."
         }
     }
 }

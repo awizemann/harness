@@ -32,6 +32,11 @@ final class RunSessionViewModel {
     var pendingApproval: PendingApproval?
     var elapsedSeconds: Int = 0
     var runError: String?
+    /// On a build failure, points at `<run-dir>/build/build.log`. The UI
+    /// uses this to show a Reveal-in-Finder button.
+    var buildLogURL: URL?
+    /// Recovery hint from the failure's `LocalizedError.recoverySuggestion`.
+    var recoveryHint: String?
     var outcome: RunOutcome?
 
     enum Status: Sendable {
@@ -119,10 +124,28 @@ final class RunSessionViewModel {
                     await MainActor.run { self?.handle(event: event) }
                 }
             } catch is CancellationError {
-                await MainActor.run { self?.markFailed(error: "Run cancelled.") }
+                await MainActor.run { self?.markFailed(error: nil, recoveryHint: nil, buildLogURL: nil, message: "Run cancelled.") }
+            } catch let buildFailure as BuildFailure {
+                Self.logger.error("Build failed: \(buildFailure.localizedDescription, privacy: .public)")
+                await MainActor.run {
+                    self?.markFailed(
+                        error: buildFailure,
+                        recoveryHint: buildFailure.recoverySuggestion,
+                        buildLogURL: buildFailure.buildLogURL,
+                        message: buildFailure.localizedDescription
+                    )
+                }
             } catch {
                 Self.logger.error("Run failed: \(error.localizedDescription, privacy: .public)")
-                await MainActor.run { self?.markFailed(error: error.localizedDescription) }
+                let recovery = (error as? LocalizedError)?.recoverySuggestion
+                await MainActor.run {
+                    self?.markFailed(
+                        error: error,
+                        recoveryHint: recovery,
+                        buildLogURL: nil,
+                        message: error.localizedDescription
+                    )
+                }
             }
         }
     }
@@ -215,9 +238,11 @@ final class RunSessionViewModel {
         }
     }
 
-    private func markFailed(error: String) {
-        runError = error
-        status = .failed
+    private func markFailed(error: (any Error)?, recoveryHint: String?, buildLogURL: URL?, message: String) {
+        self.runError = message
+        self.recoveryHint = recoveryHint
+        self.buildLogURL = buildLogURL
+        self.status = .failed
         stopBackgroundTasks()
     }
 

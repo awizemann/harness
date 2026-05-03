@@ -60,7 +60,7 @@ enum ProcessChunk: Sendable {
 }
 
 /// Thrown for non-zero exit codes and termination edge cases.
-enum ProcessFailure: Error, Sendable {
+enum ProcessFailure: Error, Sendable, LocalizedError {
     /// Process exited non-zero. Stdout/stderr snippets capped at 4 KB.
     case nonZeroExit(exitCode: Int32, command: String, stdoutSnippet: String, stderrSnippet: String)
     case launchFailed(underlying: any Error)
@@ -77,6 +77,23 @@ enum ProcessFailure: Error, Sendable {
             return "timed out after \(dur) cmd=\(cmd)"
         case .cancelled(let cmd):
             return "cancelled cmd=\(cmd)"
+        }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .nonZeroExit(let code, let cmd, _, let se):
+            let stderrTrim = se.trimmingCharacters(in: .whitespacesAndNewlines)
+            if stderrTrim.isEmpty {
+                return "Process '\(cmd)' exited \(code)."
+            }
+            return "Process '\(cmd)' exited \(code).\n\(stderrTrim)"
+        case .launchFailed(let err):
+            return "Could not launch process: \(err.localizedDescription)"
+        case .timedOut(let dur, let cmd):
+            return "Process '\(cmd)' timed out after \(dur)."
+        case .cancelled(let cmd):
+            return "Process '\(cmd)' was cancelled."
         }
     }
 }

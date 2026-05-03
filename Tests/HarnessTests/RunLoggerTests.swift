@@ -17,7 +17,7 @@ struct RunLoggerRoundTripTests {
     @Test("Full happy-path run round-trips through parser intact")
     func fullRoundTrip() async throws {
         let runID = UUID()
-        let logger = try RunLogger.open(runID: runID)
+        let logger = try await RunLogger.open(runID: runID)
         defer {
             Task { await logger.close() }
             try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: runID))
@@ -136,7 +136,7 @@ struct RunLoggerRoundTripTests {
     @Test("Truncated trailing line is tolerated by the parser")
     func partialTrailingLine() async throws {
         let runID = UUID()
-        let logger = try RunLogger.open(runID: runID)
+        let logger = try await RunLogger.open(runID: runID)
         defer {
             Task { await logger.close() }
             try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: runID))
@@ -164,7 +164,7 @@ struct RunLoggerRoundTripTests {
     @Test("Append before run_started throws")
     func appendBeforeStart() async throws {
         let runID = UUID()
-        let logger = try RunLogger.open(runID: runID)
+        let logger = try await RunLogger.open(runID: runID)
         defer {
             Task { await logger.close() }
             try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: runID))
@@ -183,7 +183,7 @@ struct RunLoggerRoundTripTests {
     @Test("Duplicate run_started rejected")
     func duplicateStart() async throws {
         let runID = UUID()
-        let logger = try RunLogger.open(runID: runID)
+        let logger = try await RunLogger.open(runID: runID)
         defer {
             Task { await logger.close() }
             try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: runID))
@@ -201,7 +201,7 @@ struct RunLoggerRoundTripTests {
     @Test("Append after run_completed rejected")
     func appendAfterCompletion() async throws {
         let runID = UUID()
-        let logger = try RunLogger.open(runID: runID)
+        let logger = try await RunLogger.open(runID: runID)
         defer {
             Task { await logger.close() }
             try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: runID))

@@ -25,7 +25,7 @@ struct BuildResult: Sendable {
     let logPath: URL
 }
 
-enum BuildFailure: Error, Sendable {
+enum BuildFailure: Error, Sendable, LocalizedError {
     case projectNotFound(URL)
     case schemeNotFound(name: String)
     case compileFailed(exitCode: Int32, lastStderrSnippet: String, fullLogPath: URL)
@@ -35,25 +35,51 @@ enum BuildFailure: Error, Sendable {
     case unsupportedProjectFormat(URL)
     case xcodebuildUnavailable
 
-    var localizedDescription: String {
+    var errorDescription: String? {
         switch self {
         case .projectNotFound(let url):
             return "Project not found at \(url.path)"
         case .schemeNotFound(let name):
-            return "Scheme '\(name)' not found in the project"
-        case .compileFailed(let code, let snippet, let log):
-            return "xcodebuild failed (exit \(code)). Full log: \(log.path)\nLast stderr: \(snippet)"
+            return "Scheme '\(name)' was not found in the project. Try selecting a different scheme, or open the project in Xcode and confirm the scheme is shared."
+        case .compileFailed(let code, let snippet, _):
+            // The full-log location is in `recoverySuggestion` so the UI can
+            // render it as a Reveal-in-Finder button.
+            let trimmedSnippet = snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedSnippet.isEmpty {
+                return "xcodebuild failed (exit code \(code))."
+            }
+            return "xcodebuild failed (exit code \(code)).\n\nLast error from xcodebuild:\n\(trimmedSnippet)"
         case .artifactNotFound(let url):
-            return "Build succeeded but the .app was not at \(url.path)"
+            return "The build reported success, but the .app bundle was not at the expected location: \(url.path)"
         case .signingRequired(let detail):
-            return "The project requires signing. \(detail)"
+            return "The project's settings require code signing. Harness passed CODE_SIGNING_ALLOWED=NO but the project still failed signing. Detail: \(detail)"
         case .bundleIDUnreadable(let url):
-            return "Could not read CFBundleIdentifier from \(url.path)/Info.plist"
+            return "Could not read CFBundleIdentifier from \(url.lastPathComponent)/Info.plist."
         case .unsupportedProjectFormat(let url):
-            return "Unsupported project format: \(url.lastPathComponent)"
+            return "Unsupported project format: \(url.lastPathComponent). Pick a .xcodeproj or .xcworkspace."
         case .xcodebuildUnavailable:
-            return "xcodebuild is not available — install Xcode and run `xcode-select --install`"
+            return "xcodebuild is not available. Install Xcode and run `xcode-select --install`."
         }
+    }
+
+    var recoverySuggestion: String? {
+        switch self {
+        case .compileFailed(_, _, let log):
+            return "Full xcodebuild log: \(log.path)"
+        case .signingRequired:
+            return "Open the project in Xcode and either turn off Signing & Capabilities for the scheme, or sign in with a development team."
+        default:
+            return nil
+        }
+    }
+
+    /// Path to the full xcodebuild log, if this failure has one. The
+    /// RunSession UI uses this to render a Reveal-in-Finder button.
+    var buildLogURL: URL? {
+        if case .compileFailed(_, _, let log) = self {
+            return log
+        }
+        return nil
     }
 }
 

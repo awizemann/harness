@@ -118,7 +118,7 @@ struct RunCompletedPayload: Sendable, Codable {
 
 // MARK: - Errors
 
-enum LogWriteFailure: Error, Sendable {
+enum LogWriteFailure: Error, Sendable, LocalizedError {
     case diskFull
     case permissionDenied(path: String)
     case screenshotWriteFailed(step: Int, underlying: String)
@@ -128,16 +128,16 @@ enum LogWriteFailure: Error, Sendable {
     case encodingFailed(kind: String, underlying: String)
     case fileHandleOpen(path: String, underlying: String)
 
-    var localizedDescription: String {
+    var errorDescription: String? {
         switch self {
-        case .diskFull: return "Disk full while writing run log."
-        case .permissionDenied(let p): return "Permission denied: \(p)"
-        case .screenshotWriteFailed(let s, let u): return "Screenshot write failed at step \(s): \(u)"
-        case .appendAfterCompletion: return "Cannot append rows after run_completed."
-        case .appendBeforeStart: return "Cannot append rows before run_started."
-        case .duplicateStart: return "run_started already written."
-        case .encodingFailed(let k, let u): return "Encoding failed for kind '\(k)': \(u)"
-        case .fileHandleOpen(let p, let u): return "Failed to open log at \(p): \(u)"
+        case .diskFull: return "Disk full while writing the run log."
+        case .permissionDenied(let p): return "Permission denied writing run log at \(p)."
+        case .screenshotWriteFailed(let s, let u): return "Screenshot write failed at step \(s). \(u)"
+        case .appendAfterCompletion: return "Internal error: tried to append a row after run_completed."
+        case .appendBeforeStart: return "Internal error: tried to append a row before run_started."
+        case .duplicateStart: return "Internal error: run_started written twice."
+        case .encodingFailed(let k, let u): return "Failed to encode '\(k)' row. \(u)"
+        case .fileHandleOpen(let p, let u): return "Could not open run log at \(p). \(u)"
         }
     }
 }
@@ -168,11 +168,13 @@ actor RunLogger: RunLogging {
     private var hasStarted = false
     private var hasCompleted = false
 
-    /// Open a logger for the given run. Creates the run directory tree.
-    static func open(runID: UUID) throws -> RunLogger {
+    /// Open a logger for the given run. Creates the run directory tree and
+    /// installs the file handle synchronously inside the actor — no deferred
+    /// Task, no installation race.
+    static func open(runID: UUID) async throws -> RunLogger {
         try HarnessPaths.prepareRunDirectory(for: runID)
         let logger = RunLogger(runID: runID)
-        try logger.openHandleSync()
+        try await logger.installInitialHandle()
         return logger
     }
 
@@ -182,8 +184,7 @@ actor RunLogger: RunLogging {
         self.eventsURL = HarnessPaths.eventsLog(for: runID)
     }
 
-    /// Synchronous file-handle open used at construction (init can't be async).
-    private nonisolated func openHandleSync() throws {
+    private func installInitialHandle() throws {
         let fm = FileManager.default
         if !fm.fileExists(atPath: eventsURL.path) {
             fm.createFile(atPath: eventsURL.path, contents: Data(), attributes: nil)
@@ -191,23 +192,18 @@ actor RunLogger: RunLogging {
         do {
             let handle = try FileHandle(forWritingTo: eventsURL)
             try handle.seekToEnd()
-            // Hand off to actor; we set it after the actor task picks up.
-            Task { await self.installHandle(handle) }
+            self.fileHandle = handle
         } catch {
             throw LogWriteFailure.fileHandleOpen(path: eventsURL.path, underlying: error.localizedDescription)
         }
-    }
-
-    private func installHandle(_ handle: FileHandle) {
-        self.fileHandle = handle
     }
 
     // MARK: Append
 
     func append(_ row: LogRow) async throws {
         guard let handle = fileHandle else {
-            // Race: openHandleSync's Task may not have scheduled yet. Open now.
-            try openHandleNow()
+            // Defensive: re-open if it was closed.
+            try installInitialHandle()
             try await append(row)
             return
         }
@@ -247,20 +243,6 @@ actor RunLogger: RunLogging {
                 throw LogWriteFailure.permissionDenied(path: eventsURL.path)
             }
             throw LogWriteFailure.encodingFailed(kind: row.kind, underlying: error.localizedDescription)
-        }
-    }
-
-    private func openHandleNow() throws {
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: eventsURL.path) {
-            fm.createFile(atPath: eventsURL.path, contents: Data(), attributes: nil)
-        }
-        do {
-            let handle = try FileHandle(forWritingTo: eventsURL)
-            try handle.seekToEnd()
-            self.fileHandle = handle
-        } catch {
-            throw LogWriteFailure.fileHandleOpen(path: eventsURL.path, underlying: error.localizedDescription)
         }
     }
 

@@ -33,6 +33,8 @@ struct RunSessionView: View {
     private func content(vm: RunSessionViewModel) -> some View {
         if case .idle = vm.status {
             EmptyRunState()
+        } else if case .failed = vm.status, vm.runError != nil {
+            FailureView(vm: vm)
         } else {
             HSplitView {
                 LeftRail(vm: vm)
@@ -260,6 +262,91 @@ private struct ApprovalCardWrapper: View {
             onSkip: onSkip,
             onReject: onReject
         )
+    }
+}
+
+// MARK: - Failure state
+
+private struct FailureView: View {
+    @Environment(AppCoordinator.self) private var coordinator
+    @Bindable var vm: RunSessionViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(Color.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Run failed").font(.title3.weight(.semibold))
+                    if let req = vm.request {
+                        Text(req.project.displayName)
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+            }
+            ScrollView {
+                Text(vm.runError ?? "Unknown error.")
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .textSelection(.enabled)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                    )
+            }
+            .frame(maxHeight: 320)
+
+            if let recovery = vm.recoveryHint, !recovery.isEmpty {
+                Text(recovery)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.harnessAccent.opacity(0.10))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.harnessAccent.opacity(0.25), lineWidth: 0.5)
+                    )
+            }
+
+            HStack(spacing: 8) {
+                if let logURL = vm.buildLogURL,
+                   FileManager.default.fileExists(atPath: logURL.path) {
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([logURL])
+                    } label: {
+                        Label("Reveal build log", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        NSWorkspace.shared.open(logURL)
+                    } label: {
+                        Label("Open log", systemImage: "doc.text")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Spacer()
+                Button("New Run") {
+                    coordinator.selectedSection = .newRun
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            Spacer()
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .navigationTitle("Active Run — Failed")
     }
 }
 

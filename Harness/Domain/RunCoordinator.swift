@@ -93,7 +93,7 @@ actor RunCoordinator {
         try? await history.upsert(skeleton)
 
         // Open the run logger.
-        let logger = try RunLogger.open(runID: request.id)
+        let logger = try await RunLogger.open(runID: request.id)
         defer { Task { await logger.close() } }
 
         try await logger.append(.runStarted(from: request))
@@ -459,6 +459,13 @@ actor RunCoordinator {
 
 // MARK: - Errors
 
-enum RunCoordinatorError: Error, Sendable {
+enum RunCoordinatorError: Error, Sendable, LocalizedError {
     case missingApprovalStream
+
+    var errorDescription: String? {
+        switch self {
+        case .missingApprovalStream:
+            return "Internal error: a step-by-step run was started without an approval stream."
+        }
+    }
 }

@@ -23,8 +23,11 @@ settings:
     INFOPLIST_KEY_NSHumanReadableCopyright: ""
     GENERATE_INFOPLIST_FILE: YES
     CODE_SIGN_STYLE: Automatic
-    CODE_SIGN_IDENTITY: "-"
-    DEVELOPMENT_TEAM: ""
+    # Apple Developer Team ID. Required for the keychain-access-groups
+    # entitlement. Set to your team ID or override locally — `xcodegen
+    # generate` regenerates the .pbxproj from this file, so a value set
+    # via Xcode → Signing & Capabilities will be wiped on regen.
+    DEVELOPMENT_TEAM: 3Q6X2L86C4
 targets:
   Harness:
     type: application

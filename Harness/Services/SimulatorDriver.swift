@@ -19,7 +19,7 @@ import os
 
 // MARK: - Errors
 
-enum SimulatorError: Error, Sendable {
+enum SimulatorError: Error, Sendable, LocalizedError {
     case idbUnavailable
     case xcrunUnavailable
     case deviceNotFound(udid: String)
@@ -30,17 +30,26 @@ enum SimulatorError: Error, Sendable {
     case actionFailed(action: String, detail: String)
     case daemonUnreachable(detail: String)
 
-    var localizedDescription: String {
+    var errorDescription: String? {
         switch self {
-        case .idbUnavailable: return "idb is not installed (run `brew install idb-companion && pip3 install fb-idb`)"
-        case .xcrunUnavailable: return "xcrun is not available — install Xcode and run `xcode-select --install`"
-        case .deviceNotFound(let udid): return "Simulator not found: \(udid)"
-        case .bootFailed(let detail): return "Failed to boot simulator: \(detail)"
-        case .installFailed(let detail): return "Failed to install app: \(detail)"
-        case .launchFailed(let bid, let detail): return "Failed to launch \(bid): \(detail)"
-        case .screenshotFailed(let detail): return "Screenshot failed: \(detail)"
-        case .actionFailed(let action, let detail): return "Action '\(action)' failed: \(detail)"
-        case .daemonUnreachable(let detail): return "idb_companion daemon unreachable: \(detail)"
+        case .idbUnavailable:
+            return "idb is not installed. Run: brew tap facebook/fb && brew install idb-companion && pip3 install fb-idb"
+        case .xcrunUnavailable:
+            return "xcrun is not available. Install Xcode and run `xcode-select --install`."
+        case .deviceNotFound(let udid):
+            return "Simulator not found: \(udid). Refresh the simulator list."
+        case .bootFailed(let detail):
+            return "Failed to boot simulator. \(detail)"
+        case .installFailed(let detail):
+            return "Failed to install app on simulator. \(detail)"
+        case .launchFailed(let bid, let detail):
+            return "Failed to launch \(bid). \(detail)"
+        case .screenshotFailed(let detail):
+            return "Screenshot capture failed. \(detail)"
+        case .actionFailed(let action, let detail):
+            return "Simulator action '\(action)' failed. \(detail)"
+        case .daemonUnreachable(let detail):
+            return "idb_companion is unreachable. \(detail)"
         }
     }
 }
