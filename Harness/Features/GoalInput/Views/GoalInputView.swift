@@ -22,7 +22,8 @@ struct GoalInputView: View {
                     .onAppear {
                         self.vm = GoalInputViewModel(
                             processRunner: container.processRunner,
-                            toolLocator: container.toolLocator
+                            toolLocator: container.toolLocator,
+                            xcodeBuilder: container.xcodeBuilder
                         )
                     }
             }
@@ -133,12 +134,25 @@ private struct ProjectSection: View {
                             .labelsHidden()
                             .pickerStyle(.menu)
                         }
-                        if vm.isResolvingSchemes {
+                        if vm.isResolvingSchemes || vm.isProbingDestinations {
                             ProgressView().controlSize(.small)
                         }
                     }
                     if let err = vm.schemeError {
                         Text(err).font(.caption).foregroundStyle(.orange)
+                    }
+                    if let summary = vm.schemeCompatibilitySummary {
+                        HStack(spacing: 6) {
+                            Image(systemName: vm.schemeSupportsIOSSimulator
+                                  ? "checkmark.circle.fill"
+                                  : "exclamationmark.triangle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(vm.schemeSupportsIOSSimulator ? Color.green : Color.orange)
+                            Text(summary)
+                                .font(.caption)
+                                .foregroundStyle(vm.schemeSupportsIOSSimulator ? .secondary : .primary)
+                        }
+                        .padding(.leading, 88)
                     }
                 }
             }

@@ -17,7 +17,15 @@ import AppKit
 
 actor FakeXcodeBuilder: XcodeBuilding {
     let bundleID: String
+    var destinationsResult: [XcodeBuilder.Destination] = [
+        XcodeBuilder.Destination(platform: "iOS Simulator", arch: nil, name: "iPhone 16 Pro")
+    ]
+
     init(bundleID: String = "com.example.fake") { self.bundleID = bundleID }
+
+    func destinations(project: URL, scheme: String) async throws -> [XcodeBuilder.Destination] {
+        return destinationsResult
+    }
 
     func build(project: URL, scheme: String, runID: UUID) async throws -> BuildResult {
         // Fabricate an empty .app bundle inside the run dir so anything that

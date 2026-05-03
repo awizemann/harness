@@ -28,6 +28,7 @@ struct BuildResult: Sendable {
 enum BuildFailure: Error, Sendable, LocalizedError {
     case projectNotFound(URL)
     case schemeNotFound(name: String)
+    case iOSSimulatorNotSupported(scheme: String, availableDestinations: [String])
     case compileFailed(exitCode: Int32, lastStderrSnippet: String, fullLogPath: URL)
     case artifactNotFound(searched: URL)
     case signingRequired(detail: String)
@@ -41,6 +42,17 @@ enum BuildFailure: Error, Sendable, LocalizedError {
             return "Project not found at \(url.path)"
         case .schemeNotFound(let name):
             return "Scheme '\(name)' was not found in the project. Try selecting a different scheme, or open the project in Xcode and confirm the scheme is shared."
+        case .iOSSimulatorNotSupported(let scheme, let available):
+            let availableLine = available.isEmpty
+                ? "This scheme has no destinations at all."
+                : "This scheme builds for: \(available.joined(separator: ", "))."
+            return """
+            Scheme '\(scheme)' doesn't support iOS Simulator.
+
+            Harness can only drive iOS apps. \(availableLine)
+
+            If your project has multiple schemes (some macOS, some iOS), pick one that targets iOS. If it's macOS-only, Harness can't test it — Harness drives the iOS Simulator via idb, which has no Mac equivalent.
+            """
         case .compileFailed(let code, let snippet, _):
             // The full-log location is in `recoverySuggestion` so the UI can
             // render it as a Reveal-in-Finder button.
@@ -68,6 +80,8 @@ enum BuildFailure: Error, Sendable, LocalizedError {
             return "Full xcodebuild log: \(log.path)"
         case .signingRequired:
             return "Open the project in Xcode and either turn off Signing & Capabilities for the scheme, or sign in with a development team."
+        case .iOSSimulatorNotSupported:
+            return "Pick a different scheme on the New Run screen — one that targets iOS instead of macOS."
         default:
             return nil
         }
@@ -92,6 +106,10 @@ protocol XcodeBuilding: Sendable {
         scheme: String,
         runID: UUID
     ) async throws -> BuildResult
+
+    /// Probe `xcodebuild -showdestinations` for one scheme. Used by the
+    /// goal-input form to refuse macOS-only schemes before launching a run.
+    func destinations(project: URL, scheme: String) async throws -> [XcodeBuilder.Destination]
 }
 
 // MARK: - Implementation
@@ -178,10 +196,17 @@ struct XcodeBuilder: XcodeBuilding {
         } catch let failure as ProcessFailure {
             // Map ProcessFailure → BuildFailure.
             switch failure {
-            case .nonZeroExit(let code, _, _, let stderrSnippet):
+            case .nonZeroExit(let code, _, let stdoutSnippet, let stderrSnippet):
+                // xcodebuild writes the "no destination" diagnostic to stdout
+                // (annoyingly), so combine both streams when probing.
+                let combined = (stdoutSnippet + "\n" + stderrSnippet) + Self.snippetString(stderrTail)
                 let snippet = stderrSnippet.isEmpty
                     ? Self.snippetString(stderrTail)
                     : stderrSnippet
+                if Self.looksLikeIOSSimulatorMissing(combined) {
+                    let available = Self.parseAvailableDestinations(combined)
+                    throw BuildFailure.iOSSimulatorNotSupported(scheme: scheme, availableDestinations: available)
+                }
                 if Self.looksLikeSigningError(snippet) {
                     throw BuildFailure.signingRequired(detail: Self.firstSigningHint(in: snippet) ?? snippet)
                 }
@@ -303,5 +328,124 @@ struct XcodeBuilder: XcodeBuilding {
             }
         }
         return nil
+    }
+
+    // MARK: iOS-Simulator-missing heuristic
+
+    /// xcodebuild emits something like:
+    /// ```
+    /// xcodebuild: error: Unable to find a destination matching the provided destination specifier:
+    ///         { generic:1, platform:iOS Simulator }
+    /// Available destinations for the "X" scheme:
+    ///         { platform:macOS, ... }
+    /// ```
+    static func looksLikeIOSSimulatorMissing(_ text: String) -> Bool {
+        text.contains("Unable to find a destination") &&
+            text.contains("iOS Simulator") &&
+            text.contains("Available destinations")
+    }
+
+    /// Parse out the "Available destinations" lines so we can show the user
+    /// what the scheme actually supports.
+    ///
+    /// xcodebuild's failure log prints the *requested* destination on its
+    /// own bracketed line (`{ generic:1, platform:iOS Simulator }`) before
+    /// the "Available destinations for the …" header. We only collect lines
+    /// AFTER that header so we don't echo the requested-but-missing iOS
+    /// Simulator back at the user as if it were available.
+    static func parseAvailableDestinations(_ text: String) -> [String] {
+        var results: [String] = []
+        var inAvailableSection = false
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("Available destinations for") {
+                inAvailableSection = true
+                continue
+            }
+            guard inAvailableSection, line.hasPrefix("{") else { continue }
+            if let value = Self.extractField("platform", from: line) {
+                if !results.contains(value) {
+                    results.append(value)
+                }
+            }
+        }
+        return results
+    }
+
+    fileprivate static func extractField(_ key: String, from line: String) -> String? {
+        guard let range = line.range(of: "\(key):") else { return nil }
+        let after = line[range.upperBound...]
+        let stop = after.firstIndex(where: { $0 == "," || $0 == "}" })
+        let value = stop.map { after[..<$0] } ?? after[...]
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+// MARK: - Scheme compatibility probe
+
+extension XcodeBuilder {
+
+    /// A single destination row from `xcodebuild -showdestinations`.
+    struct Destination: Sendable, Hashable {
+        let platform: String
+        let arch: String?
+        let name: String?
+
+        var supportsIOSSimulator: Bool {
+            platform == "iOS Simulator"
+        }
+    }
+
+    /// Run `xcodebuild -showdestinations -scheme <X>` and parse the destinations.
+    /// Throws if `xcodebuild` isn't available; returns an empty array if the
+    /// command runs but produces no parseable destination rows.
+    func destinations(project: URL, scheme: String) async throws -> [Destination] {
+        try Task.checkCancellation()
+
+        let tools = try await toolLocator.locateAll()
+        guard let xcodebuild = tools.xcodebuild else {
+            throw BuildFailure.xcodebuildUnavailable
+        }
+
+        let projectFlag = projectOrWorkspaceFlag(for: project)
+        let spec = ProcessSpec(
+            executable: xcodebuild,
+            arguments: projectFlag + [
+                "-scheme", scheme,
+                "-showdestinations"
+            ],
+            workingDirectory: project.deletingLastPathComponent(),
+            timeout: .seconds(30)
+        )
+
+        do {
+            let result = try await processRunner.run(spec)
+            return Self.parseDestinations(result.stdoutString + "\n" + result.stderrString)
+        } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
+            // showdestinations may print to stdout even on non-zero exit codes.
+            let combined = so + "\n" + se
+            return Self.parseDestinations(combined)
+        }
+    }
+
+    /// Parse `xcodebuild -showdestinations` output into typed rows.
+    static func parseDestinations(_ text: String) -> [Destination] {
+        var results: [Destination] = []
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("{"), line.contains("platform:") else { continue }
+            let platform = extractField("platform", from: line) ?? ""
+            let arch = extractField("arch", from: line)
+            let name = extractField("name", from: line)
+            guard !platform.isEmpty else { continue }
+            results.append(Destination(platform: platform, arch: arch, name: name))
+        }
+        // Dedupe by platform+name (per-arch rows are noise for the picker).
+        var seen = Set<String>()
+        return results.filter {
+            let key = "\($0.platform)|\($0.name ?? "")"
+            return seen.insert(key).inserted
+        }
     }
 }

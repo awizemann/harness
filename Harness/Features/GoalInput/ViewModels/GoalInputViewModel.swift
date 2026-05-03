@@ -23,7 +23,13 @@ final class GoalInputViewModel {
     var projectURL: URL?
     var projectDisplayName: String = ""
     var availableSchemes: [String] = []
-    var selectedScheme: String = ""
+    var selectedScheme: String = "" {
+        didSet {
+            if oldValue != selectedScheme {
+                Task { await self.refreshSchemeDestinations() }
+            }
+        }
+    }
 
     var simulatorUDID: String = ""
     var personaText: String = ""
@@ -37,21 +43,52 @@ final class GoalInputViewModel {
     var isResolvingSchemes: Bool = false
     var schemeError: String?
     var startError: String?
+
+    /// Destinations supported by the currently-selected scheme (parsed from
+    /// `xcodebuild -showdestinations`). Nil = haven't probed yet.
+    var schemeDestinations: [XcodeBuilder.Destination]?
+    var isProbingDestinations: Bool = false
+
+    var schemeSupportsIOSSimulator: Bool {
+        guard let dests = schemeDestinations else { return false }
+        return dests.contains(where: { $0.supportsIOSSimulator })
+    }
+
+    /// Human-readable summary for the UI: "iOS Simulator ✓" or
+    /// "Builds for macOS only — incompatible with Harness".
+    var schemeCompatibilitySummary: String? {
+        guard !selectedScheme.isEmpty else { return nil }
+        guard let dests = schemeDestinations else {
+            return isProbingDestinations ? "Checking compatibility…" : nil
+        }
+        if dests.isEmpty {
+            return "No destinations reported by xcodebuild for this scheme."
+        }
+        if schemeSupportsIOSSimulator {
+            return "iOS Simulator supported"
+        }
+        let platforms = dests.map { $0.platform }.sorted().joined(separator: ", ")
+        return "Scheme builds for \(platforms) — Harness needs an iOS Simulator target."
+    }
+
     var canStart: Bool {
         projectURL != nil
             && !selectedScheme.isEmpty
             && !goalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !simulatorUDID.isEmpty
+            && schemeSupportsIOSSimulator
     }
 
     // MARK: Dependencies
 
     private let processRunner: any ProcessRunning
     private let toolLocator: any ToolLocating
+    private let xcodeBuilder: any XcodeBuilding
 
-    init(processRunner: any ProcessRunning, toolLocator: any ToolLocating) {
+    init(processRunner: any ProcessRunning, toolLocator: any ToolLocating, xcodeBuilder: any XcodeBuilding) {
         self.processRunner = processRunner
         self.toolLocator = toolLocator
+        self.xcodeBuilder = xcodeBuilder
     }
 
     // MARK: Project picker
@@ -118,6 +155,25 @@ final class GoalInputViewModel {
             Self.logger.warning("scheme resolve failed: \(error.localizedDescription, privacy: .public)")
             schemeError = "Couldn't list schemes — enter one manually."
             self.availableSchemes = []
+        }
+    }
+
+    /// Probe `xcodebuild -showdestinations` for the currently-selected scheme.
+    /// Updates `schemeDestinations`. Safe to call repeatedly; does nothing
+    /// if no project is set or no scheme is selected.
+    func refreshSchemeDestinations() async {
+        guard let projectURL, !selectedScheme.isEmpty else {
+            schemeDestinations = nil
+            return
+        }
+        isProbingDestinations = true
+        defer { isProbingDestinations = false }
+        do {
+            let dests = try await xcodeBuilder.destinations(project: projectURL, scheme: selectedScheme)
+            self.schemeDestinations = dests
+        } catch {
+            Self.logger.warning("destinations probe failed: \(error.localizedDescription, privacy: .public)")
+            self.schemeDestinations = []
         }
     }
 
