@@ -10,6 +10,16 @@ Three artifacts come out of every run:
 2. **What was the path?** (replayable sequence of screens + actions)
 3. **Where was the friction?** (timestamped events the agent flagged as confusing)
 
+## First clone
+
+Harness vendors `appium/WebDriverAgent` as a git submodule under `vendor/WebDriverAgent` (it's how we drive the iOS Simulator's responder chain). After a fresh clone, run:
+
+```
+git submodule update --init --recursive
+```
+
+The first run also builds WDA against your simulator's iOS runtime (~1–2 min). The result is cached under `~/Library/Application Support/Harness/wda-build/<iOS-version>/` and reused on subsequent runs.
+
 ## How to read this repo
 
 - [`CLAUDE.md`](CLAUDE.md) — project root instructions for any agent working in this codebase.

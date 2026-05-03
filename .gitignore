@@ -36,6 +36,9 @@ Carthage/Build/
 runs/
 *.harness-run
 
+# WebDriverAgent build artifacts (the submodule is checked in; build outputs aren't).
+vendor/WebDriverAgent/build/
+
 # Editor scratch
 .vscode/
 .idea/
