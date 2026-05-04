@@ -19,7 +19,7 @@ struct HarnessApp: App {
                 .environment(container.appCoordinator)
                 .environment(container.appState)
                 .environment(container)
-                .frame(minWidth: 1024, minHeight: 640)
+                .frame(minWidth: 1200, minHeight: 760)
                 .task { await container.appState.refreshAll() }
                 .task {
                     await bootstrapPersistedScope()
@@ -40,7 +40,18 @@ struct HarnessApp: App {
                     }
                 }
         }
-        .windowResizability(.contentSize)
+        // Open at a size that comfortably fits the three-pane layouts —
+        // RunSession (sidebar + LeftRail ~280 + mirror + StepFeed ~360) and
+        // the new run-history list/detail. macOS persists the user's last
+        // window size after they resize, so this only affects first launch
+        // and "Reset Saved State."
+        .defaultSize(width: 1440, height: 900)
+        // `.contentMinSize` honors `frame(minWidth:minHeight:)` as the
+        // floor but lets the user resize the window above it. `.contentSize`
+        // (the previous setting) couples the window to the content's
+        // intrinsic frame, which is what made the window open too small
+        // for its own contents.
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Run") {
