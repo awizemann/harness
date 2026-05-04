@@ -70,7 +70,7 @@ struct ApplicationDetailView: View {
                 )
             }
             .padding(Theme.spacing.xl)
-            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(Color.harnessBg)
