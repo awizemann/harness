@@ -216,6 +216,7 @@ private struct LeftRail: View {
         let frictionColor: Color = vm.frictionFeed.isEmpty
             ? Color.harnessText
             : Color.harnessWarning
+        let costTotal = vm.totalCost.total
         return Grid(horizontalSpacing: 0.5, verticalSpacing: 0.5) {
             GridRow {
                 statCell("STEP", value: "\(vm.feed.count)/\(req.stepBudget)")
@@ -225,6 +226,15 @@ private struct LeftRail: View {
                 statCell("FRICTION", value: "\(vm.frictionFeed.count)", color: frictionColor)
                 statCell("MODEL", value: req.model.displayName)
             }
+            // Cost lands once the run completes — token totals only flow on
+            // the final `runCompleted` event today. Live token-tracking is
+            // tracked in docs/DESIGN_BACKLOG.md.
+            if costTotal > 0 {
+                GridRow {
+                    statCell("COST", value: vm.totalCost.formattedTotal, color: .harnessAccent)
+                    statCell("TOKENS", value: tokenSummary)
+                }
+            }
         }
         .background(Color.harnessLine)
         .clipShape(RoundedRectangle(cornerRadius: Theme.radius.panel))
@@ -232,6 +242,17 @@ private struct LeftRail: View {
             RoundedRectangle(cornerRadius: Theme.radius.panel)
                 .stroke(Color.harnessLine, lineWidth: 0.5)
         )
+    }
+
+    private var tokenSummary: String {
+        let total = vm.totalTokenUsage.inputTokens
+            + vm.totalTokenUsage.outputTokens
+            + vm.totalTokenUsage.cacheReadInputTokens
+            + vm.totalTokenUsage.cacheCreationInputTokens
+        if total >= 10_000 {
+            return String(format: "%.1fk", Double(total) / 1_000.0)
+        }
+        return "\(total)"
     }
 
     private func statCell(_ label: String, value: String, color: Color = .harnessText) -> some View {

@@ -264,7 +264,9 @@ enum RunLogParser {
                 wouldRealUserSucceed: (obj["wouldRealUserSucceed"] as? Bool) ?? false,
                 stepCount: (obj["stepCount"] as? Int) ?? 0,
                 tokensUsedInputTotal: (totals["input"] as? Int) ?? 0,
-                tokensUsedOutputTotal: (totals["output"] as? Int) ?? 0
+                tokensUsedOutputTotal: (totals["output"] as? Int) ?? 0,
+                tokensUsedCacheReadTotal: (totals["cacheRead"] as? Int) ?? 0,
+                tokensUsedCacheCreationTotal: (totals["cacheCreation"] as? Int) ?? 0
             ))
 
         case "leg_started":

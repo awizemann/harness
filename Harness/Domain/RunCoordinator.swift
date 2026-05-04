@@ -359,6 +359,8 @@ actor RunCoordinator {
             stepCount: globalStepIndex - 1,
             tokensUsedInput: totalUsage.inputTokens,
             tokensUsedOutput: totalUsage.outputTokens,
+            tokensUsedCacheRead: totalUsage.cacheReadInputTokens,
+            tokensUsedCacheCreation: totalUsage.cacheCreationInputTokens,
             completedAt: Date()
         )
 
@@ -369,7 +371,9 @@ actor RunCoordinator {
             wouldRealUserSucceed: outcome.wouldRealUserSucceed,
             stepCount: outcome.stepCount,
             tokensUsedInputTotal: outcome.tokensUsedInput,
-            tokensUsedOutputTotal: outcome.tokensUsedOutput
+            tokensUsedOutputTotal: outcome.tokensUsedOutput,
+            tokensUsedCacheReadTotal: outcome.tokensUsedCacheRead,
+            tokensUsedCacheCreationTotal: outcome.tokensUsedCacheCreation
         )))
         try? await logger.writeMeta(outcome, request: request)
 

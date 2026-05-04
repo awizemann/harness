@@ -50,6 +50,14 @@ final class RunReplayViewModel {
     var steps: [StepView] = []
     var currentStepIndex: Int = 0
     var loadError: String?
+    /// Total cost for the replayed run, computed from the `run_completed`
+    /// row's token totals at the model's published rate. `.zero` for v1
+    /// logs that didn't capture cache buckets and for runs with no
+    /// `run_completed` row yet.
+    var totalCost: RunCost = .zero
+    /// The model raw value pulled from `runStarted.model`. Used to label
+    /// the cost chip (e.g. "Opus 4.7 · $0.42").
+    var modelRaw: String = ""
     /// Indices of steps in `steps` that carry at least one friction event.
     /// Computed once at parse time and consumed by the `TimelineScrubber`
     /// to render taller amber ticks at those positions.
@@ -93,10 +101,20 @@ final class RunReplayViewModel {
 
             // Aggregate.
             for row in rows {
-                if case .runStarted(_, let p) = row { self.meta = p }
+                if case .runStarted(_, let p) = row {
+                    self.meta = p
+                    self.modelRaw = p.model
+                }
                 if case .runCompleted(_, let p) = row {
                     self.verdict = Verdict(rawValue: p.verdict)
                     self.summary = p.summary
+                    self.totalCost = Pricing.cost(
+                        modelRaw: self.modelRaw,
+                        inputTokens: p.tokensUsedInputTotal,
+                        outputTokens: p.tokensUsedOutputTotal,
+                        cacheReadTokens: p.tokensUsedCacheReadTotal,
+                        cacheCreationTokens: p.tokensUsedCacheCreationTotal
+                    )
                 }
             }
 

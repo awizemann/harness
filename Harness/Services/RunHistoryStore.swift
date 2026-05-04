@@ -107,6 +107,12 @@ struct RunRecordSnapshot: Sendable, Hashable {
     let wouldRealUserSucceed: Bool
     let tokensUsedInput: Int
     let tokensUsedOutput: Int
+    /// Cache-read tokens accumulated across the run (≈90% off input rate).
+    /// `0` for runs that completed before this column landed.
+    let tokensUsedCacheRead: Int
+    /// Cache-creation tokens (≈1.25× input rate). Same backwards-compat
+    /// note as cache-read.
+    let tokensUsedCacheCreation: Int
     let runDirectoryPath: String
 
     /// Optional refs to the library entities the run was launched from.
@@ -125,6 +131,19 @@ struct RunRecordSnapshot: Sendable, Hashable {
 
     var verdict: Verdict? { verdictRaw.flatMap(Verdict.init(rawValue:)) }
     var runDirectoryURL: URL { URL(fileURLWithPath: runDirectoryPath) }
+
+    /// Itemized API cost computed from the four token buckets at the
+    /// model's published rate. Pure function — re-prices historical runs
+    /// any time Anthropic changes rates.
+    var cost: RunCost {
+        Pricing.cost(
+            modelRaw: modelRaw,
+            inputTokens: tokensUsedInput,
+            outputTokens: tokensUsedOutput,
+            cacheReadTokens: tokensUsedCacheRead,
+            cacheCreationTokens: tokensUsedCacheCreation
+        )
+    }
 
     /// Decoded leg records, or empty when the run wasn't a chain (or the
     /// blob couldn't decode). Sorted by `index` ascending.
@@ -157,6 +176,8 @@ struct RunRecordSnapshot: Sendable, Hashable {
         wouldRealUserSucceed: Bool = false,
         tokensUsedInput: Int = 0,
         tokensUsedOutput: Int = 0,
+        tokensUsedCacheRead: Int = 0,
+        tokensUsedCacheCreation: Int = 0,
         runDirectoryPath: String,
         applicationID: UUID? = nil,
         personaID: UUID? = nil,
@@ -185,6 +206,8 @@ struct RunRecordSnapshot: Sendable, Hashable {
         self.wouldRealUserSucceed = wouldRealUserSucceed
         self.tokensUsedInput = tokensUsedInput
         self.tokensUsedOutput = tokensUsedOutput
+        self.tokensUsedCacheRead = tokensUsedCacheRead
+        self.tokensUsedCacheCreation = tokensUsedCacheCreation
         self.runDirectoryPath = runDirectoryPath
         self.applicationID = applicationID
         self.personaID = personaID
@@ -266,6 +289,8 @@ actor RunHistoryStore: RunHistoryStoring {
             row.wouldRealUserSucceed = snapshot.wouldRealUserSucceed
             row.tokensUsedInput = snapshot.tokensUsedInput
             row.tokensUsedOutput = snapshot.tokensUsedOutput
+            row.tokensUsedCacheRead = snapshot.tokensUsedCacheRead
+            row.tokensUsedCacheCreation = snapshot.tokensUsedCacheCreation
             row.legsJSON = snapshot.legsJSON
             if let app { row.application = app; row.applicationLookupID = app.id }
             if let persona { row.persona_ = persona; row.personaLookupID = persona.id }
@@ -301,6 +326,8 @@ actor RunHistoryStore: RunHistoryStoring {
                 actionChain: chain
             )
             row.legsJSON = snapshot.legsJSON
+            row.tokensUsedCacheRead = snapshot.tokensUsedCacheRead
+            row.tokensUsedCacheCreation = snapshot.tokensUsedCacheCreation
             modelContext.insert(row)
         }
 
@@ -330,6 +357,8 @@ actor RunHistoryStore: RunHistoryStoring {
         row.wouldRealUserSucceed = outcome.wouldRealUserSucceed
         row.tokensUsedInput = outcome.tokensUsedInput
         row.tokensUsedOutput = outcome.tokensUsedOutput
+        row.tokensUsedCacheRead = outcome.tokensUsedCacheRead
+        row.tokensUsedCacheCreation = outcome.tokensUsedCacheCreation
         do {
             try modelContext.save()
         } catch {
@@ -724,6 +753,8 @@ actor RunHistoryStore: RunHistoryStoring {
             wouldRealUserSucceed: row.wouldRealUserSucceed,
             tokensUsedInput: row.tokensUsedInput,
             tokensUsedOutput: row.tokensUsedOutput,
+            tokensUsedCacheRead: row.tokensUsedCacheRead ?? 0,
+            tokensUsedCacheCreation: row.tokensUsedCacheCreation ?? 0,
             runDirectoryPath: row.runDirectoryPath,
             applicationID: row.applicationLookupID,
             personaID: row.personaLookupID,

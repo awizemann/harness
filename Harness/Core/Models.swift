@@ -342,7 +342,59 @@ struct RunOutcome: Sendable, Hashable, Codable {
     let stepCount: Int
     let tokensUsedInput: Int
     let tokensUsedOutput: Int
+    /// Cache-read tokens (≈90% off the input rate) accumulated across the
+    /// run. Optional in the Codable shape so historical JSONL / decoded
+    /// outcomes from before this field landed parse cleanly as 0.
+    let tokensUsedCacheRead: Int
+    /// Cache-creation tokens (≈1.25× input rate, the 5-minute ephemeral
+    /// cache write). Same backwards-compat note as cache-read.
+    let tokensUsedCacheCreation: Int
     let completedAt: Date
+
+    init(
+        verdict: Verdict,
+        summary: String,
+        frictionCount: Int,
+        wouldRealUserSucceed: Bool,
+        stepCount: Int,
+        tokensUsedInput: Int,
+        tokensUsedOutput: Int,
+        tokensUsedCacheRead: Int = 0,
+        tokensUsedCacheCreation: Int = 0,
+        completedAt: Date
+    ) {
+        self.verdict = verdict
+        self.summary = summary
+        self.frictionCount = frictionCount
+        self.wouldRealUserSucceed = wouldRealUserSucceed
+        self.stepCount = stepCount
+        self.tokensUsedInput = tokensUsedInput
+        self.tokensUsedOutput = tokensUsedOutput
+        self.tokensUsedCacheRead = tokensUsedCacheRead
+        self.tokensUsedCacheCreation = tokensUsedCacheCreation
+        self.completedAt = completedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case verdict, summary, frictionCount, wouldRealUserSucceed
+        case stepCount, tokensUsedInput, tokensUsedOutput
+        case tokensUsedCacheRead, tokensUsedCacheCreation
+        case completedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.verdict = try c.decode(Verdict.self, forKey: .verdict)
+        self.summary = try c.decode(String.self, forKey: .summary)
+        self.frictionCount = try c.decode(Int.self, forKey: .frictionCount)
+        self.wouldRealUserSucceed = try c.decode(Bool.self, forKey: .wouldRealUserSucceed)
+        self.stepCount = try c.decode(Int.self, forKey: .stepCount)
+        self.tokensUsedInput = try c.decode(Int.self, forKey: .tokensUsedInput)
+        self.tokensUsedOutput = try c.decode(Int.self, forKey: .tokensUsedOutput)
+        self.tokensUsedCacheRead = try c.decodeIfPresent(Int.self, forKey: .tokensUsedCacheRead) ?? 0
+        self.tokensUsedCacheCreation = try c.decodeIfPresent(Int.self, forKey: .tokensUsedCacheCreation) ?? 0
+        self.completedAt = try c.decode(Date.self, forKey: .completedAt)
+    }
 }
 
 // MARK: - Run events (internal stream type)

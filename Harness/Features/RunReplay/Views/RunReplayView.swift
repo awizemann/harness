@@ -45,11 +45,28 @@ struct RunReplayView: View {
                 }
             }
             Spacer()
+            if vm.totalCost.total > 0 {
+                costChip
+            }
             Button("Close") { dismiss() }
                 .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, Theme.spacing.l)
         .padding(.vertical, Theme.spacing.m)
+    }
+
+    private var costChip: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "dollarsign.circle.fill")
+                .font(.system(size: 11))
+            Text(vm.totalCost.formattedTotal)
+                .font(HFont.mono)
+        }
+        .foregroundStyle(Color.harnessAccent)
+        .padding(.horizontal, Theme.spacing.s)
+        .frame(height: 22)
+        .background(Capsule().fill(Color.harnessAccentSoft))
+        .help("Estimated API cost · \(AgentModel(rawValue: vm.modelRaw)?.displayName ?? vm.modelRaw)")
     }
 
     @ViewBuilder

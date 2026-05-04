@@ -121,6 +121,53 @@ struct RunCompletedPayload: Sendable, Codable {
     let stepCount: Int
     let tokensUsedInputTotal: Int
     let tokensUsedOutputTotal: Int
+    /// Cache-read tokens accumulated across the run. Optional so logs from
+    /// before this field landed parse cleanly as 0.
+    let tokensUsedCacheReadTotal: Int
+    /// Cache-creation tokens accumulated across the run. Same backwards-
+    /// compat shape.
+    let tokensUsedCacheCreationTotal: Int
+
+    init(
+        verdict: String,
+        summary: String,
+        frictionCount: Int,
+        wouldRealUserSucceed: Bool,
+        stepCount: Int,
+        tokensUsedInputTotal: Int,
+        tokensUsedOutputTotal: Int,
+        tokensUsedCacheReadTotal: Int = 0,
+        tokensUsedCacheCreationTotal: Int = 0
+    ) {
+        self.verdict = verdict
+        self.summary = summary
+        self.frictionCount = frictionCount
+        self.wouldRealUserSucceed = wouldRealUserSucceed
+        self.stepCount = stepCount
+        self.tokensUsedInputTotal = tokensUsedInputTotal
+        self.tokensUsedOutputTotal = tokensUsedOutputTotal
+        self.tokensUsedCacheReadTotal = tokensUsedCacheReadTotal
+        self.tokensUsedCacheCreationTotal = tokensUsedCacheCreationTotal
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case verdict, summary, frictionCount, wouldRealUserSucceed
+        case stepCount, tokensUsedInputTotal, tokensUsedOutputTotal
+        case tokensUsedCacheReadTotal, tokensUsedCacheCreationTotal
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.verdict = try c.decode(String.self, forKey: .verdict)
+        self.summary = try c.decode(String.self, forKey: .summary)
+        self.frictionCount = try c.decode(Int.self, forKey: .frictionCount)
+        self.wouldRealUserSucceed = try c.decode(Bool.self, forKey: .wouldRealUserSucceed)
+        self.stepCount = try c.decode(Int.self, forKey: .stepCount)
+        self.tokensUsedInputTotal = try c.decode(Int.self, forKey: .tokensUsedInputTotal)
+        self.tokensUsedOutputTotal = try c.decode(Int.self, forKey: .tokensUsedOutputTotal)
+        self.tokensUsedCacheReadTotal = try c.decodeIfPresent(Int.self, forKey: .tokensUsedCacheReadTotal) ?? 0
+        self.tokensUsedCacheCreationTotal = try c.decodeIfPresent(Int.self, forKey: .tokensUsedCacheCreationTotal) ?? 0
+    }
 }
 
 /// New in v2 — emitted at the top of each leg of a chain run. For
@@ -302,6 +349,8 @@ actor RunLogger: RunLogging {
             "stepCount": outcome.stepCount,
             "tokensUsedInput": outcome.tokensUsedInput,
             "tokensUsedOutput": outcome.tokensUsedOutput,
+            "tokensUsedCacheRead": outcome.tokensUsedCacheRead,
+            "tokensUsedCacheCreation": outcome.tokensUsedCacheCreation,
             "model": request.model.rawValue,
             "mode": request.mode.rawValue,
             "goal": request.goal,
@@ -433,7 +482,9 @@ actor RunLogger: RunLogging {
             dict["stepCount"] = p.stepCount
             dict["tokensUsedTotal"] = [
                 "input": p.tokensUsedInputTotal,
-                "output": p.tokensUsedOutputTotal
+                "output": p.tokensUsedOutputTotal,
+                "cacheRead": p.tokensUsedCacheReadTotal,
+                "cacheCreation": p.tokensUsedCacheCreationTotal
             ] as [String: Any]
         }
 

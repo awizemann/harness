@@ -114,6 +114,20 @@ final class RunSessionViewModel {
     /// style labels.
     var startedAtForDisplay: Date? { startedAt }
 
+    /// Latest known token usage for the run. Updated when the coordinator
+    /// emits the final `runCompleted` event; `.zero` while the run is in
+    /// flight (per-step token deltas aren't surfaced live yet — tracked in
+    /// the design backlog). Drives the LeftRail's cost cell.
+    var totalTokenUsage: TokenUsage = .zero
+
+    /// Estimated API cost for the run, computed from `totalTokenUsage` and
+    /// the request's model. `.zero` while no cost is measurable (live
+    /// in-flight runs, ad-hoc test paths without a model).
+    var totalCost: RunCost {
+        guard let model = request?.model else { return .zero }
+        return Pricing.cost(model: model, usage: totalTokenUsage)
+    }
+
     init(container: AppContainer) {
         self.container = container
     }
@@ -138,6 +152,7 @@ final class RunSessionViewModel {
         self.currentLegIndex = nil
         self.currentGoal = request.goal
         self.currentLegName = Self.initialLegName(for: request)
+        self.totalTokenUsage = .zero
 
         let coordinator = container.makeRunCoordinator()
         let approvals = AsyncStream<UserApproval> { continuation in
@@ -322,6 +337,12 @@ final class RunSessionViewModel {
         case .runCompleted(let outcome):
             self.outcome = outcome
             self.status = .completed(outcome.verdict)
+            self.totalTokenUsage = TokenUsage(
+                inputTokens: outcome.tokensUsedInput,
+                outputTokens: outcome.tokensUsedOutput,
+                cacheReadInputTokens: outcome.tokensUsedCacheRead,
+                cacheCreationInputTokens: outcome.tokensUsedCacheCreation
+            )
             stopBackgroundTasks()
         }
     }

@@ -226,6 +226,15 @@ final class RunRecord {
     /// loaded alongside the parent run via the snapshot bridge.
     var legsJSON: String? = nil
 
+    /// Cache-read tokens accumulated across the run (≈90% off the input
+    /// rate). Optional with a default so existing stores migrate
+    /// lightweight; nil for runs that completed before this column landed
+    /// — the cost cell renders as `$0.00` for those, which matches the
+    /// historical reality that we didn't measure cache hits for them.
+    var tokensUsedCacheRead: Int? = nil
+    /// Cache-creation tokens (≈1.25× input rate). Same migration shape.
+    var tokensUsedCacheCreation: Int? = nil
+
     init(
         id: UUID,
         name: String? = nil,

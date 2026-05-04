@@ -28,6 +28,9 @@ struct RunHistoryDetailView: View {
                 VStack(alignment: .leading, spacing: Theme.spacing.l) {
                     summaryGrid
                     summaryPanel
+                    if showCostCell {
+                        costPanel
+                    }
                     if !(detail?.frictionEvents.isEmpty ?? true) {
                         frictionPanel
                     }
@@ -89,7 +92,7 @@ struct RunHistoryDetailView: View {
         .background(Capsule().fill(Color.harnessPanel2))
     }
 
-    // MARK: Summary grid (4 or 5 cells — 5th cell is "Legs" for chain runs)
+    // MARK: Summary grid
 
     private var summaryGrid: some View {
         HStack(spacing: 0.5) {
@@ -101,10 +104,11 @@ struct RunHistoryDetailView: View {
                 "\(run.frictionCount)",
                 color: run.frictionCount == 0 ? .harnessText : .harnessWarning
             )
-            // Phase E: chain runs grow a "Legs" cell. Single-action /
-            // ad-hoc / pre-rework runs keep the 4-cell grid.
             if run.legs.count > 1 {
                 cell("Legs", "\(run.legs.count)")
+            }
+            if showCostCell {
+                cell("Cost", run.cost.formattedTotal, color: .harnessAccent)
             }
         }
         .background(Color.harnessLine)
@@ -113,6 +117,16 @@ struct RunHistoryDetailView: View {
             RoundedRectangle(cornerRadius: Theme.radius.panel)
                 .stroke(Color.harnessLine, lineWidth: 0.5)
         )
+    }
+
+    /// Hide the cost cell on rows that pre-date token persistence so the
+    /// grid doesn't render `$0.00` for runs we never measured. Any row
+    /// with a non-zero token bucket gets a cell.
+    private var showCostCell: Bool {
+        run.tokensUsedInput
+            + run.tokensUsedOutput
+            + run.tokensUsedCacheRead
+            + run.tokensUsedCacheCreation > 0
     }
 
     private func cell(_ label: String, _ value: String, color: Color = .harnessText) -> some View {
@@ -173,6 +187,84 @@ struct RunHistoryDetailView: View {
                 }
             }
         }
+    }
+
+    private var costPanel: some View {
+        let cost = run.cost
+        let modelLabel = AgentModel(rawValue: run.modelRaw)?.displayName ?? run.modelRaw
+        return PanelContainer(title: "API cost") {
+            VStack(alignment: .leading, spacing: 0) {
+                costRow(
+                    label: "Input",
+                    detail: "\(formatTokens(run.tokensUsedInput)) tok",
+                    amount: RunCost.format(cost.inputUSD)
+                )
+                Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
+                costRow(
+                    label: "Output",
+                    detail: "\(formatTokens(run.tokensUsedOutput)) tok",
+                    amount: RunCost.format(cost.outputUSD)
+                )
+                if run.tokensUsedCacheRead > 0 {
+                    Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
+                    costRow(
+                        label: "Cache read",
+                        detail: "\(formatTokens(run.tokensUsedCacheRead)) tok · 90% off",
+                        amount: RunCost.format(cost.cacheReadUSD)
+                    )
+                }
+                if run.tokensUsedCacheCreation > 0 {
+                    Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
+                    costRow(
+                        label: "Cache write",
+                        detail: "\(formatTokens(run.tokensUsedCacheCreation)) tok · 1.25× input",
+                        amount: RunCost.format(cost.cacheCreationUSD)
+                    )
+                }
+                Rectangle().fill(Color.harnessLine).frame(height: 0.5)
+                HStack {
+                    Text("Total")
+                        .font(HFont.caption)
+                        .foregroundStyle(Color.harnessText)
+                    Spacer()
+                    Text(modelLabel)
+                        .font(HFont.micro)
+                        .foregroundStyle(Color.harnessText3)
+                    Text(cost.formattedTotal)
+                        .font(HFont.monoStat)
+                        .foregroundStyle(Color.harnessAccent)
+                }
+                .padding(.horizontal, Theme.spacing.m)
+                .padding(.vertical, Theme.spacing.s)
+                .background(Color.harnessPanel2)
+            }
+        }
+    }
+
+    private func costRow(label: String, detail: String, amount: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.spacing.s) {
+            Text(label)
+                .font(HFont.caption)
+                .foregroundStyle(Color.harnessText)
+                .frame(width: 96, alignment: .leading)
+            Text(detail)
+                .font(HFont.mono)
+                .foregroundStyle(Color.harnessText3)
+            Spacer()
+            Text(amount)
+                .font(HFont.mono)
+                .foregroundStyle(Color.harnessText2)
+        }
+        .padding(.horizontal, Theme.spacing.m)
+        .padding(.vertical, Theme.spacing.s)
+    }
+
+    private func formatTokens(_ n: Int) -> String {
+        if n < 1_000 { return "\(n)" }
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.maximumFractionDigits = 0
+        return f.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
     private var pathPanel: some View {
