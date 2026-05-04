@@ -49,6 +49,13 @@ targets:
     sources:
       - path: Harness
       - path: HarnessDesign
+        excludes:
+          # Designer mocks that re-implement production screens against
+          # mock data. They share filenames with `Harness/Features/*/Views/`
+          # and pull in symbols (HColor, RunMode redeclarations) that
+          # collide with production. Kept in-tree as visual references
+          # only — never compiled into the app target.
+          - "Screens/**"
       - path: docs/PROMPTS
         type: folder
         buildPhase: resources

@@ -35,6 +35,31 @@ enum HFont {
     /// SF Mono 16pt tabular — stat values.
     static let monoStat  = Font.system(size: 16, weight: .medium, design: .monospaced)
         .monospacedDigit()
+
+    // MARK: Variable-size helpers
+    //
+    // The fixed tokens above cover the standard scale. Designer mocks
+    // sometimes pixel-tune individual elements (e.g. an inline label at
+    // 11.5pt or a key cap at 10.5pt mono); these helpers let the
+    // production view match the mock without inventing one-off `.system`
+    // calls scattered across feature code. Prefer the fixed tokens when
+    // the size matches; reach for these when it doesn't.
+
+    /// SF Pro Text at the requested size + weight (regular by default).
+    static func ui(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        Font.system(size: size, weight: weight, design: .default)
+    }
+
+    /// Convenience for the common semibold pairing.
+    static func uiSemibold(_ size: CGFloat) -> Font {
+        Font.system(size: size, weight: .semibold, design: .default)
+    }
+
+    /// SF Mono at the requested size + weight (medium by default — mono
+    /// reads thin at lower sizes so we match the fixed-token weight).
+    static func mono(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
+        Font.system(size: size, weight: weight, design: .monospaced)
+    }
 }
 
 extension View {

@@ -64,6 +64,7 @@ Every primitive ships with a `#Preview`; the "Used by" column is the production 
 | `FlowLayout` | `HarnessDesign/Primitives/FlowLayout.swift` | RunHistory detail "Path" panel — reusable chip flow |
 | `EmptyStateView` | `HarnessDesign/Primitives/EmptyStateView.swift` | RunHistory (no runs / no matches / no selection), RunSession (idle), RunReplay (load error / no steps) |
 | `StatusChip` | `HarnessDesign/Primitives/StatusChip.swift` | RunSession mirror overlay, Settings tooling rows, RunHistory detail header (in-progress runs) |
+| `Pill` | `HarnessDesign/Primitives/Pill.swift` | New Run section header (preflight), Advanced disclosure collapsed-state model + budget badges. Three kinds: `.success`, `.warning`, `.neutral`. Distinct from `StatusChip` (run-state lifecycle, pulses) and `FrictionTag` (always amber). |
 
 ## Screens
 
