@@ -32,6 +32,37 @@ final class RunSessionViewModel {
     var pendingApproval: PendingApproval?
     var elapsedSeconds: Int = 0
     var runError: String?
+    /// Per-leg progress for chain runs. One entry per leg in declaration
+    /// order. Populated from `RunRequest.payload` at run start; mutated as
+    /// `.legStarted` / `.legCompleted` events arrive. For single-action and
+    /// ad-hoc runs, this holds one entry mirroring the synthesized leg the
+    /// coordinator emits. The session view hides the chain block entirely
+    /// when `legProgress.count <= 1`.
+    var legProgress: [LegProgress] = []
+    /// 0-based index of the leg currently executing, or `nil` between legs.
+    var currentLegIndex: Int?
+    /// Latest goal text the agent is driving against. For chain runs this
+    /// flips per leg; for single-action runs it's the request's goal.
+    var currentGoal: String = ""
+    /// Latest leg name (the chain step's `actionName`) the agent is on. For
+    /// single-action runs this stays the action's name from the request.
+    var currentLegName: String = ""
+
+    /// One leg's status in the chain progress list. The session view maps
+    /// this onto the existing `StatusChip` primitive.
+    struct LegProgress: Sendable, Hashable, Identifiable {
+        enum Status: Sendable, Hashable {
+            case pending
+            case running
+            case done(Verdict)
+            case skipped
+        }
+        let id: Int             // 0-based leg index
+        let actionName: String
+        let goal: String
+        let preservesState: Bool
+        var status: Status
+    }
     /// On a build failure, points at `<run-dir>/build/build.log`. The UI
     /// uses this to show a Reveal-in-Finder button.
     var buildLogURL: URL?
@@ -78,6 +109,11 @@ final class RunSessionViewModel {
     private var approvalContinuation: AsyncStream<UserApproval>.Continuation?
     private var startedAt: Date?
 
+    /// Public read-only accessor for the run's wall-clock start. The
+    /// LeftRail's "Started" sub-meta row uses this to render `today, 14:22`
+    /// style labels.
+    var startedAtForDisplay: Date? { startedAt }
+
     init(container: AppContainer) {
         self.container = container
     }
@@ -98,6 +134,10 @@ final class RunSessionViewModel {
         self.runError = nil
         self.startedAt = Date()
         self.elapsedSeconds = 0
+        self.legProgress = Self.initialLegProgress(for: request)
+        self.currentLegIndex = nil
+        self.currentGoal = request.goal
+        self.currentLegName = Self.initialLegName(for: request)
 
         let coordinator = container.makeRunCoordinator()
         let approvals = AsyncStream<UserApproval> { continuation in
@@ -245,11 +285,39 @@ final class RunSessionViewModel {
         case .stepCompleted:
             break
 
-        case .legStarted, .legCompleted:
-            // Phase E added per-leg events. The session view aggregates the
-            // whole run today; future work could surface per-leg dividers
-            // in the step feed (tracked in the design backlog).
-            break
+        case .legStarted(let index, let actionName, let goal, _):
+            self.currentLegIndex = index
+            self.currentLegName = actionName
+            self.currentGoal = goal
+            // Mark the active leg as running, leave earlier ones at their
+            // recorded status, and reset any stragglers if the executor
+            // somehow re-enters a leg (shouldn't happen — defensive).
+            for i in legProgress.indices {
+                if i == index {
+                    legProgress[i].status = .running
+                } else if i < index, case .pending = legProgress[i].status {
+                    // Past leg never received a legCompleted (rare; treat
+                    // as skipped so the chain view stays sane).
+                    legProgress[i].status = .skipped
+                }
+            }
+
+        case .legCompleted(let index, let verdict, let summary):
+            guard legProgress.indices.contains(index) else { break }
+            if summary == "skipped" {
+                legProgress[index].status = .skipped
+            } else if let verdict {
+                legProgress[index].status = .done(verdict)
+            } else {
+                // No verdict + non-skipped summary — defensive fallback.
+                legProgress[index].status = .skipped
+            }
+            // The current-leg pointer drops while we wait for the next
+            // legStarted (or runCompleted). Keeping the last index here
+            // would falsely highlight a finished leg.
+            if currentLegIndex == index {
+                currentLegIndex = nil
+            }
 
         case .runCompleted(let outcome):
             self.outcome = outcome
@@ -295,6 +363,72 @@ final class RunSessionViewModel {
         return String(format: "%02d:%02d", m, s)
     }
 
+    /// True when the active run is a chain (≥2 legs). The session view
+    /// uses this to gate the chain progress block in the LeftRail and to
+    /// render leg dividers in the step feed (future work).
+    var isChainRun: Bool {
+        legProgress.count > 1
+    }
+
+    /// One-line label for the run-name chip in the toolbar. Falls back
+    /// progressively: explicit run name → chain/action name → the request's
+    /// goal text → "Run" so we never render an empty chip.
+    var runDisplayName: String {
+        if let req = request {
+            let trimmed = req.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        if !currentLegName.isEmpty { return currentLegName }
+        return request?.goal.firstSentence ?? "Run"
+    }
+
+    nonisolated private static func initialLegProgress(for request: GoalRequest) -> [LegProgress] {
+        switch request.payload {
+        case .chain(_, let legs):
+            return legs.map { leg in
+                LegProgress(
+                    id: leg.index,
+                    actionName: leg.actionName,
+                    goal: leg.goal,
+                    preservesState: leg.preservesState,
+                    status: .pending
+                )
+            }
+        case .singleAction:
+            // Single-action runs still emit one synthesized leg from the
+            // coordinator. Seed a one-entry list so the VM's leg pointer
+            // can flip without nil-checking; the view hides the panel
+            // when count == 1.
+            return [
+                LegProgress(
+                    id: 0,
+                    actionName: request.name.isEmpty ? request.goal.firstSentence : request.name,
+                    goal: request.goal,
+                    preservesState: false,
+                    status: .pending
+                )
+            ]
+        case .ad_hoc:
+            return [
+                LegProgress(
+                    id: 0,
+                    actionName: request.goal.firstSentence,
+                    goal: request.goal,
+                    preservesState: false,
+                    status: .pending
+                )
+            ]
+        }
+    }
+
+    nonisolated private static func initialLegName(for request: GoalRequest) -> String {
+        switch request.payload {
+        case .chain(_, let legs): return legs.first?.actionName ?? request.name
+        case .singleAction:       return request.name.isEmpty ? request.goal.firstSentence : request.name
+        case .ad_hoc:             return request.goal.firstSentence
+        }
+    }
+
     /// Map the run's `Status` onto the `StatusChip` primitive's smaller enum.
     /// Returns `nil` for `.idle` (no run in flight → no chip rendered).
     var statusKind: StatusKind? {
@@ -306,5 +440,21 @@ final class RunSessionViewModel {
         case .completed:                  return .done
         case .failed:                     return .paused
         }
+    }
+}
+
+// MARK: - Helpers
+
+private extension String {
+    /// Trim to the first sentence (or the first 60 characters), trimmed.
+    /// Used for leg-name fallbacks when the user didn't supply an explicit
+    /// run name and we need a label that fits the toolbar chip / chain row.
+    var firstSentence: String {
+        let trimmed = self.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Run" }
+        let firstChunk = trimmed.split(whereSeparator: { ".!?\n".contains($0) }).first.map(String.init) ?? trimmed
+        let cleaned = firstChunk.trimmingCharacters(in: .whitespaces)
+        if cleaned.count <= 60 { return cleaned }
+        return String(cleaned.prefix(57)) + "…"
     }
 }

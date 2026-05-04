@@ -38,7 +38,7 @@ struct RunSessionView: View {
         } else {
             HSplitView {
                 LeftRail(vm: vm)
-                    .frame(minWidth: 220, idealWidth: 240, maxWidth: 280)
+                    .frame(minWidth: 260, idealWidth: 280, maxWidth: 320)
                 ZStack(alignment: .bottom) {
                     SimulatorMirrorView(
                         image: Binding(get: { vm.liveImage }, set: { vm.liveImage = $0 }),
@@ -69,8 +69,14 @@ struct RunSessionView: View {
                 StepFeedRail(vm: vm)
                     .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
             }
-            .navigationTitle("Active Run")
+            .navigationTitle("")
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    BreadcrumbBar(vm: vm)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    RunNameChip(vm: vm)
+                }
                 ToolbarItem(placement: .primaryAction) {
                     if case .completed = vm.status {
                         Button {
@@ -80,17 +86,67 @@ struct RunSessionView: View {
                         } label: {
                             Label("Open Replay", systemImage: "play.rectangle")
                         }
-                    } else {
-                        Button(role: .destructive) {
-                            vm.stop()
-                        } label: {
-                            Label("Stop", systemImage: "stop.fill")
-                        }
-                        .keyboardShortcut(".", modifiers: [.command])
                     }
                 }
             }
         }
+    }
+}
+
+// MARK: - Toolbar widgets
+
+/// Breadcrumb shown in the toolbar's principal slot:
+/// `Live Session / <project> / <simulator>`. Mirrors the design's chrome.
+private struct BreadcrumbBar: View {
+    @Bindable var vm: RunSessionViewModel
+    var body: some View {
+        HStack(spacing: Theme.spacing.s) {
+            Text("Live Session")
+                .font(.headline)
+                .foregroundStyle(Color.harnessText)
+            if let req = vm.request {
+                separator
+                Text(req.project.displayName)
+                    .font(.callout)
+                    .foregroundStyle(Color.harnessText3)
+                separator
+                Text(req.simulator.name)
+                    .font(.callout)
+                    .foregroundStyle(Color.harnessText3)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+    private var separator: some View {
+        Text("/")
+            .font(.callout)
+            .foregroundStyle(Color.harnessText4)
+    }
+}
+
+/// Pill in the toolbar's primary-action slot showing the run's display
+/// name (or the current leg's action name as a chain progresses).
+private struct RunNameChip: View {
+    @Bindable var vm: RunSessionViewModel
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "plus")
+                .font(.system(size: 10, weight: .semibold))
+            Text(vm.runDisplayName)
+                .font(HFont.caption)
+                .lineLimit(1)
+        }
+        .foregroundStyle(Color.harnessText2)
+        .padding(.horizontal, Theme.spacing.s)
+        .frame(height: 22)
+        .background(
+            Capsule().fill(Color.harnessPanel2)
+        )
+        .overlay(
+            Capsule().stroke(Color.harnessLine, lineWidth: 0.5)
+        )
+        .help(vm.runDisplayName)
     }
 }
 
@@ -99,90 +155,317 @@ struct RunSessionView: View {
 private struct LeftRail: View {
     @Bindable var vm: RunSessionViewModel
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.m) {
-            statusBlock
-            if let req = vm.request {
-                metaBlock(req: req)
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.spacing.l) {
+                    if !vm.currentGoal.isEmpty {
+                        goalBlock
+                    }
+                    if let req = vm.request, !req.persona.isEmpty {
+                        personaBlock(persona: req.persona)
+                    }
+                    if vm.isChainRun {
+                        ChainProgressBlock(legs: vm.legProgress, currentIndex: vm.currentLegIndex)
+                    }
+                    if let req = vm.request {
+                        statsGrid(req: req)
+                        modeBlock(req: req)
+                        metaBlock(req: req)
+                    }
+                    if let err = vm.runError {
+                        Text(err)
+                            .font(.caption)
+                            .foregroundStyle(Color.harnessFailure)
+                    }
+                }
+                .padding(Theme.spacing.l)
             }
-            Spacer()
+            Divider()
+            actionButtons
+                .padding(Theme.spacing.m)
         }
-        .padding(Theme.spacing.l)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
-    private var statusBlock: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.s) {
-            Text("STATUS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            HStack(spacing: Theme.spacing.s) {
-                Circle().fill(statusColor).frame(width: 8, height: 8)
-                Text(statusLabel).font(.body.weight(.medium))
-            }
-            if vm.elapsedSeconds > 0 {
-                Text("Elapsed \(elapsed)").font(.caption).foregroundStyle(.secondary)
-            }
-            Text("Friction events: \(vm.frictionFeed.count)").font(.caption).foregroundStyle(.secondary)
-            if let err = vm.runError {
-                Text(err).font(.caption).foregroundStyle(Color.harnessFailure)
-            }
+    // MARK: Goal & Persona
+
+    private var goalBlock: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
+            metaKey("GOAL")
+            Text(vm.currentGoal)
+                .font(.callout.italic())
+                .foregroundStyle(Color.harnessText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    private func personaBlock(persona: String) -> some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
+            metaKey("PERSONA")
+            Text(persona)
+                .font(.callout)
+                .foregroundStyle(Color.harnessText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: Stats grid (2x2)
+
+    private func statsGrid(req: GoalRequest) -> some View {
+        let frictionColor: Color = vm.frictionFeed.isEmpty
+            ? Color.harnessText
+            : Color.harnessWarning
+        return Grid(horizontalSpacing: 0.5, verticalSpacing: 0.5) {
+            GridRow {
+                statCell("STEP", value: "\(vm.feed.count)/\(req.stepBudget)")
+                statCell("ELAPSED", value: elapsedLabel)
+            }
+            GridRow {
+                statCell("FRICTION", value: "\(vm.frictionFeed.count)", color: frictionColor)
+                statCell("MODEL", value: req.model.displayName)
+            }
+        }
+        .background(Color.harnessLine)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radius.panel))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius.panel)
+                .stroke(Color.harnessLine, lineWidth: 0.5)
+        )
+    }
+
+    private func statCell(_ label: String, value: String, color: Color = .harnessText) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            metaKey(label)
+            Text(value)
+                .font(HFont.monoStat)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Theme.spacing.m)
+        .padding(.vertical, Theme.spacing.s)
+        .background(Color.harnessPanel)
+    }
+
+    // MARK: Mode
+
+    private func modeBlock(req: GoalRequest) -> some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
+            metaKey("MODE")
+            HStack(spacing: 6) {
+                Image(systemName: req.mode == .autonomous ? "arrow.right.circle" : "hand.point.up")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(req.mode == .stepByStep ? "Step-by-step" : "Autonomous")
+                    .font(HFont.caption)
+            }
+            .foregroundStyle(Color.harnessAccent)
+            .padding(.horizontal, Theme.spacing.s)
+            .frame(height: 22)
+            .background(Capsule().fill(Color.harnessAccentSoft))
+        }
+    }
+
+    // MARK: Sub-meta list
+
+    private func metaBlock(req: GoalRequest) -> some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.s) {
+            metaRow("Project", req.project.displayName)
+            metaRow("Scheme", req.project.scheme)
+            metaRow("Device", "\(req.simulator.name) · \(req.simulator.runtime)")
+            metaRow("Started", startedLabel)
+        }
+    }
+
+    private func metaRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.spacing.s) {
+            Text(label)
+                .font(HFont.caption)
+                .foregroundStyle(Color.harnessText3)
+                .frame(width: 64, alignment: .leading)
+            Text(value)
+                .font(HFont.caption)
+                .foregroundStyle(Color.harnessText)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+        }
+    }
+
+    // MARK: Action buttons (Stop / future Pause)
 
     @ViewBuilder
-    private func metaBlock(req: GoalRequest) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("REQUEST").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            row("Project", req.project.displayName)
-            row("Scheme", req.project.scheme)
-            row("Sim", "\(req.simulator.name) · \(req.simulator.runtime)")
-            row("Model", req.model.displayName)
-            row("Mode", req.mode == .stepByStep ? "Step-by-step" : "Autonomous")
-            row("Persona", req.persona)
-                .lineLimit(3)
-            row("Goal", req.goal).lineLimit(5)
-        }
-    }
-
-    private func row(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label.uppercased()).font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-            Text(value).font(.callout)
-        }
-    }
-
-    private var statusLabel: String {
-        switch vm.status {
-        case .idle: return "Idle"
-        case .starting: return "Starting…"
-        case .building: return "Building…"
-        case .launching: return "Launching simulator…"
-        case .running: return "Running"
-        case .awaitingApproval: return "Awaiting approval"
-        case .completed(let v): return "Completed: \(v.rawValue)"
-        case .failed: return "Failed"
-        }
-    }
-
-    private var statusColor: Color {
-        switch vm.status {
-        case .idle: return Color.harnessText3
-        case .starting, .building, .launching: return Color.harnessWarning
-        case .running: return Color.harnessAccent
-        case .awaitingApproval: return Color.harnessWarning
-        case .completed(let v):
-            switch v {
-            case .success: return Color.harnessSuccess
-            case .failure: return Color.harnessFailure
-            case .blocked: return Color.harnessBlocked
+    private var actionButtons: some View {
+        VStack(spacing: Theme.spacing.s) {
+            if case .completed = vm.status {
+                // Run is done — no destructive action surface here. The
+                // Replay button lives in the toolbar's primary action slot.
+                EmptyView()
+            } else {
+                Button(role: .destructive) {
+                    vm.stop()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "stop.fill")
+                        Text("Stop run")
+                        Spacer()
+                        Text("⌘.")
+                            .font(HFont.mono)
+                            .foregroundStyle(Color.harnessText4)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(".", modifiers: [.command])
             }
-        case .failed: return Color.harnessFailure
         }
     }
 
-    private var elapsed: String {
+    // MARK: Helpers
+
+    private func metaKey(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(Color.harnessText3)
+    }
+
+    private var elapsedLabel: String {
         let m = vm.elapsedSeconds / 60
         let s = vm.elapsedSeconds % 60
         return String(format: "%02d:%02d", m, s)
+    }
+
+    private var startedLabel: String {
+        guard let when = vm.startedAtForDisplay else { return "—" }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        let calendar = Calendar.current
+        if calendar.isDateInToday(when) {
+            return "today, " + formatter.string(from: when)
+        }
+        if calendar.isDateInYesterday(when) {
+            return "yesterday, " + formatter.string(from: when)
+        }
+        let day = DateFormatter()
+        day.dateFormat = "MMM d"
+        return "\(day.string(from: when)), \(formatter.string(from: when))"
+    }
+}
+
+// MARK: - Chain progress block
+
+private struct ChainProgressBlock: View {
+    let legs: [RunSessionViewModel.LegProgress]
+    let currentIndex: Int?
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.s) {
+            HStack {
+                Text("CHAIN")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Color.harnessText3)
+                Spacer()
+                Text("\(doneCount)/\(legs.count)")
+                    .font(HFont.mono)
+                    .foregroundStyle(Color.harnessText3)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(legs.enumerated()), id: \.element.id) { idx, leg in
+                    LegRow(
+                        leg: leg,
+                        position: idx + 1,
+                        isCurrent: currentIndex == idx
+                    )
+                    if idx < legs.count - 1 {
+                        Rectangle()
+                            .fill(Color.harnessLineSoft)
+                            .frame(height: 0.5)
+                    }
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radius.panel)
+                    .fill(Color.harnessPanel)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius.panel)
+                    .stroke(Color.harnessLine, lineWidth: 0.5)
+            )
+        }
+    }
+
+    private var doneCount: Int {
+        legs.reduce(0) { acc, leg in
+            switch leg.status {
+            case .done, .skipped: return acc + 1
+            case .pending, .running: return acc
+            }
+        }
+    }
+}
+
+private struct LegRow: View {
+    let leg: RunSessionViewModel.LegProgress
+    let position: Int
+    let isCurrent: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Theme.spacing.s) {
+            statusGlyph
+                .frame(width: 16, alignment: .leading)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("Leg \(position)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isCurrent ? Color.harnessAccent : Color.harnessText3)
+                    if !leg.preservesState && position > 1 {
+                        Text("· reinstall")
+                            .font(HFont.micro)
+                            .foregroundStyle(Color.harnessText4)
+                    }
+                }
+                Text(leg.actionName)
+                    .font(.callout)
+                    .foregroundStyle(Color.harnessText)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Theme.spacing.m)
+        .padding(.vertical, Theme.spacing.s)
+        .background(isCurrent ? Color.harnessAccentSoft : Color.clear)
+    }
+
+    @ViewBuilder
+    private var statusGlyph: some View {
+        switch leg.status {
+        case .pending:
+            Image(systemName: "circle")
+                .foregroundStyle(Color.harnessText4)
+        case .running:
+            Image(systemName: "circle.dotted")
+                .foregroundStyle(Color.harnessAccent)
+                .symbolEffect(.pulse, options: .repeating)
+        case .done(let verdict):
+            switch verdict {
+            case .success:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.harnessSuccess)
+            case .failure:
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(Color.harnessFailure)
+            case .blocked:
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(Color.harnessBlocked)
+            }
+        case .skipped:
+            Image(systemName: "minus.circle")
+                .foregroundStyle(Color.harnessText4)
+        }
     }
 }
 
@@ -193,13 +476,23 @@ private struct StepFeedRail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("STEP FEED").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Step Feed")
+                    .font(HFont.headline)
+                    .foregroundStyle(Color.harnessText)
                 Spacer()
-                Text("\(vm.feed.count)").font(.caption).foregroundStyle(.tertiary)
+                Text("\(vm.feed.count) steps")
+                    .font(HFont.micro)
+                    .foregroundStyle(Color.harnessText3)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.harnessPanel2))
             }
             .padding(.horizontal, Theme.spacing.m)
             .padding(.top, Theme.spacing.m)
             .padding(.bottom, Theme.spacing.s)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Color.harnessLine).frame(height: 0.5)
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: Theme.spacing.s) {
@@ -212,7 +505,7 @@ private struct StepFeedRail: View {
                         }
                     }
                     .padding(.horizontal, Theme.spacing.s)
-                    .padding(.bottom, Theme.spacing.m)
+                    .padding(.vertical, Theme.spacing.m)
                 }
                 .onChange(of: vm.feed.count) {
                     if let last = vm.feed.last {
