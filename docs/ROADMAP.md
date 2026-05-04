@@ -113,9 +113,23 @@ Replaces idb (broken on iOS 26+ — taps render the green dot but never reach th
 
 ---
 
-## Phase 6+ — deferred
+## Phase 6 — Workspace rework ✅ shipped 2026-05-04
 
-See `PRD.md` "Deferred / future ideas." Track as GitHub issues once the repo is public.
+The product question after Phases 1–4 was throughput: composing a run took the user through project picker → scheme → simulator → persona → goal every single time, and after the run, all that context was gone. Phase 6 introduces the missing abstractions so a single context selection persists indefinitely and complex multi-step user tests run in one go.
+
+- [x] Phase A — SwiftData V2 (`5d2fcae`). New `@Model`s: `Application`, `Persona`, `Action`, `ActionChain`, `ActionChainStep`. `RunRecord` gains optional refs + mirrored lookup-IDs. V1→V2 custom migration backfills one Application per distinct (projectPath, scheme) tuple from existing run history; `ProjectRef` is folded into `Application` and dropped. Snapshot value types in `Models.swift`.
+- [x] Phase B — Applications + scope sidebar (`9aa2fdb`). Sidebar splits into `LIBRARY` (always) and `WORKSPACE` (gated on `selectedApplicationID`). Active Application card sits between them. Applications module ships full CRUD + create/edit sheets + recent-runs panel. `ProjectPicker` extracted to `Harness/Services/` so both Applications create and the run form share the picker. `selectedApplicationID` persisted in `settings.json`; stale ids cleared on launch.
+- [x] Phase C — Personas library (`ce12e65`). List/detail UI, create/duplicate/edit/archive flows. Built-ins seeded idempotently from `docs/PROMPTS/persona-defaults.md` via `PromptLibrary.parseMarkdownSections`; built-in personas are read-only with a "Duplicate to edit" CTA.
+- [x] Phase D — Actions + Action Chains (`1b839ff`). Two-tab `ActionsView` with single `ActionsViewModel` over both collections. Actions: name + prompt + notes + "used in N chains" badge. Chains: drag-to-reorder editable step list with per-step `preservesState` toggle, draft warning for zero-step chains, broken-link `FrictionTag` rows for steps pointing at deleted Actions.
+- [x] Phase E — Compose Run + chain executor + JSONL v2 (`f2947d5`). `GoalRequest` renamed to `RunRequest` with `name` / `applicationID` / `personaID` / `payload: RunPayload` (`.singleAction` / `.chain` / `.ad_hoc`). `Harness/Domain/ChainExecutor.swift` orchestrates multi-leg runs: per-leg `AgentLoop` reset (cycle detector + step budget reset), per-leg JSONL `leg_started`/`leg_completed` rows, `preservesState` toggle controls whether the simulator reinstalls between legs. Aggregate verdict: all-success → success, any failure/blocked → abort + skip remaining legs. JSONL bumped to v2; parser stays tolerant of v1 logs (wraps them in one virtual leg). `TimelineScrubber` gains optional leg-boundary ticks. `RunHistoryDetailView` summary grid grows a "Legs" cell when `legs.count > 1`. `FrictionReportView` groups cards by leg for chain runs.
+
+Test count progression: 112 → 120 (Phase A) → 125 (B) → 133 (C) → 141 (D) → 155 (E). All green.
+
+---
+
+## Phase 7+ — deferred
+
+See `PRD.md` "Deferred / future ideas" + `docs/DESIGN_BACKLOG.md` for tracked follow-ups. Track as GitHub issues once the repo is public.
 
 ---
 

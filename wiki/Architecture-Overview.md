@@ -13,4 +13,19 @@ Concurrency model, state ownership, and the core lookup table are not duplicated
 
 ---
 
-_Last updated: 2026-05-03 — initial scaffolding._
+## Workspace shape (Phase 6, 2026-05-04)
+
+Harness has two concentric models the architecture docs don't fully cover yet:
+
+- **Library entities** (`Application`, `Persona`, `Action`, `ActionChain`) — saved on disk in SwiftData, scoped per user. Always visible in the sidebar.
+- **Workspace sections** (`New Run`, `Active Run`, `History`, `Friction`) — gated on the user having selected an active `Application` via `coordinator.selectedApplicationID`.
+
+`SidebarSection.category` (`.library` vs `.workspace`) drives the sidebar's two-tier render. `selectedApplicationID` is persisted in `~/Library/Application Support/Harness/settings.json` and validated against the live store on launch.
+
+A run is composed of: an active Application (project + scheme + simulator + run defaults), one Persona, and either a single Action or an Action Chain. Single-action runs have one Leg implicitly. Chain runs have N Legs — each Leg gets its own AgentLoop with cycle-detector + step-budget reset; the `preservesState` toggle on each chain step controls whether the simulator reinstalls the app between legs. JSONL schema v2 ships `leg_started` / `leg_completed` row kinds; v1 logs (pre-Phase 6) parse as one virtual leg.
+
+For per-feature wiring (Compose Run form, Replay leg sections, etc.) see [Adding-a-Feature.md](Adding-a-Feature.md)'s "real examples" section.
+
+---
+
+_Last updated: 2026-05-04 — added Workspace shape section after Phase 6 (Applications / Personas / Actions / Chains / Named runs)._

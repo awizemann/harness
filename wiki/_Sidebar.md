@@ -4,6 +4,7 @@
 - [Home](Home.md)
 - [Architecture-Overview](Architecture-Overview.md)
 - [Core-Services](Core-Services.md)
+- [Workspace](Workspace.md)
 - [Glossary](Glossary.md)
 
 **Agent**
