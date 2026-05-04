@@ -21,6 +21,9 @@ struct HarnessApp: App {
                 .environment(container)
                 .frame(minWidth: 1024, minHeight: 640)
                 .task { await container.appState.refreshAll() }
+                .task {
+                    await bootstrapPersistedScope()
+                }
                 .onAppear {
                     // First-run wizard if anything's not set up: API key
                     // missing, xcodebuild missing, or WebDriverAgent hasn't
@@ -44,6 +47,21 @@ struct HarnessApp: App {
                     container.appCoordinator.selectedSection = .newRun
                 }
                 .keyboardShortcut("n", modifiers: [.command])
+                .disabled(container.appCoordinator.selectedApplicationID == nil)
+            }
+            CommandGroup(after: .toolbar) {
+                Button("Applications") {
+                    container.appCoordinator.selectedSection = .applications
+                }
+                .keyboardShortcut("1", modifiers: [.command])
+                Button("Personas") {
+                    container.appCoordinator.selectedSection = .personas
+                }
+                .keyboardShortcut("2", modifiers: [.command])
+                Button("Actions") {
+                    container.appCoordinator.selectedSection = .actions
+                }
+                .keyboardShortcut("3", modifiers: [.command])
             }
             CommandGroup(after: .appSettings) {
                 Button("Settings…") {
@@ -51,6 +69,25 @@ struct HarnessApp: App {
                 }
                 .keyboardShortcut(",", modifiers: [.command])
             }
+        }
+    }
+
+    /// Restore the persisted `selectedApplicationID` (if any) from
+    /// `settings.json`, validate it against the live store, and propagate
+    /// to the coordinator. Stale ids (deleted Applications) get cleared so
+    /// the workspace doesn't render against a missing scope.
+    @MainActor
+    private func bootstrapPersistedScope() async {
+        let state = container.appState
+        let coordinator = container.appCoordinator
+        await state.restorePersistedSettings()
+        guard let id = state.selectedApplicationID else { return }
+        if let app = try? await container.runHistory.application(id: id), !app.archived {
+            coordinator.selectedApplicationID = id
+        } else {
+            // Stale: clear and persist back so the file's accurate.
+            state.selectedApplicationID = nil
+            await state.persistSettings()
         }
     }
 }
@@ -67,7 +104,7 @@ private struct RootView: View {
 
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
         } detail: {
             DetailRouter()
         }
@@ -106,14 +143,13 @@ private struct DetailRouter: View {
 
     var body: some View {
         switch coordinator.selectedSection {
-        case .newRun:
-            GoalInputView()
-        case .activeRun:
-            RunSessionView()
-        case .history:
-            RunHistoryView()
-        case .friction:
-            FrictionReportView()
+        case .applications: ApplicationsView()
+        case .personas:     PlaceholderLibraryView(kind: .personas)
+        case .actions:      PlaceholderLibraryView(kind: .actions)
+        case .newRun:       GoalInputView()
+        case .activeRun:    RunSessionView()
+        case .history:      RunHistoryView()
+        case .friction:     FrictionReportView()
         }
     }
 }

@@ -10,7 +10,18 @@
 import Foundation
 import Observation
 
+/// Two-tier sidebar:
+/// - **Library** sections are always visible (`applications`, `personas`, `actions`).
+/// - **Workspace** sections (`newRun`, `activeRun`, `history`, `friction`) only
+///   render when an `Application` is selected via `selectedApplicationID`.
 enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
+
+    // Library (always visible)
+    case applications
+    case personas
+    case actions
+
+    // Workspace (gated on selectedApplicationID != nil)
     case newRun
     case activeRun
     case history
@@ -18,8 +29,25 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    enum Category: Hashable {
+        case library
+        case workspace
+    }
+
+    var category: Category {
+        switch self {
+        case .applications, .personas, .actions:
+            return .library
+        case .newRun, .activeRun, .history, .friction:
+            return .workspace
+        }
+    }
+
     var title: String {
         switch self {
+        case .applications: return "Applications"
+        case .personas: return "Personas"
+        case .actions: return "Actions"
         case .newRun: return "New Run"
         case .activeRun: return "Active Run"
         case .history: return "History"
@@ -29,6 +57,9 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .applications: return "square.stack.3d.up.fill"
+        case .personas: return "person.2"
+        case .actions: return "text.cursor"
         case .newRun: return "plus.circle"
         case .activeRun: return "play.circle"
         case .history: return "clock.arrow.circlepath"
@@ -43,7 +74,25 @@ final class AppCoordinator {
 
     // MARK: Sidebar / detail
 
-    var selectedSection: SidebarSection = .newRun
+    /// Default landing section is `.applications` — the user picks an
+    /// Application before they can compose a run.
+    var selectedSection: SidebarSection = .applications
+
+    /// The currently scoped Application. When nil, the workspace sections
+    /// (newRun / activeRun / history / friction) are hidden in the sidebar.
+    /// Setting this to nil while the user is in a workspace section bounces
+    /// them back to `.applications`. Persisted by `AppState` to
+    /// `~/Library/Application Support/Harness/settings.json`.
+    var selectedApplicationID: UUID? {
+        didSet {
+            // Bounce out of a now-hidden workspace section if the user
+            // cleared the active Application (e.g. by deleting it).
+            if selectedApplicationID == nil,
+               selectedSection.category == .workspace {
+                selectedSection = .applications
+            }
+        }
+    }
 
     // MARK: Active run
 

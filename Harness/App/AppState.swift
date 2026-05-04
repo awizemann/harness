@@ -15,7 +15,7 @@ import os
 @MainActor
 final class AppState {
 
-    private static let logger = Logger(subsystem: "com.harness.app", category: "AppState")
+    nonisolated private static let logger = Logger(subsystem: "com.harness.app", category: "AppState")
 
     // MARK: Auth
 
@@ -59,6 +59,11 @@ final class AppState {
 
     /// UDID of the simulator the user last picked. Drives the picker default.
     var defaultSimulatorUDID: String?
+
+    /// Persisted last-active Application id. Restored at launch via
+    /// `restorePersistedSettings()`. Cleared if the application id no longer
+    /// resolves in the store.
+    var selectedApplicationID: UUID?
 
     // MARK: Dependencies
 
@@ -164,5 +169,57 @@ final class AppState {
         await refreshSimulators()
         // WDA readiness depends on which simulator is selected.
         await refreshWDA()
+    }
+
+    // MARK: Settings persistence
+
+    /// Read `settings.json` if present and restore persisted defaults.
+    /// Currently ferries `selectedApplicationID`; future fields slot in here.
+    /// Disk I/O happens on a detached task — never on the actor — to honor
+    /// the "no synchronous file I/O on `@MainActor`" rule.
+    func restorePersistedSettings() async {
+        let url = HarnessPaths.settingsFile
+        let payload: PersistedSettings? = await Task.detached(priority: .userInitiated) {
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            do {
+                let data = try Data(contentsOf: url)
+                return try JSONDecoder().decode(PersistedSettings.self, from: data)
+            } catch {
+                AppState.logger.warning("settings.json decode failed: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }.value
+        guard let payload else { return }
+        self.selectedApplicationID = payload.selectedApplicationID
+    }
+
+    /// Persist the current `selectedApplicationID` (and any future fields)
+    /// to `settings.json`. Idempotent; safe to call from `didSet` observers.
+    func persistSettings() async {
+        let payload = PersistedSettings(selectedApplicationID: selectedApplicationID)
+        let url = HarnessPaths.settingsFile
+        await Task.detached(priority: .utility) {
+            do {
+                try HarnessPaths.ensureDirectory(HarnessPaths.appSupport)
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(payload)
+                try data.write(to: url, options: [.atomic])
+            } catch {
+                AppState.logger.error("settings.json write failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }.value
+    }
+}
+
+// MARK: - Persistence payload
+
+/// Shape on disk in `settings.json`. Versionless for now — extend by adding
+/// optional fields. Optional decoding lets older files load on a newer build.
+private struct PersistedSettings: Codable, Sendable {
+    let selectedApplicationID: UUID?
+
+    init(selectedApplicationID: UUID?) {
+        self.selectedApplicationID = selectedApplicationID
     }
 }

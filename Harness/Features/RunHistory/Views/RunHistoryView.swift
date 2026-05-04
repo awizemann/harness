@@ -31,7 +31,11 @@ struct RunHistoryView: View {
 
     @ViewBuilder
     private func content(vm: RunHistoryViewModel) -> some View {
-        let filtered = vm.filteredRuns(search: searchText, verdict: verdictFilter)
+        let filtered = vm.filteredRuns(
+            search: searchText,
+            verdict: verdictFilter,
+            applicationID: coordinator.selectedApplicationID
+        )
         let groups = vm.dayGroups(from: filtered)
         let selectedRun = filtered.first { $0.id == coordinator.selectedHistoryRunID }
             ?? filtered.first

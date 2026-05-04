@@ -2,34 +2,25 @@
 //  GoalInputViewModel.swift
 //  Harness
 //
-//  Drives the goal-input form. Resolves the project's available schemes via
-//  `xcodebuild -list -json` (best effort — falls through to a free-form
-//  text field if the parse fails).
+//  Drives the goal-input form. Project + scheme + destination probing is
+//  delegated to a shared `ProjectPicker` (see
+//  `Harness/Services/ProjectPicker.swift`) so this VM and the new
+//  `ApplicationCreateViewModel` consume the exact same pipeline.
+//
+//  After the workspace rework: when an Application is selected,
+//  `loadFromActiveApplication(_:)` populates the picker from the saved
+//  Application and the form becomes a thin "type persona + goal" surface.
 //
 
 import Foundation
 import Observation
 import SwiftUI
-import os
 
 @Observable
 @MainActor
 final class GoalInputViewModel {
 
-    private static let logger = Logger(subsystem: "com.harness.app", category: "GoalInputViewModel")
-
-    // MARK: Form state
-
-    var projectURL: URL?
-    var projectDisplayName: String = ""
-    var availableSchemes: [String] = []
-    var selectedScheme: String = "" {
-        didSet {
-            if oldValue != selectedScheme {
-                Task { await self.refreshSchemeDestinations() }
-            }
-        }
-    }
+    // MARK: Form state — non-project
 
     var simulatorUDID: String = ""
     var personaText: String = ""
@@ -40,164 +31,89 @@ final class GoalInputViewModel {
 
     // MARK: Status
 
-    var isResolvingSchemes: Bool = false
-    var schemeError: String?
     var startError: String?
 
-    /// Destinations supported by the currently-selected scheme (parsed from
-    /// `xcodebuild -showdestinations`). Nil = haven't probed yet.
-    var schemeDestinations: [XcodeBuilder.Destination]?
-    var isProbingDestinations: Bool = false
+    // MARK: Project picker (shared helper)
 
-    var schemeSupportsIOSSimulator: Bool {
-        guard let dests = schemeDestinations else { return false }
-        return dests.contains(where: { $0.supportsIOSSimulator })
-    }
+    /// Owns project URL, schemes, destinations. Bind to `picker.*` from views.
+    let picker: ProjectPicker
 
-    /// Human-readable summary for the UI: "iOS Simulator ✓" or
-    /// "Builds for macOS only — incompatible with Harness".
-    var schemeCompatibilitySummary: String? {
-        guard !selectedScheme.isEmpty else { return nil }
-        guard let dests = schemeDestinations else {
-            return isProbingDestinations ? "Checking compatibility…" : nil
-        }
-        if dests.isEmpty {
-            return "No destinations reported by xcodebuild for this scheme."
-        }
-        if schemeSupportsIOSSimulator {
-            return "iOS Simulator supported"
-        }
-        let platforms = dests.map { $0.platform }.sorted().joined(separator: ", ")
-        return "Scheme builds for \(platforms) — Harness needs an iOS Simulator target."
+    // Convenience pass-throughs so existing call sites keep compiling.
+    var projectURL: URL? { picker.projectURL }
+    var projectDisplayName: String { picker.projectDisplayName }
+    var availableSchemes: [String] { picker.availableSchemes }
+    var selectedScheme: String {
+        get { picker.selectedScheme }
+        set { picker.selectedScheme = newValue }
     }
+    var isResolvingSchemes: Bool { picker.isResolvingSchemes }
+    var schemeError: String? { picker.schemeError }
+    var schemeDestinations: [XcodeBuilder.Destination]? { picker.schemeDestinations }
+    var isProbingDestinations: Bool { picker.isProbingDestinations }
+    var schemeSupportsIOSSimulator: Bool { picker.schemeSupportsIOSSimulator }
+    var schemeCompatibilitySummary: String? { picker.schemeCompatibilitySummary }
 
     var canStart: Bool {
-        projectURL != nil
-            && !selectedScheme.isEmpty
+        picker.projectURL != nil
+            && !picker.selectedScheme.isEmpty
             && !goalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !simulatorUDID.isEmpty
-            && schemeSupportsIOSSimulator
+            && picker.schemeSupportsIOSSimulator
     }
 
-    // MARK: Dependencies
+    // MARK: Init
 
-    private let processRunner: any ProcessRunning
-    private let toolLocator: any ToolLocating
-    private let xcodeBuilder: any XcodeBuilding
-
-    init(processRunner: any ProcessRunning, toolLocator: any ToolLocating, xcodeBuilder: any XcodeBuilding) {
-        self.processRunner = processRunner
-        self.toolLocator = toolLocator
-        self.xcodeBuilder = xcodeBuilder
+    init(picker: ProjectPicker) {
+        self.picker = picker
     }
 
-    // MARK: Project picker
+    /// Convenience: build a fresh picker from raw services. Tests use the
+    /// designated init above with a stub picker.
+    convenience init(
+        processRunner: any ProcessRunning,
+        toolLocator: any ToolLocating,
+        xcodeBuilder: any XcodeBuilding
+    ) {
+        self.init(picker: ProjectPicker(
+            processRunner: processRunner,
+            toolLocator: toolLocator,
+            xcodeBuilder: xcodeBuilder
+        ))
+    }
 
-    /// Open an `NSOpenPanel` for the user to pick a `.xcodeproj` or `.xcworkspace`.
+    // MARK: Project picking — pass-through
+
     func pickProject() async {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = []
-        panel.allowedFileTypes = ["xcodeproj", "xcworkspace"]
-        panel.message = "Choose an Xcode project or workspace"
-        panel.prompt = "Choose"
-
-        let response = await MainActor.run { panel.runModal() }
-        guard response == .OK, let url = panel.url else { return }
-        await load(projectURL: url)
+        await picker.pickProject()
     }
 
-    /// Apply a freshly-picked project URL: set name, resolve schemes.
     func load(projectURL: URL) async {
-        self.projectURL = projectURL
-        self.projectDisplayName = projectURL.deletingPathExtension().lastPathComponent
-        await resolveSchemes(for: projectURL)
+        await picker.load(projectURL: projectURL)
     }
 
-    /// Run `xcodebuild -list -json` and populate `availableSchemes`. Best
-    /// effort — failure leaves the user with a free-form text field.
-    func resolveSchemes(for url: URL) async {
-        isResolvingSchemes = true
-        schemeError = nil
-        defer { isResolvingSchemes = false }
+    // MARK: Application hydration
 
-        guard let xcodebuild = (try? await toolLocator.locateAll())?.xcodebuild else {
-            schemeError = "xcodebuild not found"
-            return
+    /// Pre-fill the form from an active `Application`. Doesn't re-probe
+    /// schemes (they're saved on the Application); does probe destinations
+    /// to refresh the iOS-simulator-compat banner.
+    func loadFromActiveApplication(_ app: ApplicationSnapshot) async {
+        picker.projectURL = app.projectURL
+        picker.projectDisplayName = app.name
+        picker.availableSchemes = [app.scheme]
+        picker.selectedScheme = app.scheme
+        if let udid = app.defaultSimulatorUDID, !udid.isEmpty {
+            simulatorUDID = udid
         }
-
-        let flag: [String]
-        switch url.pathExtension {
-        case "xcworkspace": flag = ["-workspace", url.path]
-        case "xcodeproj":   flag = ["-project", url.path]
-        default:
-            schemeError = "Not an .xcodeproj or .xcworkspace"
-            return
-        }
-
-        let spec = ProcessSpec(
-            executable: xcodebuild,
-            arguments: flag + ["-list", "-json"],
-            workingDirectory: url.deletingLastPathComponent(),
-            timeout: .seconds(20)
-        )
-        do {
-            let result = try await processRunner.run(spec)
-            let parsed = Self.parseSchemes(result.stdout)
-            self.availableSchemes = parsed
-            // Default selection: first scheme.
-            if selectedScheme.isEmpty || !parsed.contains(selectedScheme) {
-                self.selectedScheme = parsed.first ?? ""
-            }
-        } catch {
-            Self.logger.warning("scheme resolve failed: \(error.localizedDescription, privacy: .public)")
-            schemeError = "Couldn't list schemes — enter one manually."
-            self.availableSchemes = []
-        }
-    }
-
-    /// Probe `xcodebuild -showdestinations` for the currently-selected scheme.
-    /// Updates `schemeDestinations`. Safe to call repeatedly; does nothing
-    /// if no project is set or no scheme is selected.
-    func refreshSchemeDestinations() async {
-        guard let projectURL, !selectedScheme.isEmpty else {
-            schemeDestinations = nil
-            return
-        }
-        isProbingDestinations = true
-        defer { isProbingDestinations = false }
-        do {
-            let dests = try await xcodeBuilder.destinations(project: projectURL, scheme: selectedScheme)
-            self.schemeDestinations = dests
-        } catch {
-            Self.logger.warning("destinations probe failed: \(error.localizedDescription, privacy: .public)")
-            self.schemeDestinations = []
-        }
-    }
-
-    static func parseSchemes(_ stdoutData: Data) -> [String] {
-        guard let json = try? JSONSerialization.jsonObject(with: stdoutData) as? [String: Any] else {
-            return []
-        }
-        // Workspace shape: { "workspace": { "schemes": [...] } }
-        if let ws = json["workspace"] as? [String: Any],
-           let schemes = ws["schemes"] as? [String] {
-            return schemes
-        }
-        // Project shape: { "project": { "schemes": [...] } }
-        if let proj = json["project"] as? [String: Any],
-           let schemes = proj["schemes"] as? [String] {
-            return schemes
-        }
-        return []
+        if let m = app.defaultModel { model = m }
+        if let m = app.defaultMode { mode = m }
+        stepBudget = app.defaultStepBudget
+        await picker.refreshSchemeDestinations()
     }
 
     // MARK: Build a GoalRequest
 
     func buildRequest(simulator: SimulatorRef) -> GoalRequest? {
-        guard let projectURL else { return nil }
+        guard let projectURL = picker.projectURL else { return nil }
         return GoalRequest(
             id: UUID(),
             goal: goalText.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -206,8 +122,8 @@ final class GoalInputViewModel {
                 : personaText,
             project: ProjectRequest(
                 path: projectURL,
-                scheme: selectedScheme,
-                displayName: projectDisplayName
+                scheme: picker.selectedScheme,
+                displayName: picker.projectDisplayName
             ),
             simulator: simulator,
             model: model,

@@ -84,9 +84,19 @@ final class RunHistoryViewModel {
 
     /// Apply substring search across goal/persona/displayName/simulatorName,
     /// AND a verdict filter when not `.all`. Empty search → no substring filter.
-    func filteredRuns(search: String, verdict: VerdictFilter) -> [RunRecordSnapshot] {
+    /// When `applicationID` is non-nil, only runs scoped to that Application
+    /// pass — the workspace rework defaults to scoping by the active Application
+    /// so history feels app-scoped without an explicit filter chip.
+    func filteredRuns(
+        search: String,
+        verdict: VerdictFilter,
+        applicationID: UUID? = nil
+    ) -> [RunRecordSnapshot] {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return runs.filter { run in
+            if let applicationID, run.applicationID != applicationID {
+                return false
+            }
             if !needle.isEmpty {
                 let haystack = [run.goal, run.persona, run.displayName, run.simulatorName]
                     .joined(separator: "\n")

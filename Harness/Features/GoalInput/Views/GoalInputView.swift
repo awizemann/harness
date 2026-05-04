@@ -12,11 +12,24 @@ struct GoalInputView: View {
     @Environment(AppCoordinator.self) private var coordinator
 
     @State private var vm: GoalInputViewModel?
+    @State private var activeApplication: ApplicationSnapshot?
+    @State private var hydratedAppID: UUID?
 
     var body: some View {
         Group {
-            if let vm {
+            if coordinator.selectedApplicationID == nil {
+                EmptyStateView(
+                    symbol: "square.stack.3d.up",
+                    title: "Pick an Application first",
+                    subtitle: "New runs are scoped to a saved Application. Select one in the Library, or add a new Application.",
+                    ctaTitle: "Open Applications",
+                    onCta: { coordinator.selectedSection = .applications }
+                )
+            } else if let vm {
                 content(vm: vm)
+                    .task(id: coordinator.selectedApplicationID) {
+                        await hydrate(vm: vm)
+                    }
             } else {
                 Color.clear
                     .onAppear {
@@ -32,12 +45,12 @@ struct GoalInputView: View {
 
     @ViewBuilder
     private func content(vm: GoalInputViewModel) -> some View {
-        @Bindable var vmBindable = vm
-
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.spacing.l) {
                 header
-                ProjectSection(vm: vm)
+                if let app = activeApplication {
+                    ActiveApplicationRecap(application: app)
+                }
                 SimulatorSection(vm: vm)
                 PersonaGoalSection(vm: vm)
                 ModeAndModelSection(vm: vm)
@@ -73,7 +86,7 @@ struct GoalInputView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Compose a user-test run")
                 .font(.title2.weight(.semibold))
-            Text("Pick the app under test, write a plain-language goal, choose a persona, and start.")
+            Text("Pick a persona, write a plain-language goal, and start. The Application's project + scheme are already wired up.")
                 .font(.callout).foregroundStyle(.secondary)
         }
     }
@@ -94,67 +107,45 @@ struct GoalInputView: View {
         // staged on the AppContainer.
         await container.stagePendingRun(request)
     }
+
+    /// Fetch the active Application snapshot off the actor and hydrate the
+    /// VM from it. Re-runs whenever `selectedApplicationID` flips so the
+    /// preview banner stays current.
+    @MainActor
+    private func hydrate(vm: GoalInputViewModel) async {
+        guard let id = coordinator.selectedApplicationID else {
+            activeApplication = nil
+            hydratedAppID = nil
+            return
+        }
+        let snapshot = try? await container.runHistory.application(id: id)
+        activeApplication = snapshot
+        if let snapshot, hydratedAppID != snapshot.id {
+            await vm.loadFromActiveApplication(snapshot)
+            hydratedAppID = snapshot.id
+        }
+    }
 }
 
 // MARK: - Sub-sections
 
-private struct ProjectSection: View {
-    @Bindable var vm: GoalInputViewModel
+/// Slim recap card showing the active Application's project + scheme. The
+/// user can no longer re-pick the project from this view — that lives on
+/// the Applications detail page now.
+private struct ActiveApplicationRecap: View {
+    let application: ApplicationSnapshot
     var body: some View {
-        PanelContainer(title: "Project") {
-            VStack(alignment: .leading, spacing: Theme.spacing.s) {
-                HStack {
-                    if let url = vm.projectURL {
-                        Image(systemName: "hammer.fill").foregroundStyle(Color.harnessAccent)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(vm.projectDisplayName).font(.body)
-                            Text(url.path).font(.caption).foregroundStyle(.tertiary)
-                                .lineLimit(1).truncationMode(.middle)
-                        }
-                    } else {
-                        Text("No project selected").foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Choose…") {
-                        Task { await vm.pickProject() }
-                    }
+        PanelContainer(title: "Application") {
+            HStack(spacing: Theme.spacing.m) {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .foregroundStyle(Color.harnessAccent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(application.name).font(.body.weight(.medium))
+                    Text("\(application.scheme) · \(application.projectPath)")
+                        .font(.caption).foregroundStyle(.tertiary)
+                        .lineLimit(1).truncationMode(.middle)
                 }
-                if vm.projectURL != nil {
-                    HStack {
-                        Text("Scheme").frame(width: 80, alignment: .leading)
-                        if vm.availableSchemes.isEmpty {
-                            TextField("e.g. MyApp", text: $vm.selectedScheme)
-                                .textFieldStyle(.roundedBorder)
-                        } else {
-                            Picker("", selection: $vm.selectedScheme) {
-                                ForEach(vm.availableSchemes, id: \.self) { s in
-                                    Text(s).tag(s)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                        }
-                        if vm.isResolvingSchemes || vm.isProbingDestinations {
-                            ProgressView().controlSize(.small)
-                        }
-                    }
-                    if let err = vm.schemeError {
-                        Text(err).font(.caption).foregroundStyle(Color.harnessWarning)
-                    }
-                    if let summary = vm.schemeCompatibilitySummary {
-                        HStack(spacing: Theme.spacing.s) {
-                            Image(systemName: vm.schemeSupportsIOSSimulator
-                                  ? "checkmark.circle.fill"
-                                  : "exclamationmark.triangle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(vm.schemeSupportsIOSSimulator ? Color.harnessSuccess : Color.harnessWarning)
-                            Text(summary)
-                                .font(.caption)
-                                .foregroundStyle(vm.schemeSupportsIOSSimulator ? .secondary : .primary)
-                        }
-                        .padding(.leading, 88)
-                    }
-                }
+                Spacer()
             }
             .padding(Theme.spacing.l)
         }
