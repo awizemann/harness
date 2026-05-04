@@ -1,41 +1,23 @@
 //
-//  GoalInputView.swift  ("Compose Run" form, redesigned)
+//  GoalInputView.swift  ("Compose Run" form)
 //  Harness
 //
-//  Goal-led composer:
-//    Section header bar (preflight pill + app breadcrumb)
-//    Run name row (auto-named hint)
-//    Hero heading
-//    Goal card (segmented action/chain header + textarea + TRY chips)
-//    Context strip (Application · Simulator · Persona — read-only)
-//    Persona preview (avatar + voice quote)
-//    Source picker (Action or Chain) with inline preview
-//    Persona picker
-//    Run mode strip (two equal cells: Step-by-step / Autonomous)
-//    Advanced disclosure (Model + Step budget, with INHERITS APP badges)
-//    Sticky footer (preflight + Save as Action + Start Run)
+//  Goal-led composer that sits on top of the workspace rework: the run's
+//  goal comes from a saved Action (or each leg of an Action Chain) the
+//  user picks from the Library, never free-form. Project + scheme +
+//  simulator come from the active Application's saved fields.
 //
-//  Data flow is unchanged from the previous shape: hydrate from the
-//  active Application, load Personas / Actions / Chains snapshots from
-//  the store, build a `RunRequest` and stage it via AppContainer.
+//  Visual design lifted from `HarnessDesign/Screens/NewRunView.swift`
+//  (since deleted): section header bar with preflight `Pill`, run-name
+//  pill row with `RUN` label + auto badge, two-equal-cell run-mode strip
+//  with keyboard hints, Advanced disclosure with `INHERITS APP` badges
+//  while defaults are unmodified, sticky footer pinning preflight status
+//  + Start Run (⌘↵). Free-form goal textarea / example chips / context
+//  strip / persona preview avatar were dropped — they duplicated content
+//  the Action / Persona / Application library surfaces already own.
 //
 
 import SwiftUI
-
-// Three pre-canned example prompts surfaced as `ExampleChip`s in the
-// goal card footer. Tapping one prefills `goalDraft`. Hardcoded for v1;
-// future work could read from the active persona or a "starter pack."
-private let exampleGoals: [String] = [
-    "I'm a first-time user. Try to add 'milk' to my list and mark it done.",
-    "Create a new account with my email. I've never used this app.",
-    "Cancel my subscription. I want out today."
-]
-
-private let exampleChipLabels: [String] = [
-    "Add an item to a list",
-    "Sign up with email",
-    "Cancel a subscription"
-]
 
 struct GoalInputView: View {
 
@@ -46,21 +28,7 @@ struct GoalInputView: View {
     @State private var vm: GoalInputViewModel?
     @State private var activeApplication: ApplicationSnapshot?
     @State private var hydratedAppID: UUID?
-
-    /// Free-form goal text. Auto-fills from the picked action's
-    /// promptText; the user can override it before starting. For chain
-    /// runs the textarea is informational (the chain's per-step prompts
-    /// drive the legs), so we hide it.
-    @State private var goalDraft: String = ""
     @State private var advancedExpanded: Bool = false
-    @State private var saveActionState: SaveActionState = .idle
-
-    private enum SaveActionState: Equatable {
-        case idle
-        case saving
-        case saved
-        case error(String)
-    }
 
     var body: some View {
         Group {
@@ -79,12 +47,6 @@ struct GoalInputView: View {
                     }
                     .task {
                         await vm.loadLibraries(store: container.runHistory)
-                    }
-                    .onChange(of: vm.selectedActionID) { _, _ in
-                        syncGoalDraftWithSelectedAction(vm: vm)
-                    }
-                    .onChange(of: vm.source) { _, _ in
-                        syncGoalDraftWithSelectedAction(vm: vm)
                     }
             } else {
                 Color.clear
@@ -109,15 +71,16 @@ struct GoalInputView: View {
                 VStack(alignment: .leading, spacing: Theme.spacing.l) {
                     runNameRow(vm: vm)
                     heroHeading
-                    goalCard(vm: vm)
-                    contextStrip(vm: vm)
-                    if let persona = pickedPersona(vm: vm) {
-                        personaPreview(persona: persona)
-                    }
-                    SourcePickerPanel(vm: vm)
-                    PersonaPickerPanel(vm: vm)
+                    SimulatorSection(vm: vm)
+                    PersonaSection(vm: vm)
+                    SourceSection(vm: vm)
                     runModeStrip(vm: vm)
                     advancedSection(vm: vm)
+                    if let err = vm.startError {
+                        Text(err)
+                            .font(.callout)
+                            .foregroundStyle(Color.harnessFailure)
+                    }
                 }
                 .padding(.horizontal, Theme.spacing.xl)
                 .padding(.top, Theme.spacing.xl)
@@ -139,19 +102,14 @@ struct GoalInputView: View {
                 .font(HFont.uiSemibold(13))
                 .foregroundStyle(Color.harnessText)
             if let app = activeApplication {
-                Text("/ \(app.name)")
+                Text("/ \(app.name) · \(app.scheme)")
                     .font(HFont.mono(11))
                     .foregroundStyle(Color.harnessText4)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             Spacer()
             preflightPill(vm: vm)
-            Button {
-                coordinator.openSettings()
-            } label: {
-                Image(systemName: "gearshape").font(.system(size: 12))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.harnessText2)
         }
         .padding(.horizontal, Theme.spacing.l)
         .frame(height: 42)
@@ -209,186 +167,20 @@ struct GoalInputView: View {
     // MARK: Hero heading
 
     private var heroHeading: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("What should the agent try to do?")
-                .font(.system(size: 22, weight: .semibold))
-                .tracking(-0.4)
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Compose a user-test run")
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(Color.harnessText)
-            Spacer()
-            Text("Describe the outcome, the way a real user would.")
-                .font(HFont.ui(12.5))
-                .foregroundStyle(Color.harnessText3)
+            Text("Pick a persona, then an action or a chain. Run defaults inherit from the active Application.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
-    }
-
-    // MARK: Goal card
-
-    private func goalCard(vm: GoalInputViewModel) -> some View {
-        @Bindable var bvm = vm
-        return VStack(spacing: 0) {
-            // Header — Goal label + source SegmentedToggle + ⌘↵ hint.
-            HStack(spacing: Theme.spacing.m) {
-                Text("Goal")
-                    .font(HFont.uiSemibold(11.5))
-                    .foregroundStyle(Color.harnessText)
-                SegmentedToggle(
-                    options: RunSource.allCases.map { src in
-                        .init(src, src.label, symbol: src.symbol)
-                    },
-                    selection: $bvm.source
-                )
-                Spacer()
-                Text("⌘↵ to start")
-                    .font(HFont.mono(10.5))
-                    .foregroundStyle(Color.harnessText4)
-            }
-            .padding(.horizontal, Theme.spacing.m)
-            .padding(.vertical, 10)
-            .background(Color.harnessBg3)
-            .overlay(
-                Rectangle().fill(Color.harnessLine).frame(height: 0.5),
-                alignment: .bottom
-            )
-
-            // Middle — textarea or chain notice.
-            switch vm.source {
-            case .action:
-                TextEditor(text: $goalDraft)
-                    .font(HFont.ui(14))
-                    .scrollContentBackground(.hidden)
-                    .background(Color.harnessPanel)
-                    .frame(minHeight: 96)
-                    .padding(.horizontal, Theme.spacing.m)
-                    .padding(.vertical, 10)
-                    .foregroundStyle(Color.harnessText)
-            case .chain:
-                chainNotice(vm: vm)
-                    .padding(.horizontal, Theme.spacing.m)
-                    .padding(.vertical, 10)
-            }
-
-            // Footer — TRY chips.
-            HStack(spacing: 6) {
-                Text("TRY")
-                    .font(HFont.mono(10.5))
-                    .tracking(0.8)
-                    .foregroundStyle(Color.harnessText4)
-                ForEach(Array(exampleGoals.enumerated()), id: \.offset) { idx, prompt in
-                    ExampleChip(text: exampleChipLabels[idx]) {
-                        goalDraft = prompt
-                        vm.source = .action
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, Theme.spacing.m)
-            .padding(.vertical, 10)
-            .background(Color.harnessBg3)
-            .overlay(
-                Rectangle().fill(Color.harnessLine).frame(height: 0.5),
-                alignment: .top
-            )
-        }
-        .background(Color.harnessPanel)
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.panel)
-                .strokeBorder(Color.harnessLine, lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radius.panel))
-    }
-
-    @ViewBuilder
-    private func chainNotice(vm: GoalInputViewModel) -> some View {
-        if let chain = pickedChain(vm: vm) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Chain runs execute each leg's saved prompt. Pick the chain below — its goals drive the legs.")
-                    .font(HFont.ui(12.5))
-                    .foregroundStyle(Color.harnessText3)
-                Text("\(chain.steps.count) leg\(chain.steps.count == 1 ? "" : "s") · first goal: \(firstChainGoal(chain: chain, vm: vm))")
-                    .font(HFont.caption)
-                    .foregroundStyle(Color.harnessText4)
-                    .lineLimit(2)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(minHeight: 96, alignment: .topLeading)
-        } else {
-            Text("Pick a chain below to see its first leg's goal.")
-                .font(HFont.ui(12.5))
-                .foregroundStyle(Color.harnessText3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(minHeight: 96, alignment: .topLeading)
-        }
-    }
-
-    // MARK: Context strip
-
-    private func contextStrip(vm: GoalInputViewModel) -> some View {
-        let appName = activeApplication?.name ?? "—"
-        let simName = state.simulators.first(where: { $0.udid == vm.simulatorUDID })
-            .map { "\($0.name) · \($0.runtime)" } ?? "Pick a simulator"
-        let personaName = pickedPersona(vm: vm)?.name ?? "Pick a persona"
-        return HStack(spacing: 4) {
-            ContextCell(label: "APPLICATION", value: appName, icon: "folder.fill")
-            ContextCell(label: "SIMULATOR", value: simName, icon: "iphone")
-            ContextCell(label: "PERSONA", value: personaName, icon: "person.fill")
-        }
-        .padding(4)
-        .background(Color.harnessPanel)
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.panel)
-                .strokeBorder(Color.harnessLine, lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radius.panel))
-    }
-
-    // MARK: Persona preview
-
-    private func personaPreview(persona: PersonaSnapshot) -> some View {
-        HStack(spacing: Theme.spacing.m) {
-            ZStack {
-                Circle().fill(LinearGradient(
-                    colors: [Color.harnessAccent.opacity(0.30), Color.harnessAccent.opacity(0.10)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ))
-                Text(personaInitials(persona.name))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.harnessAccent)
-            }
-            .frame(width: 32, height: 32)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(persona.name)
-                        .font(HFont.uiSemibold(12.5))
-                        .foregroundStyle(Color.harnessText)
-                    Text("VOICE")
-                        .font(HFont.mono(9))
-                        .tracking(0.8)
-                        .foregroundStyle(Color.harnessText4)
-                }
-                Text("\u{201C}\(persona.blurb.isEmpty ? persona.promptText : persona.blurb)\u{201D}")
-                    .font(HFont.ui(11.5).italic())
-                    .foregroundStyle(Color.harnessText3)
-                    .lineLimit(3)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, Theme.spacing.m)
-        .padding(.vertical, 10)
-        .background(Color.harnessPanel)
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.panel)
-                .strokeBorder(Color.harnessLine, lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radius.panel))
     }
 
     // MARK: Run mode strip
 
     private func runModeStrip(vm: GoalInputViewModel) -> some View {
-        @Bindable var bvm = vm
-        return VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text("Run mode")
                     .font(HFont.uiSemibold(11.5))
@@ -407,8 +199,6 @@ struct GoalInputView: View {
                 ForEach(RunMode.allCases, id: \.self) { m in
                     ModeCell(mode: m, selected: vm.mode == m) {
                         vm.mode = m
-                        // Picking a mode counts as an override of the
-                        // Application's saved default.
                         if vm.mode != activeApplication?.defaultMode {
                             vm.overrideDefaults = true
                         }
@@ -510,9 +300,9 @@ struct GoalInputView: View {
                 Text(preflight.fullCopy)
                     .font(HFont.ui(11.5))
                     .foregroundStyle(preflight.allOK ? Color.harnessText3 : Color.harnessText)
+                    .lineLimit(2)
             }
             Spacer()
-            saveAsActionButton(vm: vm)
             Button {
                 Task { await start(vm: vm) }
             } label: {
@@ -535,64 +325,7 @@ struct GoalInputView: View {
         )
     }
 
-    @ViewBuilder
-    private func saveAsActionButton(vm: GoalInputViewModel) -> some View {
-        let trimmed = goalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let canSave = !trimmed.isEmpty && vm.source == .action
-        Button {
-            Task { await saveAsAction(vm: vm) }
-        } label: {
-            switch saveActionState {
-            case .idle:
-                Text("Save as Action")
-            case .saving:
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Saving…")
-                }
-            case .saved:
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.harnessSuccess)
-                    Text("Saved to Actions")
-                }
-            case .error(let message):
-                Text(message).lineLimit(1).truncationMode(.tail)
-            }
-        }
-        .buttonStyle(SecondaryButtonStyle())
-        .disabled(!canSave || saveActionState == .saving)
-        .help("Save the current goal as an Action you can re-run later.")
-    }
-
     // MARK: Helpers
-
-    private func pickedPersona(vm: GoalInputViewModel) -> PersonaSnapshot? {
-        guard let id = vm.selectedPersonaID else { return nil }
-        return vm.personas.first(where: { $0.id == id })
-    }
-
-    private func pickedChain(vm: GoalInputViewModel) -> ActionChainSnapshot? {
-        guard let id = vm.selectedChainID else { return nil }
-        return vm.chains.first(where: { $0.id == id })
-    }
-
-    private func firstChainGoal(chain: ActionChainSnapshot, vm: GoalInputViewModel) -> String {
-        guard let firstStep = chain.steps.sorted(by: { $0.index < $1.index }).first,
-              let actionID = firstStep.actionID,
-              let action = vm.actions.first(where: { $0.id == actionID })
-        else { return "—" }
-        return action.promptText
-    }
-
-    private func personaInitials(_ name: String) -> String {
-        let parts = name
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: " ")
-            .compactMap { $0.first.map(String.init) }
-        let joined = parts.prefix(2).joined()
-        return joined.isEmpty ? "?" : joined.uppercased()
-    }
 
     /// Live preview of the auto-generated name when the user leaves the
     /// runName field blank. Mirrors the build-time fallback in the VM.
@@ -607,23 +340,6 @@ struct GoalInputView: View {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return "\(primary) · \(f.string(from: Date()))"
-    }
-
-    /// Mirror the goalDraft to whatever action is currently picked, but
-    /// only when the user hasn't typed something different yet — picking
-    /// a new action shouldn't blow away an in-progress edit.
-    private func syncGoalDraftWithSelectedAction(vm: GoalInputViewModel) {
-        guard vm.source == .action,
-              let id = vm.selectedActionID,
-              let action = vm.actions.first(where: { $0.id == id })
-        else { return }
-        let draftTrimmed = goalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let knownPromptTrimmeds = vm.actions.map {
-            $0.promptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if draftTrimmed.isEmpty || knownPromptTrimmeds.contains(draftTrimmed) {
-            goalDraft = action.promptText
-        }
     }
 
     // MARK: Preflight aggregation
@@ -671,27 +387,8 @@ struct GoalInputView: View {
             vm.startError = "Couldn't compose the run. Make sure a persona and an action / chain are picked."
             return
         }
-        // For action runs, override the action's saved goal with whatever
-        // the user typed in the goal card. Chain runs use per-leg goals,
-        // unchanged.
-        if case .singleAction(let actionID, _) = request.payload,
-           !goalDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            request = RunRequest(
-                id: request.id,
-                name: request.name,
-                goal: goalDraft,
-                persona: request.persona,
-                applicationID: request.applicationID,
-                personaID: request.personaID,
-                payload: .singleAction(actionID: actionID, goal: goalDraft),
-                project: request.project,
-                simulator: request.simulator,
-                model: request.model,
-                mode: request.mode,
-                stepBudget: request.stepBudget,
-                tokenBudget: request.tokenBudget
-            )
-        }
+        // Stamp the active Application id onto the request so the
+        // history index can scope by it.
         if let appID = coordinator.selectedApplicationID {
             request = RunRequest(
                 id: request.id,
@@ -713,50 +410,6 @@ struct GoalInputView: View {
         await container.stagePendingRun(request)
     }
 
-    private func saveAsAction(vm: GoalInputViewModel) async {
-        let trimmedGoal = goalDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedGoal.isEmpty else { return }
-        let trimmedName = vm.runName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let inferredName: String = {
-            if !trimmedName.isEmpty { return trimmedName }
-            // First sentence (or first 60 chars) of the goal.
-            let firstChunk = trimmedGoal
-                .split(whereSeparator: { ".!?\n".contains($0) })
-                .first.map(String.init) ?? trimmedGoal
-            let cleaned = firstChunk.trimmingCharacters(in: .whitespaces)
-            return cleaned.count <= 60 ? cleaned : String(cleaned.prefix(57)) + "…"
-        }()
-
-        saveActionState = .saving
-        do {
-            let snapshot = ActionSnapshot(
-                id: UUID(),
-                name: inferredName,
-                promptText: trimmedGoal,
-                notes: "",
-                createdAt: .now,
-                lastUsedAt: .now,
-                archivedAt: nil
-            )
-            try await container.runHistory.upsert(snapshot)
-            await vm.loadLibraries(store: container.runHistory)
-            saveActionState = .saved
-            // Snap back to idle after a short while so the button is
-            // reusable. The user stays on the form — we don't navigate
-            // away because they're still composing the run.
-            try? await Task.sleep(for: .milliseconds(1500))
-            if saveActionState == .saved {
-                saveActionState = .idle
-            }
-        } catch {
-            saveActionState = .error("Couldn't save")
-            try? await Task.sleep(for: .milliseconds(2000))
-            if case .error = saveActionState {
-                saveActionState = .idle
-            }
-        }
-    }
-
     @MainActor
     private func hydrate(vm: GoalInputViewModel) async {
         guard let id = coordinator.selectedApplicationID else {
@@ -775,28 +428,97 @@ struct GoalInputView: View {
     }
 }
 
-// MARK: - RunSource label/symbol
+// MARK: - Sub-sections (production data flow — pre-redesign shape)
 
-private extension RunSource {
-    var symbol: String {
-        switch self {
-        case .action: return "bolt.fill"
-        case .chain:  return "arrow.right.to.line"
+private struct SimulatorSection: View {
+    @Environment(AppState.self) private var state
+    @Bindable var vm: GoalInputViewModel
+    var body: some View {
+        PanelContainer(title: "Simulator") {
+            HStack {
+                if state.simulators.isEmpty {
+                    Text("No simulators discovered. Open Xcode, boot one, then refresh.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("", selection: $vm.simulatorUDID) {
+                        ForEach(state.simulators, id: \.udid) { sim in
+                            Text("\(sim.name) · \(sim.runtime)").tag(sim.udid)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+                Spacer()
+                Button("Refresh") {
+                    Task { await state.refreshSimulators() }
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(Theme.spacing.l)
+            .onAppear {
+                if vm.simulatorUDID.isEmpty,
+                   let initial = state.defaultSimulatorUDID ?? state.simulators.first?.udid {
+                    vm.simulatorUDID = initial
+                }
+            }
         }
     }
 }
 
-// MARK: - Source picker (Action or Chain)
-
-private struct SourcePickerPanel: View {
+/// Persona picker. Shows name + blurb for each persona; offers a quick
+/// shortcut to the Personas page when none exist yet.
+private struct PersonaSection: View {
     @Environment(AppCoordinator.self) private var coordinator
     @Bindable var vm: GoalInputViewModel
     var body: some View {
-        PanelContainer(title: vm.source == .action ? "Action" : "Chain") {
+        PanelContainer(title: "Persona") {
             VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                if vm.personas.isEmpty {
+                    Text("No personas found. Open the Personas library to create one.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Open Personas") {
+                        coordinator.selectedSection = .personas
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Picker("", selection: $vm.selectedPersonaID) {
+                        Text("Pick a persona…").tag(UUID?.none)
+                        ForEach(vm.personas, id: \.id) { p in
+                            Text(p.name).tag(UUID?.some(p.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    if let id = vm.selectedPersonaID,
+                       let persona = vm.personas.first(where: { $0.id == id }) {
+                        Text(persona.blurb)
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(Theme.spacing.l)
+        }
+    }
+}
+
+/// Source toggle + Action / Chain picker — the goal source for the run.
+private struct SourceSection: View {
+    @Environment(AppCoordinator.self) private var coordinator
+    @Bindable var vm: GoalInputViewModel
+    var body: some View {
+        PanelContainer(title: "What should the agent do?") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                SegmentedToggle(
+                    options: RunSource.allCases.map { .init($0, $0.label) },
+                    selection: $vm.source
+                )
+                .frame(maxWidth: 320)
+                Divider()
                 switch vm.source {
-                case .action: actionPicker
-                case .chain:  chainPicker
+                case .action:
+                    actionPicker
+                case .chain:
+                    chainPicker
                 }
             }
             .padding(Theme.spacing.l)
@@ -821,6 +543,13 @@ private struct SourcePickerPanel: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
+            if let id = vm.selectedActionID,
+               let action = vm.actions.first(where: { $0.id == id }) {
+                Text(action.promptText)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.top, Theme.spacing.xs)
+                    .lineLimit(4)
+            }
         }
     }
 
@@ -851,39 +580,11 @@ private struct SourcePickerPanel: View {
     }
 }
 
-// MARK: - Persona picker
-
-private struct PersonaPickerPanel: View {
-    @Environment(AppCoordinator.self) private var coordinator
-    @Bindable var vm: GoalInputViewModel
-    var body: some View {
-        PanelContainer(title: "Persona") {
-            VStack(alignment: .leading, spacing: Theme.spacing.s) {
-                if vm.personas.isEmpty {
-                    Text("No personas found. Open the Personas library to create one.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button("Open Personas") {
-                        coordinator.selectedSection = .personas
-                    }
-                    .buttonStyle(.borderless)
-                } else {
-                    Picker("", selection: $vm.selectedPersonaID) {
-                        Text("Pick a persona…").tag(UUID?.none)
-                        ForEach(vm.personas, id: \.id) { p in
-                            Text(p.name).tag(UUID?.some(p.id))
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                }
-            }
-            .padding(Theme.spacing.l)
-        }
-    }
-}
-
-// MARK: - Inline chain preview (ordered step list with broken-link warning)
-
+/// Inline ordered-list preview of a chain's steps. Each step shows
+/// `1. <action name>` plus a small "keeps state" tag when
+/// `preservesState == true`. Steps with broken Action refs render a
+/// `FrictionTag(.deadEnd)` — matches the warning a chain row shows in
+/// the Actions library.
 private struct ChainPreview: View {
     let chain: ActionChainSnapshot
     let actions: [ActionSnapshot]
@@ -918,42 +619,7 @@ private struct ChainPreview: View {
     }
 }
 
-// MARK: - Private NewRun-specific subviews
-
-/// One read-only context cell — Application / Simulator / Persona.
-private struct ContextCell: View {
-    let label: String
-    let value: String
-    let icon: String
-
-    var body: some View {
-        HStack(spacing: 9) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(Color.harnessAccentSoft)
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.harnessAccent)
-            }
-            .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label)
-                    .font(HFont.mono(9))
-                    .tracking(0.8)
-                    .foregroundStyle(Color.harnessText4)
-                Text(value)
-                    .font(HFont.uiSemibold(12))
-                    .foregroundStyle(Color.harnessText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
+// MARK: - NewRun-specific subviews (private design components)
 
 /// Equal-width cell in the Run-Mode strip.
 private struct ModeCell: View {
@@ -1050,33 +716,6 @@ private struct AdvancedRow<Content: View>: View {
         }
         .padding(.horizontal, Theme.spacing.m)
         .padding(.vertical, 9)
-    }
-}
-
-/// Sparkles + label ghost button. Tapping prefills the goal textarea.
-private struct ExampleChip: View {
-    let text: String
-    let onTap: () -> Void
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 5) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.harnessText4)
-                Text(text)
-                    .font(HFont.ui(11))
-                    .foregroundStyle(Color.harnessText2)
-            }
-            .padding(.horizontal, Theme.spacing.s)
-            .frame(height: 22)
-            .background(Color.harnessPanel2)
-            .overlay(
-                RoundedRectangle(cornerRadius: 5)
-                    .strokeBorder(Color.harnessLineStrong, lineWidth: 0.5)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-        }
-        .buttonStyle(.plain)
     }
 }
 
