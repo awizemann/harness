@@ -149,7 +149,7 @@ private struct DetailRouter: View {
         switch coordinator.selectedSection {
         case .applications: ApplicationsView()
         case .personas:     PersonasView()
-        case .actions:      PlaceholderLibraryView(kind: .actions)
+        case .actions:      ActionsView()
         case .newRun:       GoalInputView()
         case .activeRun:    RunSessionView()
         case .history:      RunHistoryView()

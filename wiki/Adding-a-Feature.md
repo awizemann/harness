@@ -69,9 +69,11 @@ Run [`../standards/AUDIT_CHECKLIST.md`](../standards/AUDIT_CHECKLIST.md) over th
 - `RunReplay/` — `PanelContainer`-wrapped screenshot pane + step-detail pane. Tool-call → `ToolCallChip`, friction → `FrictionTag`. Multi-step runs scrub via `TimelineScrubber`; single-step runs fall back to a simple counter (the primitive divides by `stepCount - 1`).
 - `Settings/` — Native `Form` + `Section`. Health rows render as `StatusChip`s mapped via `wdaStatusKind`. Defaults section is plain `Picker` / `Stepper` / `Toggle`.
 - `FrictionReport/` — Friction-only timeline for the selected run. Top summary band + per-event `FrictionReportCard` (screenshot left, agent metadata + detail + observation quote right). Toolbar `SegmentedToggle<FrictionKindFilter>` collapses the production friction taxonomy into `All / Ambiguous / Missing / Dead-ends`. "Jump to step" sets `coordinator.replayJumpToStep`, `RunReplayViewModel.anchorStep` reads it once on load and seeks `currentStepIndex`. PDF / Markdown / Share toolbar items are stubs — see [`docs/DESIGN_BACKLOG.md`](../docs/DESIGN_BACKLOG.md).
+- `Personas/` — Library list/detail HSplitView for the saved persona prompts. `PersonasViewModel` owns `[PersonaSnapshot]` against `RunHistoryStoring`; built-ins are read-only with a "Duplicate to edit" CTA. `PersonaCreateView` sheet supports prefilling from a starter (typically a built-in).
+- `Actions/` — Two-tab library (`SegmentedToggle<ActionsTab>` in `.principal`) backing both Actions and Action Chains in one `ActionsViewModel`. `ChainDetailView` renders an editable, drag-to-reorder step list with per-step `preservesState` toggles; chains with zero steps render an amber draft banner; steps whose referenced Action was deleted render a `FrictionTag(kind: .deadEnd)` row and gate the (future) Run affordance. `vm.brokenStepCount(in:)` + `vm.chainsReferencing(actionID:)` surface the cross-reference state.
 
 For the agent-loop primer that ties the run lifecycle together, see [Agent-Loop.md](Agent-Loop.md).
 
 ---
 
-_Last updated: 2026-05-04 — Phase 4 added the token-discipline section + filled in the real examples._
+_Last updated: 2026-05-04 — Phase D added the Actions/Chains library; Phase C added the Personas library._
