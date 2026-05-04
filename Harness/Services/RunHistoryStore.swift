@@ -470,7 +470,7 @@ actor RunHistoryStore: RunHistoryStoring {
     }
 
     func seedBuiltInPersonasIfNeeded(from markdown: String) async throws {
-        let sections = Self.parseMarkdownSections(markdown)
+        let sections = PromptLibrary.parseMarkdownSections(markdown)
         if sections.isEmpty { return }
 
         // Index existing built-ins by name so re-runs are no-ops.
@@ -769,47 +769,13 @@ actor RunHistoryStore: RunHistoryStoring {
         )
     }
 
-    // MARK: Markdown helpers (extracted into an accessible spot for Phase C)
-
-    /// Parse `## title\n<body>\n---` blocks out of a markdown document. Title
-    /// matches the first `## …` line (heading text trimmed); body is every
-    /// line up to the next `## ` or `---` divider, trimmed. Empty bodies are
-    /// dropped. Used for Persona seeding from `docs/PROMPTS/persona-defaults.md`.
-    nonisolated static func parseMarkdownSections(_ text: String) -> [(title: String, body: String)] {
-        var out: [(title: String, body: String)] = []
-        var currentTitle: String?
-        var currentBody: [String] = []
-
-        func flush() {
-            if let title = currentTitle {
-                let body = currentBody.joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !body.isEmpty {
-                    out.append((title: title, body: body))
-                }
-            }
-            currentTitle = nil
-            currentBody = []
-        }
-
-        for line in text.components(separatedBy: "\n") {
-            if line.hasPrefix("## ") {
-                flush()
-                currentTitle = String(line.dropFirst(3))
-                    .trimmingCharacters(in: .whitespaces)
-                continue
-            }
-            if line.hasPrefix("---") {
-                flush()
-                continue
-            }
-            if currentTitle != nil {
-                currentBody.append(line)
-            }
-        }
-        flush()
-        return out
-    }
+    // MARK: Markdown helpers
+    //
+    // The `## section` parser lives on `PromptLibrary` so any caller can
+    // reuse it without going through this actor — see
+    // `PromptLibrary.parseMarkdownSections(_:)`. The seeder above invokes
+    // it directly. Only the persona-specific blurb extraction stays here,
+    // since it's an implementation detail of the seed pipeline.
 
     nonisolated private static func firstSentence(of body: String) -> String {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)

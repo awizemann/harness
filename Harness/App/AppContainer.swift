@@ -9,6 +9,7 @@
 
 import Foundation
 import Observation
+import os
 
 @Observable
 @MainActor
@@ -110,5 +111,23 @@ final class AppContainer {
         let r = pendingRunRequest
         pendingRunRequest = nil
         return r
+    }
+
+    // MARK: Persona seeding
+
+    /// Idempotent: parse `docs/PROMPTS/persona-defaults.md` from the bundled
+    /// resources and upsert any built-in personas not already present in the
+    /// store. Called from `HarnessApp.bootstrapPersistedScope()` on every
+    /// launch so new built-ins added in future updates surface automatically.
+    /// Failures are logged but do not block app startup — a missing seed
+    /// leaves the user with an empty Personas section, not a crash.
+    func bootstrapPersonas() async {
+        let logger = Logger(subsystem: "com.harness.app", category: "AppContainer")
+        do {
+            let markdown = try promptLibrary.personaDefaults()
+            try await runHistory.seedBuiltInPersonasIfNeeded(from: markdown)
+        } catch {
+            logger.error("persona seeding failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }

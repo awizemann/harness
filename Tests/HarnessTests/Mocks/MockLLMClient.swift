@@ -71,20 +71,24 @@ struct StubPromptLibrary: PromptLoading {
     let system: String
     let persona: String
     let friction: String
+    let personaDefaultsRaw: String
 
     init(
         system: String = "You are a tester. {{POINT_WIDTH}}×{{POINT_HEIGHT}} {{PERSONA}} {{GOAL}}.",
         persona: String = "first-time user",
-        friction: String = "(vocab)"
+        friction: String = "(vocab)",
+        personaDefaultsRaw: String = ""
     ) {
         self.system = system
         self.persona = persona
         self.friction = friction
+        self.personaDefaultsRaw = personaDefaultsRaw
     }
 
     func systemPrompt() throws -> String { system }
     func defaultPersona() throws -> String { persona }
     func frictionVocab() throws -> String { friction }
+    func personaDefaults() throws -> String { personaDefaultsRaw }
 }
 
 // MARK: - LLMStepResponse builder

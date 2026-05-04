@@ -26,6 +26,9 @@ protocol PromptLoading: Sendable {
     func defaultPersona() throws -> String
     /// The friction-vocab markdown — for surfacing in the friction-report UI.
     func frictionVocab() throws -> String
+    /// Raw markdown for `persona-defaults.md`. Used by the Persona seeder
+    /// to refresh built-in entries on every launch.
+    func personaDefaults() throws -> String
 }
 
 enum PromptLibraryError: Error, Sendable {
@@ -68,6 +71,10 @@ struct PromptLibrary: PromptLoading {
         try load("friction-vocab")
     }
 
+    func personaDefaults() throws -> String {
+        try load("persona-defaults")
+    }
+
     // MARK: Private
 
     private func load(_ stem: String) throws -> String {
@@ -107,5 +114,58 @@ struct PromptLibrary: PromptLoading {
         }
         let trimmed = collected.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Parse `## title\n<body>\n---` blocks out of a markdown document.
+    ///
+    /// - Title matches the first `## …` line (heading text trimmed).
+    /// - Body is every line up to the next `## ` or `---` divider, trimmed.
+    /// - Empty bodies are dropped.
+    ///
+    /// Used for Persona seeding from `docs/PROMPTS/persona-defaults.md` and
+    /// also serves as the "Start from a built-in" picker source in the
+    /// Personas create sheet. Lives here (not on `RunHistoryStore`) so any
+    /// caller can reuse it without going through the actor.
+    nonisolated public static func parseMarkdownSections(_ text: String) -> [(title: String, body: String)] {
+        var out: [(title: String, body: String)] = []
+        var currentTitle: String?
+        var currentBody: [String] = []
+
+        func flush() {
+            if let title = currentTitle {
+                let body = currentBody.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !body.isEmpty {
+                    out.append((title: title, body: body))
+                }
+            }
+            currentTitle = nil
+            currentBody = []
+        }
+
+        for line in text.components(separatedBy: "\n") {
+            if line.hasPrefix("## ") {
+                flush()
+                currentTitle = String(line.dropFirst(3))
+                    .trimmingCharacters(in: .whitespaces)
+                continue
+            }
+            if line.hasPrefix("---") {
+                flush()
+                continue
+            }
+            if currentTitle != nil {
+                currentBody.append(line)
+            }
+        }
+        flush()
+        return out
+    }
+
+    /// Convenience: load and parse `persona-defaults.md` into `(title, body)`
+    /// pairs ready for seeding or display. Throws if the resource is missing.
+    func personaDefaultSections() throws -> [(title: String, body: String)] {
+        let raw = try load("persona-defaults")
+        return Self.parseMarkdownSections(raw)
     }
 }

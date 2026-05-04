@@ -73,14 +73,18 @@ struct HarnessApp: App {
     }
 
     /// Restore the persisted `selectedApplicationID` (if any) from
-    /// `settings.json`, validate it against the live store, and propagate
-    /// to the coordinator. Stale ids (deleted Applications) get cleared so
-    /// the workspace doesn't render against a missing scope.
+    /// `settings.json`, validate it against the live store, propagate to the
+    /// coordinator, and seed built-in personas. Stale ids (deleted
+    /// Applications) get cleared so the workspace doesn't render against a
+    /// missing scope.
     @MainActor
     private func bootstrapPersistedScope() async {
         let state = container.appState
         let coordinator = container.appCoordinator
         await state.restorePersistedSettings()
+        // Seed built-in personas every launch — idempotent, surfaces new
+        // built-ins added in future updates.
+        await container.bootstrapPersonas()
         guard let id = state.selectedApplicationID else { return }
         if let app = try? await container.runHistory.application(id: id), !app.archived {
             coordinator.selectedApplicationID = id
@@ -144,7 +148,7 @@ private struct DetailRouter: View {
     var body: some View {
         switch coordinator.selectedSection {
         case .applications: ApplicationsView()
-        case .personas:     PlaceholderLibraryView(kind: .personas)
+        case .personas:     PersonasView()
         case .actions:      PlaceholderLibraryView(kind: .actions)
         case .newRun:       GoalInputView()
         case .activeRun:    RunSessionView()
