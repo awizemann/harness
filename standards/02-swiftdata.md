@@ -1,8 +1,8 @@
-# 02 — SwiftData (scoped: Run history index only)
+# 02 — SwiftData (scoped: Run history index + workspace library)
 
 Applies to: **Harness**
 
-Harness uses SwiftData for **only** the Run history index — the small, queryable record of "I ran this goal at this time against this project; verdict was X." The per-step event stream is **JSONL on disk** (cheap, append-only, replay-friendly) and is **not** modeled in SwiftData. See `14-run-logging-format.md` for the JSONL contract.
+Harness uses SwiftData for the Run history index **and** the small library entities the workspace rework introduces (Applications, Personas, Actions, Action Chains). The per-step event stream stays as **JSONL on disk** (cheap, append-only, replay-friendly) and is **not** modeled in SwiftData. See `14-run-logging-format.md` for the JSONL contract.
 
 This split is deliberate: SwiftData is great for indexed lookups across many small records; it's a poor fit for streaming append of thousands of events with embedded screenshots. We use the right tool for each.
 
@@ -12,10 +12,16 @@ This split is deliberate: SwiftData is great for indexed lookups across many sma
 
 | Model | Purpose |
 |---|---|
-| `RunRecord` | One row per run: id, createdAt, completedAt, projectPath, scheme, simulatorRef, goalText, personaText, model, mode (step / autonomous), verdict, friction count, step count, tokensUsed, runDirectoryURL. |
-| `ProjectRef` | Cached references to Xcode projects the user has aimed Harness at, so the picker has a recents list. id, path, lastUsedAt, displayName, defaultScheme, defaultSimulatorUDID. |
+| `RunRecord` | One row per run. Identity + timestamps; denormalized snapshot of the goal context (projectPath, scheme, simulator*, goal, persona text, modelRaw, modeRaw); outcome (verdictRaw, summary, stepCount, frictionCount, tokens*); on-disk `runDirectoryPath`. Plus optional refs (`application`, `persona_`, `action`, `actionChain`) that wire the run back to the library entities — all `.nullify` on referent delete so the denormalized snapshot fields keep history readable forever. Optional `name` is the user-supplied or auto-generated run name surfaced in History. |
+| `Application` | A saved per-project workspace. id, name, createdAt, lastUsedAt, archivedAt?, projectPath, projectBookmark?, scheme, defaultSimulator{UDID,Name,Runtime}, defaultModelRaw, defaultModeRaw, defaultStepBudget. The user picks an Application once and runs against it indefinitely; defaults inherit into each `GoalRequest` unless explicitly overridden. |
+| `Persona` | A reusable persona. id, name, blurb, promptText, isBuiltIn, createdAt, lastUsedAt, archivedAt?. Built-ins are seeded from `docs/PROMPTS/persona-defaults.md` and are not deletable from the UI. |
+| `Action` | A reusable user prompt (goal text). id, name, promptText, notes, createdAt, lastUsedAt, archivedAt?. |
+| `ActionChain` | An ordered sequence of Actions executed as one Run with multiple legs. id, name, notes, timestamps, archivedAt?, plus a `.cascade` relationship to `ActionChainStep`. |
+| `ActionChainStep` | One leg in a chain. id, index (0-based ordering), `action: Action?` (.nullify), preservesState. Step survives Action delete in a "broken-link" state surfaced by the chain editor. |
 
-Everything else — per-step screenshots, observations, intents, tool calls, friction events — lives in `<runDirectoryURL>/events.jsonl` + `step-NNN.png` files. `RunRecord.runDirectoryURL` points at it.
+Everything else — per-step screenshots, observations, intents, tool calls, friction events — lives in `<runDirectoryURL>/events.jsonl` + `step-NNN.png` files. `RunRecord.runDirectoryURL` points at it. **No per-step state moves into SwiftData.**
+
+`ProjectRef` (V1's "recents-projects" cache) is **dropped**: every project is folded into an `Application` during the V1→V2 stage. See §2 for the migration shape.
 
 ---
 
@@ -43,18 +49,37 @@ let container = try ModelContainer(
 
 Use **lightweight** stages for structural changes. Harness has no CloudKit sync today — that constraint is dormant — but stay lightweight-compatible so we keep the option open.
 
+### V1 → V2 (workspace library)
+
+V2 adds `Application`, `Persona`, `Action`, `ActionChain`, `ActionChainStep`, grows `RunRecord` with optional refs to those entities (`application`, `persona_`, `action`, `actionChain`) and a nullable `name`, and **drops** `ProjectRef`.
+
+The migration is mostly lightweight (column-add for the new RunRecord refs; new tables for the library entities; the V1 `ProjectRef` table is dropped because it's not in V2's `models` list). The custom `didMigrate` step backfills Applications:
+
+1. Walk every surviving `RunRecord`.
+2. Group by the `(projectPath, scheme)` tuple.
+3. For each unique tuple, ensure an `Application` exists (insert if missing, naming it from the run's `displayName` and lifting the simulator triple from the run's saved values; defaults seed from `AgentModel.opus47` / `RunMode.stepByStep` / `stepBudget = 40`).
+4. Set `runRecord.application` to the matching row.
+5. Bump the Application's `lastUsedAt` to the most recent run's `completedAt ?? createdAt`.
+
+Both V1 and V2 expose a class named `RunRecord` (V1 nested under `HarnessSchemaV1`, V2 at file scope). The shared simple class name lets SwiftData's lightweight migration extend the existing `ZRUNRECORD` table in place rather than dropping and rebuilding it. The Persona seeding from `docs/PROMPTS/persona-defaults.md` runs in `RunHistoryStore.seedBuiltInPersonasIfNeeded(from:)` — invoked from the migration as well as on every app launch so future built-ins propagate forward.
+
 ---
 
 ## 3. Indexing
 
-Add `#Index` on fields that appear in predicates, sort descriptors, or frequent lookups.
+Add `#Index` on fields that appear in predicates, sort descriptors, or frequent lookups when the deployment target supports it.
 
 | Entity | Indexed fields |
 |--------|---------------|
 | `RunRecord` | `createdAt`, `verdict`, `projectPath` |
-| `ProjectRef` | `lastUsedAt` |
+| `Application` | `lastUsedAt` |
+| `Persona` | `lastUsedAt` |
+| `Action` | `lastUsedAt` |
+| `ActionChain` | `lastUsedAt` |
 
-The history view sorts by `createdAt desc` and filters by verdict / project; both must be indexed.
+> Note: `#Index` requires macOS 15+. Harness still ships against macOS 14, so the `lastUsedAt` indexes above are documented intent and re-add when we move the floor to macOS 15. SortDescriptor-driven queries serve current store sizes acceptably without them.
+
+The history view sorts by `createdAt desc` and filters by verdict / project; both must be indexed. Library list views sort by `lastUsedAt desc`.
 
 ---
 

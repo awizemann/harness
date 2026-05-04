@@ -94,47 +94,289 @@ struct RunHistoryStoreTests {
         #expect(limited.first?.goal == "goal-2")
     }
 
-    @Test("touchProject inserts then updates by path; recents reflect lastUsedAt")
-    func projectRecentsTouch() async throws {
+    @Test("Application upsert + archive + delete round-trip")
+    func applicationsCRUD() async throws {
         let store = try RunHistoryStore.inMemory()
 
         let now = Date()
-        let snap = ProjectRefSnapshot(
+        let appA = ApplicationSnapshot(
             id: UUID(),
-            path: "/tmp/A.xcodeproj",
-            displayName: "A",
-            defaultScheme: "ASchema",
+            name: "A",
+            createdAt: now,
+            lastUsedAt: now,
+            archivedAt: nil,
+            projectPath: "/tmp/A.xcodeproj",
+            projectBookmark: nil,
+            scheme: "ASchema",
             defaultSimulatorUDID: nil,
-            lastUsedAt: now
+            defaultSimulatorName: nil,
+            defaultSimulatorRuntime: nil,
+            defaultModelRaw: AgentModel.opus47.rawValue,
+            defaultModeRaw: RunMode.stepByStep.rawValue,
+            defaultStepBudget: 40
         )
-        try await store.touchProject(snap)
+        try await store.upsert(appA)
 
-        let snapB = ProjectRefSnapshot(
+        let appB = ApplicationSnapshot(
             id: UUID(),
-            path: "/tmp/B.xcodeproj",
-            displayName: "B",
-            defaultScheme: "BSchema",
-            defaultSimulatorUDID: nil,
-            lastUsedAt: now.addingTimeInterval(60)
+            name: "B",
+            createdAt: now.addingTimeInterval(60),
+            lastUsedAt: now.addingTimeInterval(60),
+            archivedAt: nil,
+            projectPath: "/tmp/B.xcodeproj",
+            projectBookmark: nil,
+            scheme: "BSchema",
+            defaultSimulatorUDID: "UDID-B",
+            defaultSimulatorName: "iPhone B",
+            defaultSimulatorRuntime: "iOS 18.4",
+            defaultModelRaw: AgentModel.opus47.rawValue,
+            defaultModeRaw: RunMode.stepByStep.rawValue,
+            defaultStepBudget: 40
         )
-        try await store.touchProject(snapB)
+        try await store.upsert(appB)
 
-        // Touch A again with a later timestamp; should reorder.
-        let snapAUpdated = ProjectRefSnapshot(
-            id: snap.id, // ID is ignored on update; lookup is by path.
-            path: "/tmp/A.xcodeproj",
-            displayName: "A renamed",
-            defaultScheme: "ASchema",
+        // Bump A's lastUsedAt forward and rename — should reorder.
+        let appARenamed = ApplicationSnapshot(
+            id: appA.id,
+            name: "A renamed",
+            createdAt: appA.createdAt,
+            lastUsedAt: now.addingTimeInterval(120),
+            archivedAt: nil,
+            projectPath: appA.projectPath,
+            projectBookmark: nil,
+            scheme: appA.scheme,
             defaultSimulatorUDID: "UDID-XYZ",
-            lastUsedAt: now.addingTimeInterval(120)
+            defaultSimulatorName: "iPhone XYZ",
+            defaultSimulatorRuntime: "iOS 18.4",
+            defaultModelRaw: appA.defaultModelRaw,
+            defaultModeRaw: appA.defaultModeRaw,
+            defaultStepBudget: appA.defaultStepBudget
         )
-        try await store.touchProject(snapAUpdated)
+        try await store.upsert(appARenamed)
 
-        let recents = try await store.recentProjects(limit: 10)
-        #expect(recents.count == 2)
-        #expect(recents.first?.path == "/tmp/A.xcodeproj")
-        #expect(recents.first?.displayName == "A renamed")
-        #expect(recents.first?.defaultSimulatorUDID == "UDID-XYZ")
+        let active = try await store.applications()
+        #expect(active.count == 2)
+        #expect(active.first?.id == appA.id)
+        #expect(active.first?.name == "A renamed")
+        #expect(active.first?.defaultSimulatorUDID == "UDID-XYZ")
+
+        // Archive B; default-listing should now skip it.
+        try await store.archive(applicationID: appB.id)
+        let afterArchive = try await store.applications()
+        #expect(afterArchive.count == 1)
+        let withArchived = try await store.applications(includeArchived: true)
+        #expect(withArchived.count == 2)
+
+        // Hard-delete A.
+        try await store.deleteApplication(id: appA.id)
+        let afterDelete = try await store.applications(includeArchived: true)
+        #expect(afterDelete.count == 1)
+        #expect(afterDelete.first?.id == appB.id)
+    }
+
+    @Test("Deleting an Application nullifies bound RunRecord refs but keeps denormalized fields")
+    func deleteApplicationNullifiesRunRecords() async throws {
+        let store = try RunHistoryStore.inMemory()
+
+        let app = ApplicationSnapshot(
+            id: UUID(),
+            name: "ListApp",
+            createdAt: Date(),
+            lastUsedAt: Date(),
+            archivedAt: nil,
+            projectPath: "/tmp/ListApp.xcodeproj",
+            projectBookmark: nil,
+            scheme: "ListApp",
+            defaultSimulatorUDID: nil,
+            defaultSimulatorName: nil,
+            defaultSimulatorRuntime: nil,
+            defaultModelRaw: AgentModel.opus47.rawValue,
+            defaultModeRaw: RunMode.stepByStep.rawValue,
+            defaultStepBudget: 40
+        )
+        try await store.upsert(app)
+
+        var skel = RunRecordSnapshot.skeleton(from: Self.makeRequest())
+        skel = RunRecordSnapshot(
+            id: skel.id,
+            name: skel.name,
+            createdAt: skel.createdAt,
+            completedAt: skel.completedAt,
+            projectPath: skel.projectPath,
+            scheme: skel.scheme,
+            displayName: skel.displayName,
+            simulatorUDID: skel.simulatorUDID,
+            simulatorName: skel.simulatorName,
+            simulatorRuntime: skel.simulatorRuntime,
+            goal: skel.goal,
+            persona: skel.persona,
+            modelRaw: skel.modelRaw,
+            modeRaw: skel.modeRaw,
+            verdictRaw: skel.verdictRaw,
+            summary: skel.summary,
+            stepCount: skel.stepCount,
+            frictionCount: skel.frictionCount,
+            wouldRealUserSucceed: skel.wouldRealUserSucceed,
+            tokensUsedInput: skel.tokensUsedInput,
+            tokensUsedOutput: skel.tokensUsedOutput,
+            runDirectoryPath: skel.runDirectoryPath,
+            applicationID: app.id,
+            personaID: nil,
+            actionID: nil,
+            actionChainID: nil
+        )
+        try await store.upsert(skel)
+
+        let pre = try await store.fetch(id: skel.id)
+        #expect(pre?.applicationID == app.id)
+        #expect(pre?.projectPath == skel.projectPath) // denormalized survives
+
+        try await store.deleteApplication(id: app.id)
+
+        let post = try await store.fetch(id: skel.id)
+        #expect(post?.applicationID == nil)
+        #expect(post?.projectPath == skel.projectPath)
+        #expect(post?.scheme == skel.scheme)
+    }
+
+    @Test("Persona delete leaves runs pointing at it readable")
+    func deletePersonaDoesNotBreakRuns() async throws {
+        let store = try RunHistoryStore.inMemory()
+
+        let p = PersonaSnapshot(
+            id: UUID(),
+            name: "explorer",
+            blurb: "patient",
+            promptText: "you are patient",
+            isBuiltIn: false,
+            createdAt: Date(),
+            lastUsedAt: Date(),
+            archivedAt: nil
+        )
+        try await store.upsert(p)
+
+        var skel = RunRecordSnapshot.skeleton(from: Self.makeRequest())
+        skel = RunRecordSnapshot(
+            id: skel.id,
+            name: skel.name,
+            createdAt: skel.createdAt,
+            completedAt: skel.completedAt,
+            projectPath: skel.projectPath,
+            scheme: skel.scheme,
+            displayName: skel.displayName,
+            simulatorUDID: skel.simulatorUDID,
+            simulatorName: skel.simulatorName,
+            simulatorRuntime: skel.simulatorRuntime,
+            goal: skel.goal,
+            persona: skel.persona,
+            modelRaw: skel.modelRaw,
+            modeRaw: skel.modeRaw,
+            verdictRaw: skel.verdictRaw,
+            summary: skel.summary,
+            stepCount: skel.stepCount,
+            frictionCount: skel.frictionCount,
+            wouldRealUserSucceed: skel.wouldRealUserSucceed,
+            tokensUsedInput: skel.tokensUsedInput,
+            tokensUsedOutput: skel.tokensUsedOutput,
+            runDirectoryPath: skel.runDirectoryPath,
+            applicationID: nil,
+            personaID: p.id,
+            actionID: nil,
+            actionChainID: nil
+        )
+        try await store.upsert(skel)
+        let pre = try await store.fetch(id: skel.id)
+        #expect(pre?.personaID == p.id)
+
+        try await store.deletePersona(id: p.id)
+
+        let post = try await store.fetch(id: skel.id)
+        #expect(post != nil)
+        #expect(post?.personaID == nil)
+        // Denormalized text field still there.
+        #expect(post?.persona == skel.persona)
+    }
+
+    @Test("Deleting an Action nullifies any chain-step that referenced it")
+    func deleteActionNullifiesChainSteps() async throws {
+        let store = try RunHistoryStore.inMemory()
+
+        let act1 = ActionSnapshot(
+            id: UUID(),
+            name: "Add milk",
+            promptText: "add milk to list",
+            notes: "",
+            createdAt: Date(),
+            lastUsedAt: Date(),
+            archivedAt: nil
+        )
+        let act2 = ActionSnapshot(
+            id: UUID(),
+            name: "Mark milk done",
+            promptText: "mark milk as done",
+            notes: "",
+            createdAt: Date(),
+            lastUsedAt: Date(),
+            archivedAt: nil
+        )
+        try await store.upsert(act1)
+        try await store.upsert(act2)
+
+        let chain = ActionChainSnapshot(
+            id: UUID(),
+            name: "Milk flow",
+            notes: "",
+            createdAt: Date(),
+            lastUsedAt: Date(),
+            archivedAt: nil,
+            steps: [
+                ActionChainStepSnapshot(id: UUID(), index: 0, actionID: act1.id, preservesState: false),
+                ActionChainStepSnapshot(id: UUID(), index: 1, actionID: act2.id, preservesState: true)
+            ]
+        )
+        try await store.upsert(chain)
+
+        let pre = try await store.actionChain(id: chain.id)
+        #expect(pre?.steps.count == 2)
+        #expect(pre?.steps[0].actionID == act1.id)
+
+        try await store.deleteAction(id: act1.id)
+
+        let post = try await store.actionChain(id: chain.id)
+        #expect(post?.steps.count == 2) // step survives, ref nullified
+        #expect(post?.steps[0].actionID == nil)
+        #expect(post?.steps[1].actionID == act2.id)
+    }
+
+    @Test("seedBuiltInPersonasIfNeeded is idempotent across calls")
+    func seedBuiltInPersonasIdempotent() async throws {
+        let store = try RunHistoryStore.inMemory()
+
+        let markdown = """
+        # Default Personas
+
+        ---
+
+        ## first-time user
+
+        A curious first-time user. They explore.
+
+        ---
+
+        ## power user
+
+        Knows the app inside out.
+
+        ---
+        """
+        try await store.seedBuiltInPersonasIfNeeded(from: markdown)
+        let first = try await store.personas()
+        #expect(first.count == 2)
+        #expect(first.allSatisfy { $0.isBuiltIn })
+
+        try await store.seedBuiltInPersonasIfNeeded(from: markdown)
+        let second = try await store.personas()
+        #expect(second.count == 2)
     }
 
     // MARK: Helper

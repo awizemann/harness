@@ -272,3 +272,83 @@ enum UserApproval: Sendable, Hashable {
     case reject(note: String)
     case stop
 }
+
+// MARK: - Library snapshots
+//
+// Sendable value-type mirrors of the SwiftData `@Model`s under
+// `Harness/Services/HarnessSchema.swift`. Views and view-models read these,
+// not the `@Model`s — the `@Model` types are not `Sendable` and SwiftData
+// objects must stay on the actor that owns their `ModelContext`.
+//
+
+/// Sendable mirror of the `Application` `@Model`. The `archived` flag
+/// surfaces `archivedAt != nil` for view consumption.
+struct ApplicationSnapshot: Sendable, Hashable, Equatable {
+    let id: UUID
+    let name: String
+    let createdAt: Date
+    let lastUsedAt: Date
+    let archivedAt: Date?
+    let projectPath: String
+    let projectBookmark: Data?
+    let scheme: String
+    let defaultSimulatorUDID: String?
+    let defaultSimulatorName: String?
+    let defaultSimulatorRuntime: String?
+    let defaultModelRaw: String
+    let defaultModeRaw: String
+    let defaultStepBudget: Int
+
+    var archived: Bool { archivedAt != nil }
+    var defaultModel: AgentModel? { AgentModel(rawValue: defaultModelRaw) }
+    var defaultMode: RunMode? { RunMode(rawValue: defaultModeRaw) }
+    var projectURL: URL { URL(fileURLWithPath: projectPath) }
+}
+
+struct PersonaSnapshot: Sendable, Hashable, Equatable {
+    let id: UUID
+    let name: String
+    let blurb: String
+    let promptText: String
+    let isBuiltIn: Bool
+    let createdAt: Date
+    let lastUsedAt: Date
+    let archivedAt: Date?
+
+    var archived: Bool { archivedAt != nil }
+}
+
+struct ActionSnapshot: Sendable, Hashable, Equatable {
+    let id: UUID
+    let name: String
+    let promptText: String
+    let notes: String
+    let createdAt: Date
+    let lastUsedAt: Date
+    let archivedAt: Date?
+
+    var archived: Bool { archivedAt != nil }
+}
+
+/// Sendable mirror of an `ActionChainStep`. `actionID == nil` means the
+/// step's referenced Action was deleted (the chain shows a broken-link
+/// state in Phase D's UI).
+struct ActionChainStepSnapshot: Sendable, Hashable, Equatable {
+    let id: UUID
+    let index: Int
+    let actionID: UUID?
+    let preservesState: Bool
+}
+
+struct ActionChainSnapshot: Sendable, Hashable, Equatable {
+    let id: UUID
+    let name: String
+    let notes: String
+    let createdAt: Date
+    let lastUsedAt: Date
+    let archivedAt: Date?
+    /// Ordered ascending by `index`.
+    let steps: [ActionChainStepSnapshot]
+
+    var archived: Bool { archivedAt != nil }
+}

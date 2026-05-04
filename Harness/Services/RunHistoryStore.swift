@@ -2,178 +2,88 @@
 //  RunHistoryStore.swift
 //  Harness
 //
-//  SwiftData container for the Run history index. Per
-//  `standards/02-swiftdata.md`, SwiftData is used **only** for the small,
-//  queryable record of past runs and the recents list of Xcode projects.
-//  Per-step events live in JSONL on disk.
+//  SwiftData container for the Run history index plus the small library
+//  entities (Applications / Personas / Actions / Action Chains) that the
+//  workspace rework introduces. Per `standards/02-swiftdata.md`, SwiftData
+//  is the queryable index; per-step events still live in JSONL on disk.
+//
+//  The `@Model` classes themselves and the schema versions live in
+//  `Harness/Services/HarnessSchema.swift`. This file owns the
+//  `RunHistoryStoring` actor, the Sendable snapshot bridge, and the CRUD
+//  surface.
 //
 
 import Foundation
 import SwiftData
 import os
 
-// MARK: - SwiftData @Model types
-
-/// One row per finished or in-progress run. `runDirectoryURL` points at the
-/// on-disk events.jsonl + screenshots; the SwiftData row is a small index.
-@Model
-final class RunRecord {
-
-    // MARK: Identity
-    @Attribute(.unique) var id: UUID
-
-    // MARK: Lifecycle
-    var createdAt: Date
-    var completedAt: Date?
-
-    // MARK: Goal context
-    var projectPath: String
-    var scheme: String
-    var displayName: String
-    var simulatorUDID: String
-    var simulatorName: String
-    var simulatorRuntime: String
-    var goal: String
-    var persona: String
-    var modelRaw: String
-    var modeRaw: String
-
-    // MARK: Outcome (nil while running)
-    var verdictRaw: String?
-    var summary: String?
-    var stepCount: Int
-    var frictionCount: Int
-    var wouldRealUserSucceed: Bool
-    var tokensUsedInput: Int
-    var tokensUsedOutput: Int
-
-    // MARK: On-disk pointer
-    /// String form of the run-directory URL (NOT a security-scoped bookmark —
-    /// Harness is non-sandboxed).
-    var runDirectoryPath: String
-
-    init(
-        id: UUID,
-        createdAt: Date,
-        completedAt: Date? = nil,
-        projectPath: String,
-        scheme: String,
-        displayName: String,
-        simulatorUDID: String,
-        simulatorName: String,
-        simulatorRuntime: String,
-        goal: String,
-        persona: String,
-        modelRaw: String,
-        modeRaw: String,
-        verdictRaw: String? = nil,
-        summary: String? = nil,
-        stepCount: Int = 0,
-        frictionCount: Int = 0,
-        wouldRealUserSucceed: Bool = false,
-        tokensUsedInput: Int = 0,
-        tokensUsedOutput: Int = 0,
-        runDirectoryPath: String
-    ) {
-        self.id = id
-        self.createdAt = createdAt
-        self.completedAt = completedAt
-        self.projectPath = projectPath
-        self.scheme = scheme
-        self.displayName = displayName
-        self.simulatorUDID = simulatorUDID
-        self.simulatorName = simulatorName
-        self.simulatorRuntime = simulatorRuntime
-        self.goal = goal
-        self.persona = persona
-        self.modelRaw = modelRaw
-        self.modeRaw = modeRaw
-        self.verdictRaw = verdictRaw
-        self.summary = summary
-        self.stepCount = stepCount
-        self.frictionCount = frictionCount
-        self.wouldRealUserSucceed = wouldRealUserSucceed
-        self.tokensUsedInput = tokensUsedInput
-        self.tokensUsedOutput = tokensUsedOutput
-        self.runDirectoryPath = runDirectoryPath
-    }
-
-    var runDirectoryURL: URL { URL(fileURLWithPath: runDirectoryPath) }
-    var verdict: Verdict? { verdictRaw.flatMap(Verdict.init(rawValue:)) }
-    var model: AgentModel? { AgentModel(rawValue: modelRaw) }
-    var mode: RunMode? { RunMode(rawValue: modeRaw) }
-}
-
-/// Cached reference to an Xcode project Harness has been pointed at. Powers
-/// the recents picker on the goal-input screen.
-@Model
-final class ProjectRef {
-    @Attribute(.unique) var id: UUID
-    var path: String
-    var displayName: String
-    var defaultScheme: String?
-    var defaultSimulatorUDID: String?
-    var lastUsedAt: Date
-
-    init(
-        id: UUID = UUID(),
-        path: String,
-        displayName: String,
-        defaultScheme: String? = nil,
-        defaultSimulatorUDID: String? = nil,
-        lastUsedAt: Date = Date()
-    ) {
-        self.id = id
-        self.path = path
-        self.displayName = displayName
-        self.defaultScheme = defaultScheme
-        self.defaultSimulatorUDID = defaultSimulatorUDID
-        self.lastUsedAt = lastUsedAt
-    }
-
-    var url: URL { URL(fileURLWithPath: path) }
-}
-
-// MARK: - Schema versioning (single version today)
-
-enum HarnessSchemaV1: VersionedSchema {
-    static var versionIdentifier: Schema.Version { .init(1, 0, 0) }
-    static var models: [any PersistentModel.Type] { [RunRecord.self, ProjectRef.self] }
-}
-
-enum HarnessMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [HarnessSchemaV1.self] }
-    static var stages: [MigrationStage] { [] }
-}
-
 // MARK: - Protocol
 
 protocol RunHistoryStoring: Sendable {
-    /// Insert or update a run record (Skeleton-First pattern from `02-swiftdata.md §2`:
-    /// the row is created at `runStarted` and updated at `runCompleted`).
+
+    // MARK: Run records
+    /// Insert or update a run record (Skeleton-First pattern from `02-swiftdata.md §2`).
     func upsert(_ record: RunRecordSnapshot) async throws
-
-    /// Mark a run as completed by patching outcome fields.
     func markCompleted(id: UUID, outcome: RunOutcome) async throws
-
-    /// Recent runs, newest first.
     func fetchRecent(limit: Int) async throws -> [RunRecordSnapshot]
-
-    /// Look up by id.
     func fetch(id: UUID) async throws -> RunRecordSnapshot?
-
-    /// Hard-delete a run row AND its on-disk directory.
     func delete(id: UUID) async throws
 
-    // Recents-projects helpers.
-    func touchProject(_ ref: ProjectRefSnapshot) async throws
-    func recentProjects(limit: Int) async throws -> [ProjectRefSnapshot]
+    // MARK: Applications
+    func applications(includeArchived: Bool) async throws -> [ApplicationSnapshot]
+    func application(id: UUID) async throws -> ApplicationSnapshot?
+    func upsert(_ snapshot: ApplicationSnapshot) async throws
+    func archive(applicationID: UUID) async throws
+    func deleteApplication(id: UUID) async throws
+
+    // MARK: Personas
+    func personas(includeArchived: Bool) async throws -> [PersonaSnapshot]
+    func persona(id: UUID) async throws -> PersonaSnapshot?
+    func upsert(_ snapshot: PersonaSnapshot) async throws
+    func archive(personaID: UUID) async throws
+    func deletePersona(id: UUID) async throws
+    /// Idempotent: inserts personas from `docs/PROMPTS/persona-defaults.md` whose
+    /// `name` doesn't already exist as a built-in.
+    func seedBuiltInPersonasIfNeeded(from markdown: String) async throws
+
+    // MARK: Actions
+    func actions(includeArchived: Bool) async throws -> [ActionSnapshot]
+    func action(id: UUID) async throws -> ActionSnapshot?
+    func upsert(_ snapshot: ActionSnapshot) async throws
+    func archive(actionID: UUID) async throws
+    func deleteAction(id: UUID) async throws
+
+    // MARK: Action chains
+    func actionChains(includeArchived: Bool) async throws -> [ActionChainSnapshot]
+    func actionChain(id: UUID) async throws -> ActionChainSnapshot?
+    func upsert(_ snapshot: ActionChainSnapshot) async throws
+    func archive(actionChainID: UUID) async throws
+    func deleteActionChain(id: UUID) async throws
 }
+
+// Default-argument shims so callers can write `applications()`.
+extension RunHistoryStoring {
+    func applications() async throws -> [ApplicationSnapshot] {
+        try await applications(includeArchived: false)
+    }
+    func personas() async throws -> [PersonaSnapshot] {
+        try await personas(includeArchived: false)
+    }
+    func actions() async throws -> [ActionSnapshot] {
+        try await actions(includeArchived: false)
+    }
+    func actionChains() async throws -> [ActionChainSnapshot] {
+        try await actionChains(includeArchived: false)
+    }
+}
+
+// MARK: - Snapshots
 
 /// Sendable snapshot of a `RunRecord`. Used to ferry data across the actor
 /// boundary; the `@Model` itself isn't `Sendable`.
 struct RunRecordSnapshot: Sendable, Hashable {
     let id: UUID
+    let name: String?
     let createdAt: Date
     let completedAt: Date?
     let projectPath: String
@@ -195,19 +105,73 @@ struct RunRecordSnapshot: Sendable, Hashable {
     let tokensUsedOutput: Int
     let runDirectoryPath: String
 
+    /// Optional refs to the library entities the run was launched from.
+    /// `nil` means the row was created before the workspace rework, or its
+    /// referent was deleted (denormalized fields above still hold the
+    /// durable snapshot).
+    let applicationID: UUID?
+    let personaID: UUID?
+    let actionID: UUID?
+    let actionChainID: UUID?
+
     var verdict: Verdict? { verdictRaw.flatMap(Verdict.init(rawValue:)) }
     var runDirectoryURL: URL { URL(fileURLWithPath: runDirectoryPath) }
-}
 
-struct ProjectRefSnapshot: Sendable, Hashable {
-    let id: UUID
-    let path: String
-    let displayName: String
-    let defaultScheme: String?
-    let defaultSimulatorUDID: String?
-    let lastUsedAt: Date
-
-    var url: URL { URL(fileURLWithPath: path) }
+    init(
+        id: UUID,
+        name: String? = nil,
+        createdAt: Date,
+        completedAt: Date? = nil,
+        projectPath: String,
+        scheme: String,
+        displayName: String,
+        simulatorUDID: String,
+        simulatorName: String,
+        simulatorRuntime: String,
+        goal: String,
+        persona: String,
+        modelRaw: String,
+        modeRaw: String,
+        verdictRaw: String? = nil,
+        summary: String? = nil,
+        stepCount: Int = 0,
+        frictionCount: Int = 0,
+        wouldRealUserSucceed: Bool = false,
+        tokensUsedInput: Int = 0,
+        tokensUsedOutput: Int = 0,
+        runDirectoryPath: String,
+        applicationID: UUID? = nil,
+        personaID: UUID? = nil,
+        actionID: UUID? = nil,
+        actionChainID: UUID? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.completedAt = completedAt
+        self.projectPath = projectPath
+        self.scheme = scheme
+        self.displayName = displayName
+        self.simulatorUDID = simulatorUDID
+        self.simulatorName = simulatorName
+        self.simulatorRuntime = simulatorRuntime
+        self.goal = goal
+        self.persona = persona
+        self.modelRaw = modelRaw
+        self.modeRaw = modeRaw
+        self.verdictRaw = verdictRaw
+        self.summary = summary
+        self.stepCount = stepCount
+        self.frictionCount = frictionCount
+        self.wouldRealUserSucceed = wouldRealUserSucceed
+        self.tokensUsedInput = tokensUsedInput
+        self.tokensUsedOutput = tokensUsedOutput
+        self.runDirectoryPath = runDirectoryPath
+        self.applicationID = applicationID
+        self.personaID = personaID
+        self.actionID = actionID
+        self.actionChainID = actionChainID
+    }
 }
 
 // MARK: - Default actor implementation
@@ -222,7 +186,7 @@ actor RunHistoryStore: RunHistoryStoring {
     /// Production initializer using the default app-support store.
     /// In-memory variant exists for tests; see `inMemory()`.
     init(url: URL? = nil) throws {
-        let schema = Schema(versionedSchema: HarnessSchemaV1.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV2.self)
         let configuration: ModelConfiguration
         if let url {
             configuration = ModelConfiguration(schema: schema, url: url)
@@ -241,7 +205,7 @@ actor RunHistoryStore: RunHistoryStoring {
     }
 
     static func inMemory() throws -> RunHistoryStore {
-        let schema = Schema(versionedSchema: HarnessSchemaV1.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV2.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true
@@ -259,14 +223,21 @@ actor RunHistoryStore: RunHistoryStoring {
         self.modelContext = ModelContext(container)
     }
 
-    // MARK: Upsert / mark completed
+    // MARK: Run records — upsert / mark completed
 
     func upsert(_ snapshot: RunRecordSnapshot) async throws {
         let id = snapshot.id
         let descriptor = FetchDescriptor<RunRecord>(predicate: #Predicate { $0.id == id })
         let existing = try modelContext.fetch(descriptor).first
 
+        // Resolve optional refs once — they're shared between insert and update.
+        let app = try snapshot.applicationID.flatMap { try fetchApplication(id: $0) }
+        let persona = try snapshot.personaID.flatMap { try fetchPersona(id: $0) }
+        let action = try snapshot.actionID.flatMap { try fetchAction(id: $0) }
+        let chain = try snapshot.actionChainID.flatMap { try fetchActionChain(id: $0) }
+
         if let row = existing {
+            row.name = snapshot.name
             row.completedAt = snapshot.completedAt
             row.verdictRaw = snapshot.verdictRaw
             row.summary = snapshot.summary
@@ -275,9 +246,14 @@ actor RunHistoryStore: RunHistoryStoring {
             row.wouldRealUserSucceed = snapshot.wouldRealUserSucceed
             row.tokensUsedInput = snapshot.tokensUsedInput
             row.tokensUsedOutput = snapshot.tokensUsedOutput
+            if let app { row.application = app; row.applicationLookupID = app.id }
+            if let persona { row.persona_ = persona; row.personaLookupID = persona.id }
+            if let action { row.action = action; row.actionLookupID = action.id }
+            if let chain { row.actionChain = chain; row.actionChainLookupID = chain.id }
         } else {
             let row = RunRecord(
                 id: snapshot.id,
+                name: snapshot.name,
                 createdAt: snapshot.createdAt,
                 completedAt: snapshot.completedAt,
                 projectPath: snapshot.projectPath,
@@ -297,7 +273,11 @@ actor RunHistoryStore: RunHistoryStoring {
                 wouldRealUserSucceed: snapshot.wouldRealUserSucceed,
                 tokensUsedInput: snapshot.tokensUsedInput,
                 tokensUsedOutput: snapshot.tokensUsedOutput,
-                runDirectoryPath: snapshot.runDirectoryPath
+                runDirectoryPath: snapshot.runDirectoryPath,
+                application: app,
+                persona_: persona,
+                action: action,
+                actionChain: chain
             )
             modelContext.insert(row)
         }
@@ -329,7 +309,7 @@ actor RunHistoryStore: RunHistoryStoring {
         }
     }
 
-    // MARK: Fetch
+    // MARK: Run records — fetch
 
     func fetchRecent(limit: Int) async throws -> [RunRecordSnapshot] {
         var descriptor = FetchDescriptor<RunRecord>(
@@ -355,52 +335,347 @@ actor RunHistoryStore: RunHistoryStoring {
         }
     }
 
-    // MARK: Recents-projects
+    // MARK: Applications
 
-    func touchProject(_ snapshot: ProjectRefSnapshot) async throws {
-        let path = snapshot.path
-        let descriptor = FetchDescriptor<ProjectRef>(predicate: #Predicate { $0.path == path })
-        if let existing = try modelContext.fetch(descriptor).first {
-            existing.lastUsedAt = snapshot.lastUsedAt
-            existing.displayName = snapshot.displayName
-            if let s = snapshot.defaultScheme { existing.defaultScheme = s }
-            if let u = snapshot.defaultSimulatorUDID { existing.defaultSimulatorUDID = u }
-        } else {
-            modelContext.insert(ProjectRef(
-                id: snapshot.id,
-                path: snapshot.path,
-                displayName: snapshot.displayName,
-                defaultScheme: snapshot.defaultScheme,
-                defaultSimulatorUDID: snapshot.defaultSimulatorUDID,
-                lastUsedAt: snapshot.lastUsedAt
-            ))
-        }
-        try modelContext.save()
-    }
-
-    func recentProjects(limit: Int) async throws -> [ProjectRefSnapshot] {
-        var descriptor = FetchDescriptor<ProjectRef>(
+    func applications(includeArchived: Bool) async throws -> [ApplicationSnapshot] {
+        let descriptor = FetchDescriptor<Application>(
             sortBy: [SortDescriptor(\.lastUsedAt, order: .reverse)]
         )
-        descriptor.fetchLimit = limit
         let rows = try modelContext.fetch(descriptor)
-        return rows.map { row in
-            ProjectRefSnapshot(
-                id: row.id,
-                path: row.path,
-                displayName: row.displayName,
-                defaultScheme: row.defaultScheme,
-                defaultSimulatorUDID: row.defaultSimulatorUDID,
-                lastUsedAt: row.lastUsedAt
+        let filtered = includeArchived ? rows : rows.filter { $0.archivedAt == nil }
+        return filtered.map(Self.snapshot(of:))
+    }
+
+    func application(id: UUID) async throws -> ApplicationSnapshot? {
+        try fetchApplication(id: id).map(Self.snapshot(of:))
+    }
+
+    func upsert(_ snapshot: ApplicationSnapshot) async throws {
+        if let row = try fetchApplication(id: snapshot.id) {
+            row.name = snapshot.name
+            row.lastUsedAt = snapshot.lastUsedAt
+            row.archivedAt = snapshot.archivedAt
+            row.projectPath = snapshot.projectPath
+            row.projectBookmark = snapshot.projectBookmark
+            row.scheme = snapshot.scheme
+            row.defaultSimulatorUDID = snapshot.defaultSimulatorUDID
+            row.defaultSimulatorName = snapshot.defaultSimulatorName
+            row.defaultSimulatorRuntime = snapshot.defaultSimulatorRuntime
+            row.defaultModelRaw = snapshot.defaultModelRaw
+            row.defaultModeRaw = snapshot.defaultModeRaw
+            row.defaultStepBudget = snapshot.defaultStepBudget
+        } else {
+            let row = Application(
+                id: snapshot.id,
+                name: snapshot.name,
+                createdAt: snapshot.createdAt,
+                lastUsedAt: snapshot.lastUsedAt,
+                archivedAt: snapshot.archivedAt,
+                projectPath: snapshot.projectPath,
+                projectBookmark: snapshot.projectBookmark,
+                scheme: snapshot.scheme,
+                defaultSimulatorUDID: snapshot.defaultSimulatorUDID,
+                defaultSimulatorName: snapshot.defaultSimulatorName,
+                defaultSimulatorRuntime: snapshot.defaultSimulatorRuntime,
+                defaultModelRaw: snapshot.defaultModelRaw,
+                defaultModeRaw: snapshot.defaultModeRaw,
+                defaultStepBudget: snapshot.defaultStepBudget
             )
+            modelContext.insert(row)
+        }
+        try saveOrLog("upsert(application:)")
+    }
+
+    func archive(applicationID: UUID) async throws {
+        guard let row = try fetchApplication(id: applicationID) else { return }
+        if row.archivedAt == nil {
+            row.archivedAt = Date()
+            try saveOrLog("archive(applicationID:)")
         }
     }
 
-    // MARK: Snapshot helper
+    func deleteApplication(id: UUID) async throws {
+        if let row = try fetchApplication(id: id) {
+            // Manually nullify on bound RunRecords. SwiftData's relationship
+            // cascade clears the relationship object but doesn't update our
+            // mirrored lookup-ID column; do it explicitly so snapshots stay
+            // accurate.
+            let descriptor = FetchDescriptor<RunRecord>(predicate: #Predicate { $0.applicationLookupID == id })
+            for r in try modelContext.fetch(descriptor) {
+                r.application = nil
+                r.applicationLookupID = nil
+            }
+            modelContext.delete(row)
+            try saveOrLog("deleteApplication")
+        }
+    }
+
+    // MARK: Personas
+
+    func personas(includeArchived: Bool) async throws -> [PersonaSnapshot] {
+        let descriptor = FetchDescriptor<Persona>(
+            sortBy: [SortDescriptor(\.lastUsedAt, order: .reverse)]
+        )
+        let rows = try modelContext.fetch(descriptor)
+        let filtered = includeArchived ? rows : rows.filter { $0.archivedAt == nil }
+        return filtered.map(Self.snapshot(of:))
+    }
+
+    func persona(id: UUID) async throws -> PersonaSnapshot? {
+        try fetchPersona(id: id).map(Self.snapshot(of:))
+    }
+
+    func upsert(_ snapshot: PersonaSnapshot) async throws {
+        if let row = try fetchPersona(id: snapshot.id) {
+            row.name = snapshot.name
+            row.blurb = snapshot.blurb
+            row.promptText = snapshot.promptText
+            row.isBuiltIn = snapshot.isBuiltIn
+            row.lastUsedAt = snapshot.lastUsedAt
+            row.archivedAt = snapshot.archivedAt
+        } else {
+            let row = Persona(
+                id: snapshot.id,
+                name: snapshot.name,
+                blurb: snapshot.blurb,
+                promptText: snapshot.promptText,
+                isBuiltIn: snapshot.isBuiltIn,
+                createdAt: snapshot.createdAt,
+                lastUsedAt: snapshot.lastUsedAt,
+                archivedAt: snapshot.archivedAt
+            )
+            modelContext.insert(row)
+        }
+        try saveOrLog("upsert(persona:)")
+    }
+
+    func archive(personaID: UUID) async throws {
+        guard let row = try fetchPersona(id: personaID) else { return }
+        if row.archivedAt == nil {
+            row.archivedAt = Date()
+            try saveOrLog("archive(personaID:)")
+        }
+    }
+
+    func deletePersona(id: UUID) async throws {
+        if let row = try fetchPersona(id: id) {
+            let descriptor = FetchDescriptor<RunRecord>(predicate: #Predicate { $0.personaLookupID == id })
+            for r in try modelContext.fetch(descriptor) {
+                r.persona_ = nil
+                r.personaLookupID = nil
+            }
+            modelContext.delete(row)
+            try saveOrLog("deletePersona")
+        }
+    }
+
+    func seedBuiltInPersonasIfNeeded(from markdown: String) async throws {
+        let sections = Self.parseMarkdownSections(markdown)
+        if sections.isEmpty { return }
+
+        // Index existing built-ins by name so re-runs are no-ops.
+        let descriptor = FetchDescriptor<Persona>()
+        let existing = try modelContext.fetch(descriptor)
+        var existingByName: [String: Persona] = [:]
+        for row in existing where row.isBuiltIn {
+            existingByName[row.name] = row
+        }
+
+        var inserted = 0
+        for section in sections {
+            if existingByName[section.title] != nil { continue }
+            let blurb = Self.firstSentence(of: section.body)
+            let row = Persona(
+                name: section.title,
+                blurb: blurb,
+                promptText: section.body,
+                isBuiltIn: true
+            )
+            modelContext.insert(row)
+            inserted += 1
+        }
+        if inserted > 0 {
+            try saveOrLog("seedBuiltInPersonasIfNeeded(inserted: \(inserted))")
+        }
+    }
+
+    // MARK: Actions
+
+    func actions(includeArchived: Bool) async throws -> [ActionSnapshot] {
+        let descriptor = FetchDescriptor<Action>(
+            sortBy: [SortDescriptor(\.lastUsedAt, order: .reverse)]
+        )
+        let rows = try modelContext.fetch(descriptor)
+        let filtered = includeArchived ? rows : rows.filter { $0.archivedAt == nil }
+        return filtered.map(Self.snapshot(of:))
+    }
+
+    func action(id: UUID) async throws -> ActionSnapshot? {
+        try fetchAction(id: id).map(Self.snapshot(of:))
+    }
+
+    func upsert(_ snapshot: ActionSnapshot) async throws {
+        if let row = try fetchAction(id: snapshot.id) {
+            row.name = snapshot.name
+            row.promptText = snapshot.promptText
+            row.notes = snapshot.notes
+            row.lastUsedAt = snapshot.lastUsedAt
+            row.archivedAt = snapshot.archivedAt
+        } else {
+            let row = Action(
+                id: snapshot.id,
+                name: snapshot.name,
+                promptText: snapshot.promptText,
+                notes: snapshot.notes,
+                createdAt: snapshot.createdAt,
+                lastUsedAt: snapshot.lastUsedAt,
+                archivedAt: snapshot.archivedAt
+            )
+            modelContext.insert(row)
+        }
+        try saveOrLog("upsert(action:)")
+    }
+
+    func archive(actionID: UUID) async throws {
+        guard let row = try fetchAction(id: actionID) else { return }
+        if row.archivedAt == nil {
+            row.archivedAt = Date()
+            try saveOrLog("archive(actionID:)")
+        }
+    }
+
+    func deleteAction(id: UUID) async throws {
+        if let row = try fetchAction(id: id) {
+            // Clear the action ref on any chain step pointing here.
+            let stepsDescriptor = FetchDescriptor<ActionChainStep>()
+            for step in try modelContext.fetch(stepsDescriptor) where step.action?.id == id {
+                step.action = nil
+            }
+            // And on any RunRecords that ran a single-action variant of this Action.
+            let runDescriptor = FetchDescriptor<RunRecord>(predicate: #Predicate { $0.actionLookupID == id })
+            for r in try modelContext.fetch(runDescriptor) {
+                r.action = nil
+                r.actionLookupID = nil
+            }
+            modelContext.delete(row)
+            try saveOrLog("deleteAction")
+        }
+    }
+
+    // MARK: Action chains
+
+    func actionChains(includeArchived: Bool) async throws -> [ActionChainSnapshot] {
+        let descriptor = FetchDescriptor<ActionChain>(
+            sortBy: [SortDescriptor(\.lastUsedAt, order: .reverse)]
+        )
+        let rows = try modelContext.fetch(descriptor)
+        let filtered = includeArchived ? rows : rows.filter { $0.archivedAt == nil }
+        return filtered.map(Self.snapshot(of:))
+    }
+
+    func actionChain(id: UUID) async throws -> ActionChainSnapshot? {
+        try fetchActionChain(id: id).map(Self.snapshot(of:))
+    }
+
+    func upsert(_ snapshot: ActionChainSnapshot) async throws {
+        let row: ActionChain
+        if let existing = try fetchActionChain(id: snapshot.id) {
+            row = existing
+            row.name = snapshot.name
+            row.notes = snapshot.notes
+            row.lastUsedAt = snapshot.lastUsedAt
+            row.archivedAt = snapshot.archivedAt
+        } else {
+            row = ActionChain(
+                id: snapshot.id,
+                name: snapshot.name,
+                notes: snapshot.notes,
+                createdAt: snapshot.createdAt,
+                lastUsedAt: snapshot.lastUsedAt,
+                archivedAt: snapshot.archivedAt,
+                steps: []
+            )
+            modelContext.insert(row)
+        }
+
+        // Reconcile steps: drop existing, insert in snapshot order.
+        for old in row.steps {
+            modelContext.delete(old)
+        }
+        var rebuilt: [ActionChainStep] = []
+        for step in snapshot.steps.sorted(by: { $0.index < $1.index }) {
+            let action = try step.actionID.flatMap { try fetchAction(id: $0) }
+            let stepRow = ActionChainStep(
+                id: step.id,
+                index: step.index,
+                action: action,
+                preservesState: step.preservesState
+            )
+            modelContext.insert(stepRow)
+            rebuilt.append(stepRow)
+        }
+        row.steps = rebuilt
+
+        try saveOrLog("upsert(actionChain:)")
+    }
+
+    func archive(actionChainID: UUID) async throws {
+        guard let row = try fetchActionChain(id: actionChainID) else { return }
+        if row.archivedAt == nil {
+            row.archivedAt = Date()
+            try saveOrLog("archive(actionChainID:)")
+        }
+    }
+
+    func deleteActionChain(id: UUID) async throws {
+        if let row = try fetchActionChain(id: id) {
+            let descriptor = FetchDescriptor<RunRecord>(predicate: #Predicate { $0.actionChainLookupID == id })
+            for r in try modelContext.fetch(descriptor) {
+                r.actionChain = nil
+                r.actionChainLookupID = nil
+            }
+            modelContext.delete(row)
+            try saveOrLog("deleteActionChain")
+        }
+    }
+
+    // MARK: Internal fetch helpers (actor-isolated; @Model is not Sendable)
+
+    private func fetchApplication(id: UUID) throws -> Application? {
+        let d = FetchDescriptor<Application>(predicate: #Predicate { $0.id == id })
+        return try modelContext.fetch(d).first
+    }
+
+    private func fetchPersona(id: UUID) throws -> Persona? {
+        let d = FetchDescriptor<Persona>(predicate: #Predicate { $0.id == id })
+        return try modelContext.fetch(d).first
+    }
+
+    private func fetchAction(id: UUID) throws -> Action? {
+        let d = FetchDescriptor<Action>(predicate: #Predicate { $0.id == id })
+        return try modelContext.fetch(d).first
+    }
+
+    private func fetchActionChain(id: UUID) throws -> ActionChain? {
+        let d = FetchDescriptor<ActionChain>(predicate: #Predicate { $0.id == id })
+        return try modelContext.fetch(d).first
+    }
+
+    private func saveOrLog(_ operation: String) throws {
+        do {
+            try modelContext.save()
+        } catch {
+            Self.logger.error("\(operation, privacy: .public) save failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+    }
+
+    // MARK: Snapshot helpers
 
     nonisolated private static func snapshot(of row: RunRecord) -> RunRecordSnapshot {
         RunRecordSnapshot(
             id: row.id,
+            name: row.name,
             createdAt: row.createdAt,
             completedAt: row.completedAt,
             projectPath: row.projectPath,
@@ -420,8 +695,129 @@ actor RunHistoryStore: RunHistoryStoring {
             wouldRealUserSucceed: row.wouldRealUserSucceed,
             tokensUsedInput: row.tokensUsedInput,
             tokensUsedOutput: row.tokensUsedOutput,
-            runDirectoryPath: row.runDirectoryPath
+            runDirectoryPath: row.runDirectoryPath,
+            applicationID: row.applicationLookupID,
+            personaID: row.personaLookupID,
+            actionID: row.actionLookupID,
+            actionChainID: row.actionChainLookupID
         )
+    }
+
+    nonisolated private static func snapshot(of row: Application) -> ApplicationSnapshot {
+        ApplicationSnapshot(
+            id: row.id,
+            name: row.name,
+            createdAt: row.createdAt,
+            lastUsedAt: row.lastUsedAt,
+            archivedAt: row.archivedAt,
+            projectPath: row.projectPath,
+            projectBookmark: row.projectBookmark,
+            scheme: row.scheme,
+            defaultSimulatorUDID: row.defaultSimulatorUDID,
+            defaultSimulatorName: row.defaultSimulatorName,
+            defaultSimulatorRuntime: row.defaultSimulatorRuntime,
+            defaultModelRaw: row.defaultModelRaw,
+            defaultModeRaw: row.defaultModeRaw,
+            defaultStepBudget: row.defaultStepBudget
+        )
+    }
+
+    nonisolated private static func snapshot(of row: Persona) -> PersonaSnapshot {
+        PersonaSnapshot(
+            id: row.id,
+            name: row.name,
+            blurb: row.blurb,
+            promptText: row.promptText,
+            isBuiltIn: row.isBuiltIn,
+            createdAt: row.createdAt,
+            lastUsedAt: row.lastUsedAt,
+            archivedAt: row.archivedAt
+        )
+    }
+
+    nonisolated private static func snapshot(of row: Action) -> ActionSnapshot {
+        ActionSnapshot(
+            id: row.id,
+            name: row.name,
+            promptText: row.promptText,
+            notes: row.notes,
+            createdAt: row.createdAt,
+            lastUsedAt: row.lastUsedAt,
+            archivedAt: row.archivedAt
+        )
+    }
+
+    nonisolated private static func snapshot(of row: ActionChain) -> ActionChainSnapshot {
+        let stepSnaps = row.steps
+            .sorted(by: { $0.index < $1.index })
+            .map { step in
+                ActionChainStepSnapshot(
+                    id: step.id,
+                    index: step.index,
+                    actionID: step.action?.id,
+                    preservesState: step.preservesState
+                )
+            }
+        return ActionChainSnapshot(
+            id: row.id,
+            name: row.name,
+            notes: row.notes,
+            createdAt: row.createdAt,
+            lastUsedAt: row.lastUsedAt,
+            archivedAt: row.archivedAt,
+            steps: stepSnaps
+        )
+    }
+
+    // MARK: Markdown helpers (extracted into an accessible spot for Phase C)
+
+    /// Parse `## title\n<body>\n---` blocks out of a markdown document. Title
+    /// matches the first `## …` line (heading text trimmed); body is every
+    /// line up to the next `## ` or `---` divider, trimmed. Empty bodies are
+    /// dropped. Used for Persona seeding from `docs/PROMPTS/persona-defaults.md`.
+    nonisolated static func parseMarkdownSections(_ text: String) -> [(title: String, body: String)] {
+        var out: [(title: String, body: String)] = []
+        var currentTitle: String?
+        var currentBody: [String] = []
+
+        func flush() {
+            if let title = currentTitle {
+                let body = currentBody.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !body.isEmpty {
+                    out.append((title: title, body: body))
+                }
+            }
+            currentTitle = nil
+            currentBody = []
+        }
+
+        for line in text.components(separatedBy: "\n") {
+            if line.hasPrefix("## ") {
+                flush()
+                currentTitle = String(line.dropFirst(3))
+                    .trimmingCharacters(in: .whitespaces)
+                continue
+            }
+            if line.hasPrefix("---") {
+                flush()
+                continue
+            }
+            if currentTitle != nil {
+                currentBody.append(line)
+            }
+        }
+        flush()
+        return out
+    }
+
+    nonisolated private static func firstSentence(of body: String) -> String {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let dot = trimmed.firstIndex(of: ".") {
+            let head = trimmed[..<dot]
+            return String(head).trimmingCharacters(in: .whitespaces) + "."
+        }
+        return trimmed
     }
 }
 
@@ -434,6 +830,7 @@ extension RunRecordSnapshot {
         let runDir = HarnessPaths.runDir(for: request.id).path
         return RunRecordSnapshot(
             id: request.id,
+            name: nil,
             createdAt: Date(),
             completedAt: nil,
             projectPath: request.project.path.path,
