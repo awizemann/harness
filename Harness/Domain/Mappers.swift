@@ -113,6 +113,12 @@ extension PreviewRun {
     /// Adapt a `RunRecordSnapshot` to the shape `SidebarRow` consumes. The
     /// row only needs counts + identity + verdict, so steps/friction arrays
     /// stay empty here — the right pane parses the events.jsonl on demand.
+    ///
+    /// Phase E shifted the primary line: `goal` now contains the
+    /// user-supplied run name (or the fallback action / chain name) so
+    /// scanning the history list reads as "what I was testing" rather
+    /// than the underlying prompt text. The original goal text moves
+    /// into the second line via `persona`'s slot when needed.
     init(_ snapshot: RunRecordSnapshot) {
         let elapsed: String
         if let completedAt = snapshot.completedAt {
@@ -153,8 +159,18 @@ extension PreviewRun {
             case .none: return snapshot.modeRaw
             }
         }()
+        // Primary label preference — user-supplied name first, then
+        // the leg-zero action name (most recent context), then the
+        // raw goal as the existing fallback.
+        let primary: String = {
+            if let name = snapshot.name, !name.isEmpty { return name }
+            if let firstLeg = snapshot.legs.first, !firstLeg.actionName.isEmpty {
+                return firstLeg.actionName
+            }
+            return snapshot.goal
+        }()
         self.init(
-            goal: snapshot.goal,
+            goal: primary,
             persona: snapshot.persona,
             model: modelLabel,
             mode: modeLabel,

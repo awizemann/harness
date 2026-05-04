@@ -25,6 +25,10 @@ protocol RunHistoryStoring: Sendable {
     /// Insert or update a run record (Skeleton-First pattern from `02-swiftdata.md §2`).
     func upsert(_ record: RunRecordSnapshot) async throws
     func markCompleted(id: UUID, outcome: RunOutcome) async throws
+    /// Update the leg-record blob mid-flight. Called by `ChainExecutor`
+    /// after each leg ends so the History view sees verdicts roll in
+    /// without waiting for the whole chain.
+    func updateLegsJSON(id: UUID, legsJSON: String?) async throws
     func fetchRecent(limit: Int) async throws -> [RunRecordSnapshot]
     func fetch(id: UUID) async throws -> RunRecordSnapshot?
     func delete(id: UUID) async throws
@@ -114,8 +118,22 @@ struct RunRecordSnapshot: Sendable, Hashable {
     let actionID: UUID?
     let actionChainID: UUID?
 
+    /// JSON-encoded `[LegRecord]` for chain runs. `nil` for single-action
+    /// runs (the executor never writes a chain header for those). Phase E
+    /// added this column via additive lightweight migration on V2.
+    let legsJSON: String?
+
     var verdict: Verdict? { verdictRaw.flatMap(Verdict.init(rawValue:)) }
     var runDirectoryURL: URL { URL(fileURLWithPath: runDirectoryPath) }
+
+    /// Decoded leg records, or empty when the run wasn't a chain (or the
+    /// blob couldn't decode). Sorted by `index` ascending.
+    var legs: [LegRecord] {
+        guard let blob = legsJSON, !blob.isEmpty else { return [] }
+        let data = Data(blob.utf8)
+        guard let decoded = try? JSONDecoder().decode([LegRecord].self, from: data) else { return [] }
+        return decoded.sorted(by: { $0.index < $1.index })
+    }
 
     init(
         id: UUID,
@@ -143,7 +161,8 @@ struct RunRecordSnapshot: Sendable, Hashable {
         applicationID: UUID? = nil,
         personaID: UUID? = nil,
         actionID: UUID? = nil,
-        actionChainID: UUID? = nil
+        actionChainID: UUID? = nil,
+        legsJSON: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -171,6 +190,7 @@ struct RunRecordSnapshot: Sendable, Hashable {
         self.personaID = personaID
         self.actionID = actionID
         self.actionChainID = actionChainID
+        self.legsJSON = legsJSON
     }
 }
 
@@ -246,6 +266,7 @@ actor RunHistoryStore: RunHistoryStoring {
             row.wouldRealUserSucceed = snapshot.wouldRealUserSucceed
             row.tokensUsedInput = snapshot.tokensUsedInput
             row.tokensUsedOutput = snapshot.tokensUsedOutput
+            row.legsJSON = snapshot.legsJSON
             if let app { row.application = app; row.applicationLookupID = app.id }
             if let persona { row.persona_ = persona; row.personaLookupID = persona.id }
             if let action { row.action = action; row.actionLookupID = action.id }
@@ -279,6 +300,7 @@ actor RunHistoryStore: RunHistoryStoring {
                 action: action,
                 actionChain: chain
             )
+            row.legsJSON = snapshot.legsJSON
             modelContext.insert(row)
         }
 
@@ -288,6 +310,13 @@ actor RunHistoryStore: RunHistoryStoring {
             Self.logger.error("upsert save failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
+    }
+
+    func updateLegsJSON(id: UUID, legsJSON: String?) async throws {
+        let descriptor = FetchDescriptor<RunRecord>(predicate: #Predicate { $0.id == id })
+        guard let row = try modelContext.fetch(descriptor).first else { return }
+        row.legsJSON = legsJSON
+        try saveOrLog("updateLegsJSON")
     }
 
     func markCompleted(id: UUID, outcome: RunOutcome) async throws {
@@ -699,7 +728,8 @@ actor RunHistoryStore: RunHistoryStoring {
             applicationID: row.applicationLookupID,
             personaID: row.personaLookupID,
             actionID: row.actionLookupID,
-            actionChainID: row.actionChainLookupID
+            actionChainID: row.actionChainLookupID,
+            legsJSON: row.legsJSON
         )
     }
 
@@ -791,12 +821,45 @@ actor RunHistoryStore: RunHistoryStoring {
 
 extension RunRecordSnapshot {
     /// Build a "skeleton" snapshot from a freshly-started request — outcome
-    /// fields default to "still running."
-    static func skeleton(from request: GoalRequest) -> RunRecordSnapshot {
+    /// fields default to "still running." After Phase E this also lifts the
+    /// run name + library refs (Application/Persona/Action/ActionChain) into
+    /// the snapshot, and seeds the `legsJSON` blob for chain runs so a
+    /// reload-mid-flight still shows the leg structure in the History view.
+    static func skeleton(from request: RunRequest) -> RunRecordSnapshot {
         let runDir = HarnessPaths.runDir(for: request.id).path
+        let resolvedActionID: UUID?
+        let resolvedChainID: UUID?
+        let legsJSON: String?
+        switch request.payload {
+        case .singleAction(let actionID, _):
+            resolvedActionID = actionID
+            resolvedChainID = nil
+            legsJSON = nil
+        case .chain(let chainID, let legs):
+            resolvedActionID = nil
+            resolvedChainID = chainID
+            // Seed an in-progress LegRecord per leg with verdictRaw=nil.
+            let initial: [LegRecord] = legs.map {
+                LegRecord(
+                    id: $0.id,
+                    index: $0.index,
+                    actionName: $0.actionName,
+                    goal: $0.goal,
+                    preservesState: $0.preservesState,
+                    verdictRaw: nil,
+                    summary: nil
+                )
+            }
+            legsJSON = (try? JSONEncoder().encode(initial))
+                .flatMap { String(data: $0, encoding: .utf8) }
+        case .ad_hoc:
+            resolvedActionID = nil
+            resolvedChainID = nil
+            legsJSON = nil
+        }
         return RunRecordSnapshot(
             id: request.id,
-            name: nil,
+            name: request.name.isEmpty ? nil : request.name,
             createdAt: Date(),
             completedAt: nil,
             projectPath: request.project.path.path,
@@ -816,7 +879,12 @@ extension RunRecordSnapshot {
             wouldRealUserSucceed: false,
             tokensUsedInput: 0,
             tokensUsedOutput: 0,
-            runDirectoryPath: runDir
+            runDirectoryPath: runDir,
+            applicationID: request.applicationID,
+            personaID: request.personaID,
+            actionID: resolvedActionID,
+            actionChainID: resolvedChainID,
+            legsJSON: legsJSON
         )
     }
 }

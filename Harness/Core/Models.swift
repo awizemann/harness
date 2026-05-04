@@ -14,11 +14,25 @@ import Foundation
 
 // MARK: - Run setup
 
-/// What the user configures on the goal-input screen and hands to RunCoordinator.
-struct GoalRequest: Sendable, Hashable, Codable {
+/// What the user configures on the Compose-Run screen and hands to
+/// `RunCoordinator`. Phase E renamed this from `GoalRequest` and grew
+/// it with library-entity refs + a payload that distinguishes a single-action
+/// run from a chain run.
+///
+/// `goal` and `persona` are denormalized snapshots: for a single-action
+/// payload, `goal` mirrors the action's prompt; for a chain payload,
+/// `goal` mirrors `legs.first?.goal ?? ""`. Keeping them on the request
+/// means everything downstream (JSONL `run_started`, `RunRecord`'s
+/// durable snapshot, single-leg history rendering, AgentLoop's existing
+/// `{{GOAL}}` substitution) keeps working without conditionals.
+struct RunRequest: Sendable, Hashable, Codable {
     let id: UUID
+    let name: String
     let goal: String
     let persona: String
+    let applicationID: UUID?
+    let personaID: UUID?
+    let payload: RunPayload
     let project: ProjectRequest
     let simulator: SimulatorRef
     let model: AgentModel
@@ -28,8 +42,12 @@ struct GoalRequest: Sendable, Hashable, Codable {
 
     init(
         id: UUID = UUID(),
+        name: String = "",
         goal: String,
         persona: String,
+        applicationID: UUID? = nil,
+        personaID: UUID? = nil,
+        payload: RunPayload = .ad_hoc,
         project: ProjectRequest,
         simulator: SimulatorRef,
         model: AgentModel = .opus47,
@@ -38,8 +56,12 @@ struct GoalRequest: Sendable, Hashable, Codable {
         tokenBudget: Int = 250_000
     ) {
         self.id = id
+        self.name = name
         self.goal = goal
         self.persona = persona
+        self.applicationID = applicationID
+        self.personaID = personaID
+        self.payload = payload
         self.project = project
         self.simulator = simulator
         self.model = model
@@ -47,6 +69,84 @@ struct GoalRequest: Sendable, Hashable, Codable {
         self.stepBudget = stepBudget
         self.tokenBudget = tokenBudget
     }
+}
+
+/// Phase E renamed `GoalRequest` to `RunRequest`. The typealias keeps
+/// pre-rework tests / call-sites compiling while we migrate them.
+/// New code should use `RunRequest` directly.
+typealias GoalRequest = RunRequest
+
+/// Discriminator for what the agent should drive: one Action's prompt
+/// (single leg) or an ordered list of legs (chain). The `.ad_hoc`
+/// fallback covers tests and any pre-Phase-E call site that doesn't yet
+/// pass through the Compose Run form — equivalent to a single anonymous
+/// leg whose goal is `RunRequest.goal`.
+enum RunPayload: Sendable, Hashable, Codable {
+    case singleAction(actionID: UUID, goal: String)
+    case chain(chainID: UUID, legs: [ChainLeg])
+    /// Test / legacy entrypoint with no library-entity refs. The
+    /// coordinator treats this as one leg whose goal is the request's
+    /// `goal` field, keeping pre-rework call sites working.
+    case ad_hoc
+
+    /// Number of distinct legs the executor will run. Single-action and
+    /// ad-hoc both produce one leg; chains report their step count.
+    var legCount: Int {
+        switch self {
+        case .singleAction, .ad_hoc: return 1
+        case .chain(_, let legs): return legs.count
+        }
+    }
+}
+
+/// One leg of a chain run. Each leg ends when the agent emits
+/// `mark_goal_done(...)`. The cycle detector + step budget reset between
+/// legs; the token budget is per-run total.
+struct ChainLeg: Sendable, Hashable, Codable, Identifiable {
+    /// Stable per-leg id — used as the `LegRecord.id` and as a join key
+    /// between the JSONL `leg_started`/`leg_completed` rows and the
+    /// in-memory `LegRecord`.
+    let id: UUID
+    /// 0-based ordering. Always equals the leg's position in
+    /// `RunPayload.chain(_, legs:)`.
+    let index: Int
+    /// Original `Action.id` this leg was built from. `nil` is reserved
+    /// for synthesized legs (e.g. a chain step whose action got deleted
+    /// — the executor refuses such chains pre-flight, so this should
+    /// stay populated for v1 chains).
+    let actionID: UUID?
+    /// Denormalized at request-build time so a deleted Action doesn't
+    /// break log rendering.
+    let actionName: String
+    /// The leg's prompt, injected into `{{GOAL}}`.
+    let goal: String
+    /// `false` reinstalls + relaunches the Application before this leg's
+    /// agent loop starts. `true` keeps the simulator state. Always
+    /// `false` for the first leg (since the install happens before any
+    /// leg runs).
+    let preservesState: Bool
+}
+
+/// Persisted leg record on `RunRecord.legsJSON`. One per executed (or
+/// skipped) leg in a chain run. Not written for single-action runs —
+/// `legsJSON` stays nil there.
+struct LegRecord: Sendable, Hashable, Codable, Identifiable {
+    let id: UUID
+    let index: Int
+    let actionName: String
+    let goal: String
+    let preservesState: Bool
+    /// `nil` while the leg is still running. After the leg ends, one of
+    /// `"success" | "failure" | "blocked" | "skipped"`. Skipped legs
+    /// happen when an earlier leg failed/blocked and the executor
+    /// short-circuits remaining legs (we still emit a `leg_completed`
+    /// row so the replay shape stays predictable).
+    let verdictRaw: String?
+    let summary: String?
+
+    var verdict: Verdict? { verdictRaw.flatMap(Verdict.init(rawValue:)) }
+    /// Convenience: skipped legs carry verdictRaw == "skipped".
+    var wasSkipped: Bool { verdictRaw == "skipped" }
 }
 
 struct ProjectRequest: Sendable, Hashable, Codable {
@@ -250,16 +350,26 @@ struct RunOutcome: Sendable, Hashable, Codable {
 /// What `RunCoordinator.run(_:)` emits on its `AsyncThrowingStream`.
 /// Maps onto JSONL row kinds, but typed for in-process consumers.
 enum RunEvent: Sendable {
-    case runStarted(GoalRequest)
+    case runStarted(RunRequest)
     case buildStarted
     case buildCompleted(appBundle: URL, bundleID: String)
     case simulatorReady(SimulatorRef)
+    /// Emitted at the top of a new chain leg. For single-action runs,
+    /// one `legStarted` is still emitted at the top of the loop so
+    /// downstream consumers can treat every run as having ≥1 leg.
+    case legStarted(index: Int, actionName: String, goal: String, preservesState: Bool)
     case stepStarted(step: Int, screenshotPath: String, screenshot: URL)
     case toolProposed(step: Int, toolCall: ToolCall)
     case awaitingApproval(step: Int, toolCall: ToolCall)
     case toolExecuted(step: Int, toolCall: ToolCall, result: ToolResult)
     case frictionEmitted(FrictionEvent)
     case stepCompleted(step: Int, durationMs: Int, tokensInput: Int, tokensOutput: Int)
+    /// Emitted when a leg ends, before any subsequent `legStarted` or
+    /// `runCompleted`. `verdict` is one of `success | failure | blocked`
+    /// for executed legs; chains synthesize `nil` here when a leg got
+    /// skipped (downstream consumers read the `summary == "skipped"`
+    /// string).
+    case legCompleted(index: Int, verdict: Verdict?, summary: String)
     case runCompleted(RunOutcome)
 }
 

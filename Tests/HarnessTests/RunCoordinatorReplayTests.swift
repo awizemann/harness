@@ -92,9 +92,23 @@ struct RunCoordinatorReplayTests {
         // JSONL parses cleanly and satisfies replay invariants.
         let rows = try RunLogParser.parse(runID: request.id)
         try RunLogParser.validateInvariants(rows)
-        // 1 run_started + 3 step_started + 3 tool_call + 3 tool_result
-        // + 3 step_completed + 1 run_completed = 14
-        #expect(rows.count == 14)
+        // 1 run_started + 1 leg_started (Phase E synthesizes one for ad-hoc /
+        // single-action runs so chains and singles share a JSONL shape)
+        // + 3 step_started + 3 tool_call + 3 tool_result + 3 step_completed
+        // + 1 leg_completed + 1 run_completed = 16
+        #expect(rows.count == 16)
+
+        // Verify the synthesized leg sandwiches the step rows.
+        if case .legStarted(_, let p) = rows[1] {
+            #expect(p.leg == 0, "synthesized leg index is 0-based")
+        } else {
+            Issue.record("expected leg_started as second row")
+        }
+        if case .legCompleted(_, let p) = rows[rows.count - 2] {
+            #expect(p.verdict == "success")
+        } else {
+            Issue.record("expected leg_completed before run_completed")
+        }
     }
 
     @Test("Cycle detector trips → run blocked + agent_blocked friction")

@@ -191,6 +191,7 @@ struct RunReplayView: View {
                 TimelineScrubber(
                     stepCount: vm.steps.count,
                     frictionIndices: vm.frictionStepIndices,
+                    legBoundaries: vm.legBoundaryIndices,
                     current: $vm.currentStepIndex
                 )
                 Text("\(vm.currentStepIndex + 1)/\(vm.steps.count)")

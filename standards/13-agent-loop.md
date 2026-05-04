@@ -60,7 +60,26 @@ Default 40 steps. Range 5–200. Hard ceiling 200.
 
 When exceeded, the loop short-circuits with `mark_goal_done(blocked, "step budget exhausted at step 41")`. This is logged as a friction event of kind `unexpected_state`.
 
-Budget is per-run, configured on goal input. Resets at run start.
+Budget is per-leg in chain runs (each leg gets a fresh allowance, equal to the run's `stepBudget`). For single-action and ad-hoc runs the per-leg budget is the per-run budget — there's only one leg. Token budget is always per-run total.
+
+---
+
+## 3a. Leg semantics (chain runs)
+
+A chain run is one `RunRecord` with multiple **legs**. Each leg has its own `goal` (the leg's `Action.promptText`) and ends when the agent emits `mark_goal_done(...)` for that leg. Aggregation rules:
+
+- **All legs `success`** → run verdict `success`.
+- **Any leg `failure`** → run verdict `failure`. Remaining legs are **not** executed; they're written as `leg_completed` rows with `verdict: "skipped"` and a one-line summary.
+- **Any leg `blocked`** → run verdict `blocked`. Same skip behavior as failure.
+
+Between legs, if the chain step's `preservesState == true` the simulator state stays as-is and the agent gets a fresh `{{GOAL}}` substitution for the next leg. If `preservesState == false`, the coordinator runs `terminate → install → launch` to reset to a clean app state before the next leg.
+
+Per-leg state resets:
+
+- The **cycle detector window** clears at each leg boundary. The previous leg's "stuck on same screen" state shouldn't bleed into the next leg, which has a different goal.
+- The **conversation history** the agent loop sees clears too — every leg starts as if it were a fresh agent task.
+- The **step budget** resets to the run-level value.
+- The **token budget** is per-run total — it does not reset.
 
 ---
 

@@ -58,9 +58,25 @@ struct FrictionReportView: View {
                 ScrollView {
                     VStack(spacing: Theme.spacing.l) {
                         summaryBand(vm: vm)
-                        ForEach(vm.filteredEntries) { entry in
-                            FrictionReportCard(entry: entry) {
-                                jumpToStep(entry.step, vm: vm)
+                        let groups = vm.filteredEntriesByLeg()
+                        if groups.count > 1 {
+                            // Chain run — render one section per leg.
+                            ForEach(groups, id: \.section.id) { group in
+                                if !group.entries.isEmpty {
+                                    legSectionHeader(group.section)
+                                    ForEach(group.entries) { entry in
+                                        FrictionReportCard(entry: entry) {
+                                            jumpToStep(entry.step, vm: vm)
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Single-leg / v1 — flat list, no headers.
+                            ForEach(groups.first?.entries ?? []) { entry in
+                                FrictionReportCard(entry: entry) {
+                                    jumpToStep(entry.step, vm: vm)
+                                }
                             }
                         }
                     }
@@ -211,6 +227,23 @@ struct FrictionReportView: View {
             get: { vm.filter },
             set: { vm.filter = $0 }
         )
+    }
+
+    /// Inline section header for a leg group. Renders as a small caps
+    /// label + thin divider so the page reads as visually distinct
+    /// sections without competing with the friction cards' visual weight.
+    private func legSectionHeader(_ section: FrictionReportViewModel.LegSection) -> some View {
+        HStack(spacing: Theme.spacing.s) {
+            Text(section.title)
+                .font(HFont.caption)
+                .foregroundStyle(Color.harnessText3)
+                .textCase(.uppercase)
+            Rectangle()
+                .fill(Color.harnessLineSoft)
+                .frame(height: 0.5)
+        }
+        .padding(.top, Theme.spacing.s)
+        .padding(.bottom, Theme.spacing.xs)
     }
 
     @MainActor

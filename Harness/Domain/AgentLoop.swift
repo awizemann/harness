@@ -25,7 +25,7 @@ import AppKit
 /// Snapshot of the loop's state at the top of an iteration. The orchestrator
 /// constructs this and hands it to `AgentLoop.step(state:)`.
 struct AgentLoopState: Sendable {
-    let request: GoalRequest
+    let request: RunRequest
     let stepIndex: Int            // 1-based.
     let history: [LLMTurn]
     let currentScreenshotJPEG: Data

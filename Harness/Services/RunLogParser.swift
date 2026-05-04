@@ -16,13 +16,20 @@ import Foundation
 
 /// What the parser hands back. Mirrors `LogRow` but carries the timestamp +
 /// runId so consumers can validate cross-row invariants.
+///
+/// `legStarted` / `legCompleted` are v2 additions. v1 logs (pre-Phase-E)
+/// don't carry leg rows; consumers that need a leg view should call
+/// `RunLogParser.legViews(from:)` which synthesizes one virtual leg
+/// around the entire row sequence in that case.
 enum DecodedRow: Sendable {
     case runStarted(ts: Date, payload: RunStartedPayload)
+    case legStarted(ts: Date, payload: LegStartedPayload)
     case stepStarted(ts: Date, payload: StepStartedPayload)
     case toolCall(ts: Date, payload: ToolCallPayload)
     case toolResult(ts: Date, payload: ToolResultPayload)
     case friction(ts: Date, payload: FrictionPayload)
     case stepCompleted(ts: Date, payload: StepCompletedPayload)
+    case legCompleted(ts: Date, payload: LegCompletedPayload)
     case runCompleted(ts: Date, payload: RunCompletedPayload)
 
     var step: Int? {
@@ -32,9 +39,28 @@ enum DecodedRow: Sendable {
         case .toolResult(_, let p): return p.step
         case .friction(_, let p): return p.step
         case .stepCompleted(_, let p): return p.step
-        case .runStarted, .runCompleted: return nil
+        case .runStarted, .runCompleted, .legStarted, .legCompleted: return nil
         }
     }
+}
+
+/// One leg as seen by the replay layer. Synthesized by
+/// `RunLogParser.legViews(from:)` from either v2 leg rows (one per leg)
+/// or v1 fallback (one virtual leg covering all step rows).
+struct ReplayLeg: Sendable, Hashable, Identifiable {
+    let id: Int            // matches the leg's index
+    let index: Int         // 0-based
+    let actionName: String
+    let goal: String
+    let preservesState: Bool
+    let verdict: Verdict?  // nil while running; nil for skipped (use `summary == "skipped"`).
+    let summary: String
+    /// Inclusive step range belonging to this leg, expressed as the
+    /// 1-based step numbers seen in `step_started` rows. For an empty
+    /// leg (chain leg that fired but never reached step 1 — rare;
+    /// can happen on an immediate failure), both bounds are nil.
+    let stepStart: Int?
+    let stepEnd: Int?
 }
 
 enum ParseError: Error, Sendable, LocalizedError {
@@ -93,8 +119,10 @@ enum RunLogParser {
                 continue
             }
 
-            // Schema check.
-            if let v = obj["schemaVersion"] as? Int, v != 1 {
+            // Schema check. Both v1 (pre-Phase-E) and v2 (Phase E+) parse;
+            // unknown versions throw so a future v3 reader doesn't silently
+            // misinterpret the row shape.
+            if let v = obj["schemaVersion"] as? Int, v != 1 && v != 2 {
                 throw ParseError.schemaVersionUnsupported(v)
             }
 
@@ -239,9 +267,158 @@ enum RunLogParser {
                 tokensUsedOutputTotal: (totals["output"] as? Int) ?? 0
             ))
 
+        case "leg_started":
+            return .legStarted(ts: ts, payload: LegStartedPayload(
+                leg: (obj["leg"] as? Int) ?? 0,
+                actionName: (obj["actionName"] as? String) ?? "",
+                goal: (obj["goal"] as? String) ?? "",
+                preservesState: (obj["preservesState"] as? Bool) ?? false
+            ))
+
+        case "leg_completed":
+            return .legCompleted(ts: ts, payload: LegCompletedPayload(
+                leg: (obj["leg"] as? Int) ?? 0,
+                verdict: (obj["verdict"] as? String) ?? "",
+                summary: (obj["summary"] as? String) ?? ""
+            ))
+
         default:
             // Unknown kind: tolerate silently (forward-compat per standard 08).
             return nil
         }
+    }
+
+    // MARK: - Leg synthesis
+
+    /// Group decoded rows into one or more `ReplayLeg`s. v2 logs carry
+    /// `leg_started`/`leg_completed` rows directly; v1 logs (pre-Phase-E)
+    /// have neither, so we synthesize a single virtual leg whose step
+    /// range spans all step rows. This lets every replay-time consumer
+    /// treat a run as having ≥1 leg without conditional branches.
+    static func legViews(from rows: [DecodedRow]) -> [ReplayLeg] {
+        // Walk the rows once. Track which leg we're currently inside
+        // (for v2) and the min/max step number seen between legStarted
+        // and legCompleted boundaries.
+        struct InProgress {
+            var index: Int
+            var actionName: String
+            var goal: String
+            var preservesState: Bool
+            var verdict: Verdict?
+            var summary: String
+            var stepStart: Int?
+            var stepEnd: Int?
+        }
+        var legs: [ReplayLeg] = []
+        var current: InProgress?
+        var anyLegRow = false
+
+        for row in rows {
+            switch row {
+            case .legStarted(_, let p):
+                anyLegRow = true
+                // Close out any unclosed prior leg (shouldn't happen on a
+                // well-formed log; defensive only).
+                if let cur = current {
+                    legs.append(ReplayLeg(
+                        id: cur.index,
+                        index: cur.index,
+                        actionName: cur.actionName,
+                        goal: cur.goal,
+                        preservesState: cur.preservesState,
+                        verdict: cur.verdict,
+                        summary: cur.summary,
+                        stepStart: cur.stepStart,
+                        stepEnd: cur.stepEnd
+                    ))
+                }
+                current = InProgress(
+                    index: p.leg,
+                    actionName: p.actionName,
+                    goal: p.goal,
+                    preservesState: p.preservesState,
+                    verdict: nil,
+                    summary: "",
+                    stepStart: nil,
+                    stepEnd: nil
+                )
+            case .legCompleted(_, let p):
+                anyLegRow = true
+                guard var cur = current else { continue }
+                cur.verdict = Verdict(rawValue: p.verdict)
+                cur.summary = p.summary.isEmpty ? p.verdict : p.summary
+                legs.append(ReplayLeg(
+                    id: cur.index,
+                    index: cur.index,
+                    actionName: cur.actionName,
+                    goal: cur.goal,
+                    preservesState: cur.preservesState,
+                    verdict: cur.verdict,
+                    summary: cur.summary,
+                    stepStart: cur.stepStart,
+                    stepEnd: cur.stepEnd
+                ))
+                current = nil
+            case .stepStarted(_, let p):
+                if current != nil {
+                    if current!.stepStart == nil { current!.stepStart = p.step }
+                    current!.stepEnd = p.step
+                }
+            default:
+                continue
+            }
+        }
+        // Close any still-open in-progress leg (run crashed mid-leg).
+        if let cur = current {
+            legs.append(ReplayLeg(
+                id: cur.index,
+                index: cur.index,
+                actionName: cur.actionName,
+                goal: cur.goal,
+                preservesState: cur.preservesState,
+                verdict: cur.verdict,
+                summary: cur.summary,
+                stepStart: cur.stepStart,
+                stepEnd: cur.stepEnd
+            ))
+        }
+
+        // v1 fallback — no leg rows seen. Synthesize one virtual leg
+        // around every step. Pull goal + verdict from the runStarted /
+        // runCompleted rows so the replay UI has something to render.
+        if !anyLegRow {
+            var goal = ""
+            var verdict: Verdict?
+            var summary = ""
+            var stepStart: Int?
+            var stepEnd: Int?
+            for row in rows {
+                switch row {
+                case .runStarted(_, let p):
+                    goal = p.goal
+                case .runCompleted(_, let p):
+                    verdict = Verdict(rawValue: p.verdict)
+                    summary = p.summary
+                case .stepStarted(_, let p):
+                    if stepStart == nil { stepStart = p.step }
+                    stepEnd = p.step
+                default:
+                    continue
+                }
+            }
+            return [ReplayLeg(
+                id: 0,
+                index: 0,
+                actionName: "",
+                goal: goal,
+                preservesState: false,
+                verdict: verdict,
+                summary: summary,
+                stepStart: stepStart,
+                stepEnd: stepEnd
+            )]
+        }
+
+        return legs.sorted(by: { $0.index < $1.index })
     }
 }

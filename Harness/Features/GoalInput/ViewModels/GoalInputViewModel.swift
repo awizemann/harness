@@ -2,19 +2,44 @@
 //  GoalInputViewModel.swift
 //  Harness
 //
-//  Drives the goal-input form. Project + scheme + destination probing is
-//  delegated to a shared `ProjectPicker` (see
-//  `Harness/Services/ProjectPicker.swift`) so this VM and the new
-//  `ApplicationCreateViewModel` consume the exact same pipeline.
+//  Drives the Phase E "Compose Run" form. Replaces the pre-rework
+//  free-form persona/goal text fields with a curated picker over the
+//  Personas / Actions / ActionChains library, scoped to the active
+//  Application. Project + scheme + simulator come from the active
+//  Application's saved fields — the form no longer lets the user
+//  re-pick those (that lives on the Applications page now).
 //
-//  After the workspace rework: when an Application is selected,
-//  `loadFromActiveApplication(_:)` populates the picker from the saved
-//  Application and the form becomes a thin "type persona + goal" surface.
+//  Build flow:
+//    1. `loadFromActiveApplication(_:)` populates project/scheme/sim
+//       from the saved Application + applies its run defaults.
+//    2. `loadLibraries(store:)` fetches Personas / Actions / Chains
+//       from the SwiftData store on the actor and stages them as
+//       Sendable snapshots.
+//    3. The user picks a Persona + a Source (Single Action vs Chain)
+//       + a Source-specific entity. Optionally types a run name.
+//       Optionally toggles the "override defaults" disclosure.
+//    4. `buildRequest(simulator:)` synthesizes a `RunRequest` carrying
+//       the right `RunPayload` plus snapshot data ferried into the
+//       JSONL `run_started` row.
 //
 
 import Foundation
 import Observation
 import SwiftUI
+
+/// What the user is composing on the Source toggle.
+enum RunSource: String, Hashable, CaseIterable, Identifiable {
+    case action
+    case chain
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .action: return "Single action"
+        case .chain:  return "Action chain"
+        }
+    }
+}
 
 @Observable
 @MainActor
@@ -23,11 +48,28 @@ final class GoalInputViewModel {
     // MARK: Form state — non-project
 
     var simulatorUDID: String = ""
-    var personaText: String = ""
-    var goalText: String = ""
+    /// Optional user-supplied run name. Empty falls back to a
+    /// placeholder synthesized from the chosen action / chain + date.
+    var runName: String = ""
+    /// Toggle between single-action and chain composition.
+    var source: RunSource = .action
+    /// Selected persona id (nil = nothing picked yet → start disabled).
+    var selectedPersonaID: UUID?
+    var selectedActionID: UUID?
+    var selectedChainID: UUID?
+    /// When true, the "Override defaults" disclosure is open and the
+    /// model/mode/budget controls take effect. When false, the active
+    /// Application's saved defaults apply.
+    var overrideDefaults: Bool = false
     var mode: RunMode = .stepByStep
     var model: AgentModel = .opus47
     var stepBudget: Int = 40
+
+    // MARK: Library snapshots (loaded async from RunHistoryStore)
+
+    var personas: [PersonaSnapshot] = []
+    var actions: [ActionSnapshot] = []
+    var chains: [ActionChainSnapshot] = []
 
     // MARK: Status
 
@@ -53,12 +95,35 @@ final class GoalInputViewModel {
     var schemeSupportsIOSSimulator: Bool { picker.schemeSupportsIOSSimulator }
     var schemeCompatibilitySummary: String? { picker.schemeCompatibilitySummary }
 
+    /// Phase E start gate: project URL + scheme set, simulator picked,
+    /// scheme actually targets iOS Simulator, persona picked, and a
+    /// matching Action / Chain selected for the chosen source.
     var canStart: Bool {
-        picker.projectURL != nil
-            && !picker.selectedScheme.isEmpty
-            && !goalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !simulatorUDID.isEmpty
-            && picker.schemeSupportsIOSSimulator
+        guard picker.projectURL != nil,
+              !picker.selectedScheme.isEmpty,
+              !simulatorUDID.isEmpty,
+              picker.schemeSupportsIOSSimulator,
+              selectedPersonaID != nil
+        else { return false }
+        switch source {
+        case .action:
+            // Picked action exists and isn't archived.
+            guard let id = selectedActionID,
+                  let action = actions.first(where: { $0.id == id }),
+                  !action.archived else { return false }
+            return true
+        case .chain:
+            // Picked chain exists, isn't archived, has at least one
+            // step, and every step has a backing Action (no broken-link
+            // chain steps from a deleted Action).
+            guard let id = selectedChainID,
+                  let chain = chains.first(where: { $0.id == id }),
+                  !chain.archived,
+                  !chain.steps.isEmpty,
+                  chain.steps.allSatisfy({ $0.actionID != nil })
+            else { return false }
+            return true
+        }
     }
 
     // MARK: Init
@@ -110,16 +175,95 @@ final class GoalInputViewModel {
         await picker.refreshSchemeDestinations()
     }
 
-    // MARK: Build a GoalRequest
+    // MARK: Library hydration
 
-    func buildRequest(simulator: SimulatorRef) -> GoalRequest? {
-        guard let projectURL = picker.projectURL else { return nil }
-        return GoalRequest(
+    /// Pull live persona / action / chain snapshots off the store.
+    /// Idempotent — call this whenever the form appears or after
+    /// returning from one of the create sheets.
+    func loadLibraries(store: any RunHistoryStoring) async {
+        async let personasLoad = (try? store.personas()) ?? []
+        async let actionsLoad = (try? store.actions()) ?? []
+        async let chainsLoad = (try? store.actionChains()) ?? []
+        let (p, a, c) = await (personasLoad, actionsLoad, chainsLoad)
+        self.personas = p
+        self.actions = a
+        self.chains = c
+
+        // Auto-select the most-recently-used entity when nothing is
+        // picked yet so the form lands in a startable state for the
+        // user's last session.
+        if selectedPersonaID == nil { selectedPersonaID = p.first?.id }
+        if selectedActionID == nil { selectedActionID = a.first?.id }
+        if selectedChainID == nil { selectedChainID = c.first?.id }
+    }
+
+    // MARK: Build a RunRequest
+
+    /// Compose the request to hand to `AppContainer.stagePendingRun(_:)`.
+    /// Returns nil when the form's gate isn't satisfied — the view
+    /// should gate the Start button on `canStart` so this rarely
+    /// returns nil in practice; the nil path covers race conditions
+    /// where library snapshots refresh out from under the form.
+    func buildRequest(simulator: SimulatorRef) -> RunRequest? {
+        guard let projectURL = picker.projectURL,
+              let personaID = selectedPersonaID,
+              let persona = personas.first(where: { $0.id == personaID })
+        else { return nil }
+
+        // Decide the payload + denormalized goal/name fields.
+        let payload: RunPayload
+        let goalSnapshot: String
+        let primaryName: String
+        switch source {
+        case .action:
+            guard let actionID = selectedActionID,
+                  let action = actions.first(where: { $0.id == actionID })
+            else { return nil }
+            payload = .singleAction(actionID: action.id, goal: action.promptText)
+            goalSnapshot = action.promptText
+            primaryName = action.name
+        case .chain:
+            guard let chainID = selectedChainID,
+                  let chain = chains.first(where: { $0.id == chainID })
+            else { return nil }
+            // Materialize legs from the chain's ordered steps.
+            var legs: [ChainLeg] = []
+            for step in chain.steps.sorted(by: { $0.index < $1.index }) {
+                guard let actionID = step.actionID,
+                      let action = actions.first(where: { $0.id == actionID })
+                else { return nil }   // broken link — gated above, defensive here
+                legs.append(ChainLeg(
+                    id: UUID(),
+                    index: step.index,
+                    actionID: action.id,
+                    actionName: action.name,
+                    goal: action.promptText,
+                    preservesState: step.preservesState
+                ))
+            }
+            payload = .chain(chainID: chain.id, legs: legs)
+            goalSnapshot = legs.first?.goal ?? ""
+            primaryName = chain.name
+        }
+
+        // Auto-name when the user left the field blank: "<source> · <date>"
+        // mirrors the placeholder that the view renders.
+        let resolvedName: String = {
+            let trimmed = runName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd HH:mm"
+            return "\(primaryName) · \(f.string(from: Date()))"
+        }()
+
+        return RunRequest(
             id: UUID(),
-            goal: goalText.trimmingCharacters(in: .whitespacesAndNewlines),
-            persona: personaText.isEmpty
-                ? "A curious first-time user who reads labels but doesn't have the manual."
-                : personaText,
+            name: resolvedName,
+            goal: goalSnapshot,
+            persona: persona.promptText,
+            applicationID: nil,           // hydrated by the view layer
+            personaID: persona.id,
+            payload: payload,
             project: ProjectRequest(
                 path: projectURL,
                 scheme: picker.selectedScheme,

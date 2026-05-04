@@ -245,6 +245,12 @@ final class RunSessionViewModel {
         case .stepCompleted:
             break
 
+        case .legStarted, .legCompleted:
+            // Phase E added per-leg events. The session view aggregates the
+            // whole run today; future work could surface per-leg dividers
+            // in the step feed (tracked in the design backlog).
+            break
+
         case .runCompleted(let outcome):
             self.outcome = outcome
             self.status = .completed(outcome.verdict)

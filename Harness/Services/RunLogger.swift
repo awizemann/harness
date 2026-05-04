@@ -19,24 +19,31 @@ import AppKit
 
 // MARK: - Row schema (encodable)
 
-/// Tagged union of every JSONL row kind.
+/// Tagged union of every JSONL row kind. Phase E adds `legStarted` and
+/// `legCompleted`; the schema version bumps to v2 so downstream parsers
+/// can switch decoder paths. Older v1 logs (pre-rework) stay readable
+/// — see `RunLogParser` for the v1 → v2 reader migration semantics.
 enum LogRow: Sendable {
     case runStarted(RunStartedPayload)
+    case legStarted(LegStartedPayload)
     case stepStarted(StepStartedPayload)
     case toolCall(ToolCallPayload)
     case toolResult(ToolResultPayload)
     case friction(FrictionPayload)
     case stepCompleted(StepCompletedPayload)
+    case legCompleted(LegCompletedPayload)
     case runCompleted(RunCompletedPayload)
 
     var kind: String {
         switch self {
         case .runStarted: return "run_started"
+        case .legStarted: return "leg_started"
         case .stepStarted: return "step_started"
         case .toolCall: return "tool_call"
         case .toolResult: return "tool_result"
         case .friction: return "friction"
         case .stepCompleted: return "step_completed"
+        case .legCompleted: return "leg_completed"
         case .runCompleted: return "run_completed"
         }
     }
@@ -116,6 +123,26 @@ struct RunCompletedPayload: Sendable, Codable {
     let tokensUsedOutputTotal: Int
 }
 
+/// New in v2 — emitted at the top of each leg of a chain run. For
+/// single-action runs the coordinator still emits one `legStarted` so
+/// the log has at least one leg around its step rows. `index` is 0-based.
+struct LegStartedPayload: Sendable, Codable {
+    let leg: Int
+    let actionName: String
+    let goal: String
+    let preservesState: Bool
+}
+
+/// New in v2 — emitted when a leg ends. `verdict` is `"success" |
+/// "failure" | "blocked"` for executed legs, or `"skipped"` when the
+/// chain executor short-circuited remaining legs after an earlier
+/// leg's failure/blocked verdict.
+struct LegCompletedPayload: Sendable, Codable {
+    let leg: Int
+    let verdict: String
+    let summary: String
+}
+
 // MARK: - Errors
 
 enum LogWriteFailure: Error, Sendable, LocalizedError {
@@ -147,7 +174,7 @@ enum LogWriteFailure: Error, Sendable, LocalizedError {
 protocol RunLogging: Sendable {
     func append(_ row: LogRow) async throws
     func writeScreenshot(_ data: Data, step: Int) async throws -> URL
-    func writeMeta(_ outcome: RunOutcome, request: GoalRequest) async throws
+    func writeMeta(_ outcome: RunOutcome, request: RunRequest) async throws
     func close() async
 }
 
@@ -157,8 +184,10 @@ actor RunLogger: RunLogging {
 
     private static let logger = Logger(subsystem: "com.harness.app", category: "RunLogger")
 
-    /// Schema version stamped on every row.
-    private static let schemaVersion = 1
+    /// Schema version stamped on every row. Bumped to **v2** in Phase E
+    /// to add `leg_started` / `leg_completed`. v1 logs (pre-rework) stay
+    /// readable via the parser's tolerant fallback path.
+    static let schemaVersion = 2
 
     let runID: UUID
     private let runDir: URL
@@ -262,7 +291,7 @@ actor RunLogger: RunLogging {
 
     // MARK: Meta
 
-    func writeMeta(_ outcome: RunOutcome, request: GoalRequest) async throws {
+    func writeMeta(_ outcome: RunOutcome, request: RunRequest) async throws {
         let meta: [String: Any] = [
             "schemaVersion": Self.schemaVersion,
             "id": runID.uuidString,
@@ -385,6 +414,17 @@ actor RunLogger: RunLogging {
                 "output": p.tokensOutput
             ] as [String: Any]
 
+        case .legStarted(let p):
+            dict["leg"] = p.leg
+            dict["actionName"] = p.actionName
+            dict["goal"] = p.goal
+            dict["preservesState"] = p.preservesState
+
+        case .legCompleted(let p):
+            dict["leg"] = p.leg
+            dict["verdict"] = p.verdict
+            dict["summary"] = p.summary
+
         case .runCompleted(let p):
             dict["verdict"] = p.verdict
             dict["summary"] = p.summary
@@ -404,8 +444,8 @@ actor RunLogger: RunLogging {
 // MARK: - Convenience builders
 
 extension LogRow {
-    /// Build a `runStarted` row from a `GoalRequest`.
-    static func runStarted(from request: GoalRequest) -> LogRow {
+    /// Build a `runStarted` row from a `RunRequest`.
+    static func runStarted(from request: RunRequest) -> LogRow {
         let sim = request.simulator
         return .runStarted(RunStartedPayload(
             goal: request.goal,

@@ -27,6 +27,19 @@ final class FrictionReportViewModel {
     /// (`run #ab12 · ListApp`). Empty when no run is loaded.
     var runDisplayLabel: String = ""
 
+    /// One leg of a chain run, in display order. Single-leg runs (or
+    /// pre-Phase-E v1 logs) collapse to one section; the view hides
+    /// section headers in that case so the report layout is unchanged.
+    struct LegSection: Sendable, Hashable, Identifiable {
+        let id: Int           // matches leg index
+        let index: Int
+        let title: String     // "Leg N · <actionName>" or "Leg N" when no name
+        let stepStart: Int?
+        let stepEnd: Int?
+    }
+    /// Sorted by leg index. Empty when no run is loaded.
+    var legSections: [LegSection] = []
+
     // MARK: Dependencies
 
     private let store: any RunHistoryStoring
@@ -75,11 +88,13 @@ final class FrictionReportViewModel {
             entries = []
             kindCounts = []
             runMeta = nil
+            legSections = []
             return
         }
         runMeta = parsed.meta
         entries = parsed.entries
         kindCounts = Self.tally(parsed.entries)
+        legSections = parsed.legSections
     }
 
     var filteredEntries: [FrictionReportEntry] {
@@ -90,11 +105,45 @@ final class FrictionReportViewModel {
     /// and the sidebar badge.
     var totalFriction: Int { entries.count }
 
+    /// Filtered entries grouped by their owning leg. Returns one
+    /// `(section, entries)` tuple per leg in display order. For
+    /// single-leg runs (and v1 logs), there's exactly one tuple and
+    /// the section's title is empty — the view treats that as "skip
+    /// the section header" so the layout stays unchanged.
+    func filteredEntriesByLeg() -> [(section: LegSection, entries: [FrictionReportEntry])] {
+        let pool = filteredEntries
+        guard legSections.count > 1 else {
+            // Single-leg / v1 — just one bucket, no header.
+            let title = legSections.first?.title ?? ""
+            let placeholder = LegSection(
+                id: legSections.first?.id ?? 0,
+                index: legSections.first?.index ?? 0,
+                title: title,
+                stepStart: nil,
+                stepEnd: nil
+            )
+            return [(placeholder, pool)]
+        }
+        // Bucket entries by which leg's step range owns them. Falls
+        // back to the last leg for entries beyond all known step
+        // ranges (defensive — should never happen on a well-formed
+        // log).
+        var buckets: [Int: [FrictionReportEntry]] = [:]
+        for entry in pool {
+            let leg = legSections.last(where: { ($0.stepStart ?? Int.max) <= entry.step }) ?? legSections[0]
+            buckets[leg.index, default: []].append(entry)
+        }
+        return legSections.map { section in
+            (section, (buckets[section.index] ?? []).sorted(by: { $0.step < $1.step }))
+        }
+    }
+
     // MARK: Decoding
 
     private struct ParsedFriction: Sendable {
         let meta: RunStartedPayload?
         let entries: [FrictionReportEntry]
+        let legSections: [LegSection]
         let error: String?
     }
 
@@ -103,7 +152,7 @@ final class FrictionReportViewModel {
         do {
             rows = try RunLogParser.parse(runID: runID)
         } catch {
-            return ParsedFriction(meta: nil, entries: [], error: error.localizedDescription)
+            return ParsedFriction(meta: nil, entries: [], legSections: [], error: error.localizedDescription)
         }
 
         var meta: RunStartedPayload?
@@ -146,7 +195,23 @@ final class FrictionReportViewModel {
                 screenshotURL: HarnessPaths.screenshot(for: runID, step: item.payload.step)
             )
         }
-        return ParsedFriction(meta: meta, entries: entries, error: nil)
+        let parsedLegs = RunLogParser.legViews(from: rows)
+        let sections: [LegSection] = parsedLegs.map { leg in
+            let title: String
+            if leg.actionName.isEmpty {
+                title = "Leg \(leg.index + 1)"
+            } else {
+                title = "Leg \(leg.index + 1) · \(leg.actionName)"
+            }
+            return LegSection(
+                id: leg.index,
+                index: leg.index,
+                title: title,
+                stepStart: leg.stepStart,
+                stepEnd: leg.stepEnd
+            )
+        }
+        return ParsedFriction(meta: meta, entries: entries, legSections: sections, error: nil)
     }
 
     nonisolated private static func tally(_ entries: [FrictionReportEntry]) -> [(kind: FrictionKind, count: Int)] {

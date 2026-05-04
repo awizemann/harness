@@ -97,17 +97,17 @@ final class AppContainer {
         )
     }
 
-    // MARK: Goal-input → RunSession hand-off
+    // MARK: Compose-Run → RunSession hand-off
 
-    /// Pending `GoalRequest` set by `GoalInputView` when the user hits Start.
+    /// Pending `RunRequest` set by `GoalInputView` when the user hits Start.
     /// `RunSessionView`'s view-model picks it up and clears it.
-    private(set) var pendingRunRequest: GoalRequest?
+    private(set) var pendingRunRequest: RunRequest?
 
-    func stagePendingRun(_ request: GoalRequest) {
+    func stagePendingRun(_ request: RunRequest) {
         pendingRunRequest = request
     }
 
-    func consumePendingRun() -> GoalRequest? {
+    func consumePendingRun() -> RunRequest? {
         let r = pendingRunRequest
         pendingRunRequest = nil
         return r

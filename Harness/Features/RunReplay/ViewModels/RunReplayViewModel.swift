@@ -25,6 +25,25 @@ final class RunReplayViewModel {
         let screenshotURL: URL
     }
 
+    /// One leg as displayed in the replay timeline. Built from the
+    /// parser's `ReplayLeg` (one per `leg_started`/`leg_completed` pair
+    /// in v2 logs, or one synthetic leg around all steps for v1 logs).
+    /// `firstStepIndex` is the 0-based offset into `steps` where the
+    /// leg starts — the timeline scrubber consumes this to render leg
+    /// boundary ticks.
+    struct LegView: Sendable, Identifiable, Equatable {
+        let id: Int
+        let index: Int
+        let actionName: String
+        let goal: String
+        let preservesState: Bool
+        let verdict: Verdict?
+        let summary: String
+        /// 0-based offset into `RunReplayViewModel.steps`. Use as the
+        /// leg-boundary tick on the scrubber.
+        let firstStepIndex: Int
+    }
+
     var meta: RunStartedPayload?
     var verdict: Verdict?
     var summary: String = ""
@@ -35,6 +54,12 @@ final class RunReplayViewModel {
     /// Computed once at parse time and consumed by the `TimelineScrubber`
     /// to render taller amber ticks at those positions.
     var frictionStepIndices: Set<Int> = []
+    /// 0-based step indices into `steps` where each chain leg starts.
+    /// Empty for v1 logs and single-leg v2 logs.
+    var legBoundaryIndices: Set<Int> = []
+    /// One per leg seen in the log. Always at least one entry — single-action
+    /// runs synthesize one virtual leg. Sorted by leg `index` ascending.
+    var legs: [LegView] = []
     /// True while the initial parse is in flight. The view distinguishes
     /// "still loading" from "loaded with zero steps" so the empty-state copy
     /// doesn't flash before parsing finishes.
@@ -119,6 +144,42 @@ final class RunReplayViewModel {
                     .filter { !$0.element.frictionEvents.isEmpty }
                     .map { $0.offset }
             )
+
+            // Compute legs + their boundaries. v1 logs synthesize one
+            // virtual leg around all steps; v2 logs return one per
+            // `leg_started`/`leg_completed` pair. Either way we end up
+            // with ≥1 entry so view code never special-cases zero legs.
+            let parsedLegs = RunLogParser.legViews(from: rows)
+            var legViews: [LegView] = []
+            var boundaryIndices: Set<Int> = []
+            for replayLeg in parsedLegs {
+                let firstIdx: Int
+                if let stepNumber = replayLeg.stepStart,
+                   let idx = steps.firstIndex(where: { $0.n == stepNumber }) {
+                    firstIdx = idx
+                } else {
+                    firstIdx = 0
+                }
+                legViews.append(LegView(
+                    id: replayLeg.index,
+                    index: replayLeg.index,
+                    actionName: replayLeg.actionName,
+                    goal: replayLeg.goal,
+                    preservesState: replayLeg.preservesState,
+                    verdict: replayLeg.verdict,
+                    summary: replayLeg.summary,
+                    firstStepIndex: firstIdx
+                ))
+                // Don't render a "leg 0" boundary on the first step —
+                // the timeline already shows step 0 implicitly. Only
+                // boundaries for legs 1+ are useful as visual dividers.
+                if replayLeg.index > 0, replayLeg.stepStart != nil {
+                    boundaryIndices.insert(firstIdx)
+                }
+            }
+            self.legs = legViews
+            self.legBoundaryIndices = boundaryIndices
+
             if let anchor = anchorStep,
                let idx = steps.firstIndex(where: { $0.n == anchor }) {
                 currentStepIndex = idx

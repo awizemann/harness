@@ -40,6 +40,15 @@ actor RunCoordinator {
     private let windowController: any SimulatorWindowControlling
     private let hideSimulator: Bool
 
+    /// Per-run iterator over the user-approval stream (step mode). The
+    /// iterator's `next()` is `nonisolated`, so reading the iterator
+    /// out of actor-isolated state would refuse to compile under Swift
+    /// 6 strict concurrency. We mark this nonisolated(unsafe) — single
+    /// run per coordinator means there's no real concurrency around
+    /// this storage; reads/writes always come from inside `execute(...)`
+    /// running on a single task.
+    nonisolated(unsafe) private var approvalIterator: AsyncStream<UserApproval>.AsyncIterator?
+
     // MARK: Init
 
     init(
@@ -65,7 +74,7 @@ actor RunCoordinator {
     /// Run one goal end-to-end. The returned stream yields `RunEvent` values
     /// for the UI. Pass `approvals` only when `request.mode == .stepByStep`.
     nonisolated func run(
-        _ request: GoalRequest,
+        _ request: RunRequest,
         approvals: AsyncStream<UserApproval>? = nil
     ) -> AsyncThrowingStream<RunEvent, any Error> {
         AsyncThrowingStream<RunEvent, any Error> { continuation in
@@ -88,11 +97,17 @@ actor RunCoordinator {
     // MARK: - Execute
 
     private func execute(
-        _ request: GoalRequest,
+        _ request: RunRequest,
         approvals: AsyncStream<UserApproval>?,
         continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation
     ) async throws {
         await agent.reset()
+
+        // Stage the approval iterator for the run (step mode only).
+        // Cleared at the end of the run so a stale iterator doesn't
+        // leak into the next coordinator invocation.
+        self.approvalIterator = approvals?.makeAsyncIterator()
+        defer { self.approvalIterator = nil }
 
         // Skeleton-first SwiftData row (so the History view sees the run before it finishes).
         let skeleton = RunRecordSnapshot.skeleton(from: request)
@@ -136,8 +151,9 @@ actor RunCoordinator {
         // success, failure, cancellation — `endInputSession` must run before
         // we return so the xcodebuild test runner doesn't outlive the run.
         do {
-            try await runLoop(
+            try await runAllLegs(
                 request: request,
+                build: build,
                 approvals: approvals,
                 continuation: continuation,
                 logger: logger
@@ -151,33 +167,372 @@ actor RunCoordinator {
         if hideSimulator { await windowController.unhide() }
     }
 
-    // MARK: - Run loop
+    // MARK: - Leg orchestration
 
-    private func runLoop(
-        request: GoalRequest,
+    /// Drive all legs of a run end-to-end. For `.singleAction` and
+    /// `.ad_hoc` payloads, this runs exactly one leg. For `.chain`
+    /// payloads, it runs each leg in order, reinstalling the app between
+    /// legs whose `preservesState == false`, and short-circuits the
+    /// remaining legs on the first failure/blocked verdict (writing
+    /// `skipped` legs for the rest so the replay shape stays predictable).
+    ///
+    /// The token budget is enforced across the whole run; the step
+    /// budget and cycle detector reset between legs (a leg starts with
+    /// a clean window — the previous leg's "got stuck on the same
+    /// screen" state shouldn't bleed into the next).
+    private func runAllLegs(
+        request: RunRequest,
+        build: BuildResult,
         approvals: AsyncStream<UserApproval>?,
         continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation,
         logger: RunLogger
     ) async throws {
 
-        // Approval-stream iterator (step mode only).
-        var approvalIterator = approvals?.makeAsyncIterator()
+        let legs = Self.expandedLegs(for: request)
 
-        // Loop.
-        var stepIndex = 1
+        // Aggregate state across legs.
+        var globalStepIndex = 1                  // 1-based, gap-free across all legs
+        var totalUsage = TokenUsage.zero
+        var totalFriction = 0
+        var aggregateWRUS = false
+        var aggregateVerdict: Verdict?
+        var aggregateSummary = ""
+        var legRecords: [LegRecord] = []
+        // The approval iterator lives on `self` so successive legs
+        // share progress without trying to pass an `AsyncIterator`
+        // across actor isolation. See `execute(_:approvals:...)` for
+        // setup.
+        _ = approvals  // intentionally unused — see `self.approvalIterator`.
+
+        for leg in legs {
+            try Task.checkCancellation()
+
+            // Reinstall + relaunch between legs when the chain step doesn't
+            // preserve state. The first leg always inherits the install we
+            // already did up in `execute()`, so `preservesState` on leg 0
+            // is irrelevant.
+            if leg.index > 0 && !leg.preservesState {
+                try await driver.terminate(bundleID: build.bundleIdentifier, on: request.simulator)
+                try await driver.install(build.appBundle, on: request.simulator)
+                try await driver.launch(bundleID: build.bundleIdentifier, on: request.simulator)
+            }
+
+            // Reset the cycle detector and conversation history per leg.
+            // The previous leg's screenshots / tool calls aren't relevant —
+            // this leg has a fresh goal.
+            await agent.reset()
+
+            // Stamp leg_started and emit the in-process event.
+            try? await logger.append(.legStarted(LegStartedPayload(
+                leg: leg.index,
+                actionName: leg.actionName,
+                goal: leg.goal,
+                preservesState: leg.preservesState
+            )))
+            continuation.yield(.legStarted(
+                index: leg.index,
+                actionName: leg.actionName,
+                goal: leg.goal,
+                preservesState: leg.preservesState
+            ))
+
+            // Drive the leg's loop. The leg sees the global token usage
+            // (per-run total budget) but its own fresh step counter.
+            let result: LegResult
+            do {
+                result = try await runLeg(
+                    request: request,
+                    leg: leg,
+                    startStepIndex: globalStepIndex,
+                    initialUsage: totalUsage,
+                    continuation: continuation,
+                    logger: logger
+                )
+            } catch {
+                // Surface a synthesized leg_completed for the partial leg
+                // so the JSONL stays well-formed, then rethrow.
+                try? await logger.append(.legCompleted(LegCompletedPayload(
+                    leg: leg.index,
+                    verdict: Verdict.failure.rawValue,
+                    summary: error.localizedDescription
+                )))
+                continuation.yield(.legCompleted(
+                    index: leg.index,
+                    verdict: .failure,
+                    summary: error.localizedDescription
+                ))
+                throw error
+            }
+
+            // Roll up.
+            globalStepIndex = result.nextGlobalStepIndex
+            totalUsage = result.totalUsage
+            totalFriction += result.frictionThisLeg
+            aggregateWRUS = aggregateWRUS || result.wouldRealUserSucceed
+
+            try? await logger.append(.legCompleted(LegCompletedPayload(
+                leg: leg.index,
+                verdict: (result.verdict ?? .blocked).rawValue,
+                summary: result.summary
+            )))
+            continuation.yield(.legCompleted(
+                index: leg.index,
+                verdict: result.verdict,
+                summary: result.summary
+            ))
+
+            legRecords.append(LegRecord(
+                id: leg.id,
+                index: leg.index,
+                actionName: leg.actionName,
+                goal: leg.goal,
+                preservesState: leg.preservesState,
+                verdictRaw: (result.verdict ?? .blocked).rawValue,
+                summary: result.summary
+            ))
+            await persistLegRecords(legRecords, runID: request.id, isChain: legs.count > 1)
+
+            // Decide whether to short-circuit the remaining legs.
+            switch result.verdict {
+            case .some(.success):
+                // Keep going.
+                aggregateSummary = result.summary
+            case .some(.failure):
+                aggregateVerdict = .failure
+                aggregateSummary = result.summary
+                try await synthesizeSkippedLegs(
+                    after: leg.index,
+                    in: legs,
+                    accumulator: &legRecords,
+                    runID: request.id,
+                    logger: logger,
+                    continuation: continuation,
+                    isChain: legs.count > 1
+                )
+                break
+            case .some(.blocked):
+                aggregateVerdict = .blocked
+                aggregateSummary = result.summary
+                try await synthesizeSkippedLegs(
+                    after: leg.index,
+                    in: legs,
+                    accumulator: &legRecords,
+                    runID: request.id,
+                    logger: logger,
+                    continuation: continuation,
+                    isChain: legs.count > 1
+                )
+                break
+            case .none:
+                // Treat missing verdict as blocked.
+                aggregateVerdict = .blocked
+                aggregateSummary = result.summary.isEmpty ? "ended without explicit verdict" : result.summary
+                try await synthesizeSkippedLegs(
+                    after: leg.index,
+                    in: legs,
+                    accumulator: &legRecords,
+                    runID: request.id,
+                    logger: logger,
+                    continuation: continuation,
+                    isChain: legs.count > 1
+                )
+                break
+            }
+
+            // Bail out of the leg loop on any non-success verdict.
+            if aggregateVerdict != nil {
+                break
+            }
+        }
+
+        // All legs succeeded → aggregate verdict is .success. Summary is
+        // the last leg's summary (most recent context).
+        if aggregateVerdict == nil {
+            aggregateVerdict = .success
+        }
+
+        let outcome = RunOutcome(
+            verdict: aggregateVerdict ?? .blocked,
+            summary: aggregateSummary.isEmpty ? "ended without explicit verdict" : aggregateSummary,
+            frictionCount: totalFriction,
+            wouldRealUserSucceed: aggregateVerdict == .success && aggregateWRUS,
+            stepCount: globalStepIndex - 1,
+            tokensUsedInput: totalUsage.inputTokens,
+            tokensUsedOutput: totalUsage.outputTokens,
+            completedAt: Date()
+        )
+
+        try? await logger.append(.runCompleted(RunCompletedPayload(
+            verdict: outcome.verdict.rawValue,
+            summary: outcome.summary,
+            frictionCount: outcome.frictionCount,
+            wouldRealUserSucceed: outcome.wouldRealUserSucceed,
+            stepCount: outcome.stepCount,
+            tokensUsedInputTotal: outcome.tokensUsedInput,
+            tokensUsedOutputTotal: outcome.tokensUsedOutput
+        )))
+        try? await logger.writeMeta(outcome, request: request)
+
+        // Update history index.
+        try? await self.history.markCompleted(id: request.id, outcome: outcome)
+        await persistLegRecords(legRecords, runID: request.id, isChain: legs.count > 1)
+
+        continuation.yield(.runCompleted(outcome))
+    }
+
+    /// Per-leg loop result. The orchestrator aggregates these across legs.
+    private struct LegResult {
+        let verdict: Verdict?
+        let summary: String
+        let wouldRealUserSucceed: Bool
+        let frictionThisLeg: Int
+        let stepsExecuted: Int
+        /// Where the next leg should start its `globalStepIndex`. Equals
+        /// `(last step seen) + 1`, or `startStepIndex` if no steps ran.
+        let nextGlobalStepIndex: Int
+        let totalUsage: TokenUsage
+    }
+
+    /// Wraps `ChainExecutor.expandedLegs` so the call site reads naturally
+    /// inside the coordinator. Test code targets `ChainExecutor` directly.
+    private static func expandedLegs(for request: RunRequest) -> [ChainLeg] {
+        ChainExecutor.expandedLegs(for: request)
+    }
+
+    /// Pull one approval off the per-run iterator. Returns:
+    ///   - `nil` when no approval stream was registered (caller is in
+    ///     step mode but no stream was provided — error path).
+    ///   - `.some(nil)` when the stream finished (cancelled).
+    ///   - `.some(.some(approval))` for a delivered value.
+    ///
+    /// Lives on the actor so the iterator never crosses isolation. The
+    /// double-optional return shape keeps the call site able to
+    /// distinguish "no stream" from "stream ended" without throwing
+    /// inside this helper.
+    private func popNextApproval() async -> UserApproval?? {
+        guard var iter = self.approvalIterator else { return nil }
+        let value = await iter.next()
+        self.approvalIterator = iter
+        return .some(value)
+    }
+
+
+    /// Append `skipped` LegRecord entries (and matching JSONL rows) for
+    /// every leg after `index`. Keeps the replay shape predictable.
+    private func synthesizeSkippedLegs(
+        after index: Int,
+        in legs: [ChainLeg],
+        accumulator: inout [LegRecord],
+        runID: UUID,
+        logger: RunLogger,
+        continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation,
+        isChain: Bool
+    ) async throws {
+        for leg in legs where leg.index > index {
+            try? await logger.append(.legStarted(LegStartedPayload(
+                leg: leg.index,
+                actionName: leg.actionName,
+                goal: leg.goal,
+                preservesState: leg.preservesState
+            )))
+            continuation.yield(.legStarted(
+                index: leg.index,
+                actionName: leg.actionName,
+                goal: leg.goal,
+                preservesState: leg.preservesState
+            ))
+            try? await logger.append(.legCompleted(LegCompletedPayload(
+                leg: leg.index,
+                verdict: "skipped",
+                summary: "skipped — earlier leg ended the run"
+            )))
+            continuation.yield(.legCompleted(
+                index: leg.index,
+                verdict: nil,
+                summary: "skipped"
+            ))
+            accumulator.append(LegRecord(
+                id: leg.id,
+                index: leg.index,
+                actionName: leg.actionName,
+                goal: leg.goal,
+                preservesState: leg.preservesState,
+                verdictRaw: "skipped",
+                summary: "skipped — earlier leg ended the run"
+            ))
+        }
+        await persistLegRecords(accumulator, runID: runID, isChain: isChain)
+    }
+
+    /// Persist a fresh `legsJSON` blob to the SwiftData row. No-op for
+    /// single-leg / ad-hoc runs (we don't pollute the history index with
+    /// trivial single-leg blobs).
+    private func persistLegRecords(_ records: [LegRecord], runID: UUID, isChain: Bool) async {
+        guard isChain else { return }
+        let blob = (try? JSONEncoder().encode(records))
+            .flatMap { String(data: $0, encoding: .utf8) }
+        try? await self.history.updateLegsJSON(id: runID, legsJSON: blob)
+    }
+
+    // MARK: - Single-leg loop
+
+    /// Drive one leg's agent loop. Lifted from the pre-Phase-E `runLoop`
+    /// implementation; the orchestration around build/install/launch now
+    /// lives in `runAllLegs`. Uses the leg's `goal` as the LLM `{{GOAL}}`
+    /// substitution, so a chain run feeds different goals to the model
+    /// across legs without otherwise changing the loop's algorithm.
+    ///
+    /// The approval source is taken as the original `AsyncStream` (not
+    /// an iterator) — each leg makes its own iterator. AsyncStream is
+    /// reference-typed under the hood, so iterators created from the
+    /// same stream share buffer state and progress between legs without
+    /// losing positions.
+    private func runLeg(
+        request: RunRequest,
+        leg: ChainLeg,
+        startStepIndex: Int,
+        initialUsage: TokenUsage,
+        continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation,
+        logger: RunLogger
+    ) async throws -> LegResult {
+
+        // Per-leg shadow request whose `goal` is the leg's prompt. The
+        // simulator/persona/model/budgets all stay the same; the agent
+        // sees the leg-specific `{{GOAL}}` substitution via the existing
+        // PromptLibrary template substitution.
+        let legRequest = RunRequest(
+            id: request.id,
+            name: request.name,
+            goal: leg.goal,
+            persona: request.persona,
+            applicationID: request.applicationID,
+            personaID: request.personaID,
+            payload: request.payload,
+            project: request.project,
+            simulator: request.simulator,
+            model: request.model,
+            mode: request.mode,
+            stepBudget: request.stepBudget,
+            tokenBudget: request.tokenBudget
+        )
+
+        var stepIndex = startStepIndex                     // global, gap-free
+        var stepInLeg = 1                                  // resets per leg
         var history: [LLMTurn] = []
-        var stepCount = 0
-        var frictionCount = 0
+        var stepsExecuted = 0
+        var frictionThisLeg = 0
         var verdict: Verdict?
         var summary = ""
         var wouldRealUserSucceed = false
-        var totalUsage = TokenUsage.zero
+        var totalUsage = initialUsage
 
         loop: while true {
             try Task.checkCancellation()
 
-            if stepIndex > request.stepBudget {
-                // Budget exhausted → blocked.
+            if stepInLeg > request.stepBudget {
+                // Per-leg step budget exhausted → leg ends blocked. The
+                // chain executor decides whether to continue or skip
+                // remaining legs based on this leg's verdict.
                 verdict = .blocked
                 summary = "step budget exhausted at step \(stepIndex - 1)"
                 let f = FrictionEvent(step: stepIndex - 1, kind: .agentBlocked, detail: summary)
@@ -185,10 +540,12 @@ actor RunCoordinator {
                     step: f.step, frictionKind: f.kind.rawValue, detail: f.detail
                 )))
                 continuation.yield(.frictionEmitted(f))
-                frictionCount += 1
+                frictionThisLeg += 1
                 break loop
             }
             if totalUsage.inputTokens >= request.tokenBudget {
+                // Token budget is per-run total — once we hit it, no
+                // further legs can run either.
                 verdict = .blocked
                 summary = "token budget exhausted at step \(stepIndex - 1)"
                 let f = FrictionEvent(step: stepIndex - 1, kind: .agentBlocked, detail: summary)
@@ -196,7 +553,7 @@ actor RunCoordinator {
                     step: f.step, frictionKind: f.kind.rawValue, detail: f.detail
                 )))
                 continuation.yield(.frictionEmitted(f))
-                frictionCount += 1
+                frictionThisLeg += 1
                 break loop
             }
 
@@ -224,25 +581,28 @@ actor RunCoordinator {
                 screenshot: screenshotURL
             ))
 
-            let stepStarted = ContinuousClock().now
+            let stepStartedAt = ContinuousClock().now
 
             // Compress screenshot for the LLM call.
             let jpegForLLM = Self.downscaleJPEG(screenshotData,
                                                  toPointSize: request.simulator.pointSize)
                 ?? screenshotData
 
-            // Decision.
+            // Decision. The agent loop sees the leg's `goal` via the
+            // `legRequest` shadow — every other field is the run-level
+            // value. Step index passed in is global so the agent can
+            // contextualize its rolling history.
             let decision: AgentDecision
             do {
                 decision = try await agent.step(state: AgentLoopState(
-                    request: request,
+                    request: legRequest,
                     stepIndex: stepIndex,
                     history: history,
                     currentScreenshotJPEG: jpegForLLM,
                     tokensUsedSoFar: totalUsage
                 ))
             } catch let e as AgentLoopError {
-                // Loop-internal failure → emit `agent_blocked` friction and end.
+                // Loop-internal failure → emit `agent_blocked` friction and end the leg.
                 verdict = .blocked
                 summary = Self.summary(for: e)
                 let f = FrictionEvent(step: stepIndex, kind: .agentBlocked, detail: summary)
@@ -250,7 +610,7 @@ actor RunCoordinator {
                     step: f.step, frictionKind: f.kind.rawValue, detail: f.detail
                 )))
                 continuation.yield(.frictionEmitted(f))
-                frictionCount += 1
+                frictionThisLeg += 1
                 break loop
             }
 
@@ -262,23 +622,24 @@ actor RunCoordinator {
             var userNote: String?
             if request.mode == .stepByStep {
                 continuation.yield(.awaitingApproval(step: stepIndex, toolCall: decision.toolCall))
-                guard var iter = approvalIterator else {
+                let pulled = await self.popNextApproval()
+                switch pulled {
+                case .none:
                     throw RunCoordinatorError.missingApprovalStream
-                }
-                guard let next = await iter.next() else {
+                case .some(.none):
                     throw CancellationError()
-                }
-                approvalIterator = iter
-                switch next {
-                case .approve:
-                    userDecision = .approved
-                case .skip:
-                    userDecision = .skipped
-                case .reject(let note):
-                    userDecision = .rejected
-                    userNote = note
-                case .stop:
-                    throw CancellationError()
+                case .some(.some(let nextValue)):
+                    switch nextValue {
+                    case .approve:
+                        userDecision = .approved
+                    case .skip:
+                        userDecision = .skipped
+                    case .reject(let note):
+                        userDecision = .rejected
+                        userNote = note
+                    case .stop:
+                        throw CancellationError()
+                    }
                 }
             }
 
@@ -326,7 +687,7 @@ actor RunCoordinator {
                     step: f.step, frictionKind: f.kind.rawValue, detail: f.detail
                 )))
                 continuation.yield(.frictionEmitted(f))
-                frictionCount += 1
+                frictionThisLeg += 1
             }
 
             // Update token usage for cycle/budget tracking.
@@ -338,7 +699,7 @@ actor RunCoordinator {
             )
 
             // Step completed event.
-            let stepDuration = ContinuousClock().now - stepStarted
+            let stepDuration = ContinuousClock().now - stepStartedAt
             try await logger.append(.stepCompleted(StepCompletedPayload(
                 step: stepIndex,
                 durationMs: Int(Self.milliseconds(stepDuration)),
@@ -352,7 +713,7 @@ actor RunCoordinator {
                 tokensOutput: decision.usage.outputTokens
             ))
 
-            stepCount = stepIndex
+            stepsExecuted = stepInLeg
 
             // Append to history for the next iteration.
             let inputJSON = (try? LogRow.toolInputJSONString(decision.toolCall.input)) ?? "{}"
@@ -365,7 +726,8 @@ actor RunCoordinator {
                 toolResultSummary: result.success ? "ok" : (result.error ?? "fail")
             ))
 
-            // Terminal tool: mark_goal_done.
+            // Terminal tool: mark_goal_done. This ends *the current leg*,
+            // not necessarily the run — chain executor decides next.
             if case .markGoalDone(let v, let s, _, let wrus) = decision.toolCall.input {
                 verdict = v
                 summary = s
@@ -384,40 +746,23 @@ actor RunCoordinator {
                     step: f.step, frictionKind: f.kind.rawValue, detail: f.detail
                 )))
                 continuation.yield(.frictionEmitted(f))
-                frictionCount += 1
+                frictionThisLeg += 1
                 break loop
             }
 
             stepIndex += 1
+            stepInLeg += 1
         }
 
-        // Wrap up.
-        let outcome = RunOutcome(
-            verdict: verdict ?? .blocked,
-            summary: summary.isEmpty ? "ended without explicit verdict" : summary,
-            frictionCount: frictionCount,
+        return LegResult(
+            verdict: verdict,
+            summary: summary,
             wouldRealUserSucceed: wouldRealUserSucceed,
-            stepCount: stepCount,
-            tokensUsedInput: totalUsage.inputTokens,
-            tokensUsedOutput: totalUsage.outputTokens,
-            completedAt: Date()
+            frictionThisLeg: frictionThisLeg,
+            stepsExecuted: stepsExecuted,
+            nextGlobalStepIndex: stepsExecuted > 0 ? stepIndex + 1 : stepIndex,
+            totalUsage: totalUsage
         )
-
-        try? await logger.append(.runCompleted(RunCompletedPayload(
-            verdict: outcome.verdict.rawValue,
-            summary: outcome.summary,
-            frictionCount: outcome.frictionCount,
-            wouldRealUserSucceed: outcome.wouldRealUserSucceed,
-            stepCount: outcome.stepCount,
-            tokensUsedInputTotal: outcome.tokensUsedInput,
-            tokensUsedOutputTotal: outcome.tokensUsedOutput
-        )))
-        try? await logger.writeMeta(outcome, request: request)
-
-        // Update history index.
-        try? await self.history.markCompleted(id: request.id, outcome: outcome)
-
-        continuation.yield(.runCompleted(outcome))
     }
 
     // MARK: Tool execution

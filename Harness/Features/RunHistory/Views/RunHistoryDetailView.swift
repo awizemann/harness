@@ -89,7 +89,7 @@ struct RunHistoryDetailView: View {
         .background(Capsule().fill(Color.harnessPanel2))
     }
 
-    // MARK: Summary grid (4 cells)
+    // MARK: Summary grid (4 or 5 cells — 5th cell is "Legs" for chain runs)
 
     private var summaryGrid: some View {
         HStack(spacing: 0.5) {
@@ -101,6 +101,11 @@ struct RunHistoryDetailView: View {
                 "\(run.frictionCount)",
                 color: run.frictionCount == 0 ? .harnessText : .harnessWarning
             )
+            // Phase E: chain runs grow a "Legs" cell. Single-action /
+            // ad-hoc / pre-rework runs keep the 4-cell grid.
+            if run.legs.count > 1 {
+                cell("Legs", "\(run.legs.count)")
+            }
         }
         .background(Color.harnessLine)
         .clipShape(RoundedRectangle(cornerRadius: Theme.radius.panel))

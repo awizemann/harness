@@ -218,6 +218,14 @@ final class RunRecord {
     var actionLookupID: UUID?
     var actionChainLookupID: UUID?
 
+    /// Phase E: JSON-encoded `[LegRecord]` for chain runs. `nil` (the
+    /// default) on single-action runs and on rows that pre-date the
+    /// rework. Property is optional with a default value so SwiftData's
+    /// lightweight migration adds the column to existing V2 stores
+    /// without a manual stage. The field is never queried — only ever
+    /// loaded alongside the parent run via the snapshot bridge.
+    var legsJSON: String? = nil
+
     init(
         id: UUID,
         name: String? = nil,

@@ -29,7 +29,7 @@ Every row is a complete JSON object on a single line. Common fields on every row
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `schemaVersion` | int | yes | `1` today. Bumps only on backward-incompatible change. |
+| `schemaVersion` | int | yes | `2` today (Phase E). Bumps only on backward-incompatible change. v1 logs (pre-Phase-E) stay readable — see §5. |
 | `runId` | string (UUID) | yes | Constant across the whole file. |
 | `ts` | string (ISO 8601, UTC) | yes | `2026-05-03T19:14:22.118Z` |
 | `kind` | string | yes | One of the enum below. |
@@ -69,6 +69,35 @@ First row in the file. Carries the run setup.
     "pointHeight": 932,
     "scaleFactor": 3.0
   }
+}
+```
+
+### `leg_started` *(v2)*
+
+One per chain leg, before that leg's first `step_started`. Single-action runs still emit one `leg_started` (with `leg: 0`, `actionName: ""`) so every run has at least one leg in the log — replay code never special-cases zero legs.
+
+```jsonc
+{
+  "schemaVersion": 2, "runId": "...", "ts": "...",
+  "kind": "leg_started",
+  "leg": 0,
+  "actionName": "Add 'milk' to my list",
+  "goal": "I want to add 'milk' to the list and mark it done.",
+  "preservesState": false
+}
+```
+
+### `leg_completed` *(v2)*
+
+Paired with the most recent `leg_started`. Emitted when the agent calls `mark_goal_done` for that leg, or when the chain executor synthesizes a `skipped` verdict for a leg that never ran (because an earlier leg failed/blocked).
+
+```jsonc
+{
+  "schemaVersion": 2, "runId": "...", "ts": "...",
+  "kind": "leg_completed",
+  "leg": 1,
+  "verdict": "success",                  // "success" | "failure" | "blocked" | "skipped"
+  "summary": "Marked 'milk' done."
 }
 ```
 
@@ -216,6 +245,15 @@ When `schemaVersion` bumps:
 2. Keep the old one. Don't migrate on disk.
 3. Update `wiki/Run-Replay-Format.md` to document both versions.
 4. Update the round-trip test (`Tests/HarnessTests/RunLoggerRoundTripTests.swift`) to cover the new version while keeping the old version's fixture green.
+
+### v1 → v2 reader migration *(Phase E)*
+
+v1 logs (pre-Phase-E) carry **no** leg rows. The parser handles this transparently:
+
+- `RunLogParser.parse(...)` accepts both `schemaVersion: 1` and `schemaVersion: 2` rows. Anything else throws `schemaVersionUnsupported`.
+- `RunLogParser.legViews(from:)` synthesizes a single virtual leg around all step rows when no `leg_started` row appears in the log. Downstream views (replay timeline, friction sectioning, `RunRecord.legs`) therefore treat every run as having ≥1 leg without conditionals.
+- The on-disk format is **never** rewritten. v1 logs stay byte-identical; only readers know about the migration.
+- New runs always emit v2 — even single-action runs (one synthetic `leg_started`/`leg_completed` pair around the step rows).
 
 ---
 

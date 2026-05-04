@@ -18,7 +18,9 @@ Run directories are portable — copy or zip and replay anywhere.
 
 ## JSONL row kinds
 
-Every row is a complete JSON object on a single line. Common fields: `schemaVersion: 1`, `runId`, `ts` (ISO 8601 UTC), `kind`.
+Every row is a complete JSON object on a single line. Common fields: `schemaVersion` (`1` for pre-Phase-E logs, `2` for current logs), `runId`, `ts` (ISO 8601 UTC), `kind`.
+
+Phase E added two row kinds: `leg_started` and `leg_completed`. Single-action runs synthesize one of each so every run's JSONL has at least one leg sandwich around its step rows. Chain runs emit one pair per leg; aborted-after-failure legs get a `leg_completed` with `verdict: "skipped"`. v1 logs (which carry no leg rows at all) read back as one virtual leg; the parser's `legViews(from:)` does that synthesis transparently.
 
 ### `run_started` — first row
 
@@ -37,6 +39,23 @@ Every row is a complete JSON object on a single line. Common fields: `schemaVers
                  "pointWidth": 430, "pointHeight": 932, "scaleFactor": 3.0 }
 }
 ```
+
+### `leg_started` *(v2)*
+
+```jsonc
+{ "kind": "leg_started", "leg": 0,
+  "actionName": "Add 'milk'", "goal": "Add 'milk' to the list.", "preservesState": false }
+```
+
+Wraps every chain leg's step rows. Single-action runs emit one with `leg: 0` and an empty `actionName`. The replay UI uses these to section the timeline + group the friction report.
+
+### `leg_completed` *(v2)*
+
+```jsonc
+{ "kind": "leg_completed", "leg": 0, "verdict": "success", "summary": "Added 'milk'." }
+```
+
+`verdict` is one of `"success" | "failure" | "blocked" | "skipped"`. `"skipped"` is synthesized for legs that follow a failed/blocked leg in a chain — they're written so the replay shape stays predictable but never executed.
 
 ### `step_started`
 
