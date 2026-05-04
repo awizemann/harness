@@ -35,14 +35,14 @@ struct GoalInputView: View {
         @Bindable var vmBindable = vm
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: Theme.spacing.l) {
                 header
                 ProjectSection(vm: vm)
                 SimulatorSection(vm: vm)
                 PersonaGoalSection(vm: vm)
                 ModeAndModelSection(vm: vm)
                 if let err = vm.startError {
-                    Text(err).foregroundStyle(.red).font(.callout)
+                    Text(err).foregroundStyle(Color.harnessFailure).font(.callout)
                 }
                 Button {
                     Task { await start(vm: vm) }
@@ -52,17 +52,17 @@ struct GoalInputView: View {
                         Text("Start Run")
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, Theme.spacing.xs)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(!vm.canStart || !state.apiKeyPresent)
                 if !state.apiKeyPresent {
                     Text("Add your Anthropic API key in Settings before starting.")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(Color.harnessWarning)
                 }
             }
-            .padding(24)
+            .padding(Theme.spacing.xl)
             .frame(maxWidth: 720)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -101,8 +101,8 @@ struct GoalInputView: View {
 private struct ProjectSection: View {
     @Bindable var vm: GoalInputViewModel
     var body: some View {
-        SectionPanel(title: "Project") {
-            VStack(alignment: .leading, spacing: 10) {
+        PanelContainer(title: "Project") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
                 HStack {
                     if let url = vm.projectURL {
                         Image(systemName: "hammer.fill").foregroundStyle(Color.harnessAccent)
@@ -139,15 +139,15 @@ private struct ProjectSection: View {
                         }
                     }
                     if let err = vm.schemeError {
-                        Text(err).font(.caption).foregroundStyle(.orange)
+                        Text(err).font(.caption).foregroundStyle(Color.harnessWarning)
                     }
                     if let summary = vm.schemeCompatibilitySummary {
-                        HStack(spacing: 6) {
+                        HStack(spacing: Theme.spacing.s) {
                             Image(systemName: vm.schemeSupportsIOSSimulator
                                   ? "checkmark.circle.fill"
                                   : "exclamationmark.triangle.fill")
                                 .font(.system(size: 11))
-                                .foregroundStyle(vm.schemeSupportsIOSSimulator ? Color.green : Color.orange)
+                                .foregroundStyle(vm.schemeSupportsIOSSimulator ? Color.harnessSuccess : Color.harnessWarning)
                             Text(summary)
                                 .font(.caption)
                                 .foregroundStyle(vm.schemeSupportsIOSSimulator ? .secondary : .primary)
@@ -156,6 +156,7 @@ private struct ProjectSection: View {
                     }
                 }
             }
+            .padding(Theme.spacing.l)
         }
     }
 }
@@ -164,7 +165,7 @@ private struct SimulatorSection: View {
     @Environment(AppState.self) private var state
     @Bindable var vm: GoalInputViewModel
     var body: some View {
-        SectionPanel(title: "Simulator") {
+        PanelContainer(title: "Simulator") {
             HStack {
                 if state.simulators.isEmpty {
                     Text("No simulators discovered. Open Xcode, boot one, then refresh.")
@@ -184,6 +185,7 @@ private struct SimulatorSection: View {
                 }
                 .buttonStyle(.borderless)
             }
+            .padding(Theme.spacing.l)
             .onAppear {
                 if vm.simulatorUDID.isEmpty,
                    let initial = state.defaultSimulatorUDID ?? state.simulators.first?.udid {
@@ -197,8 +199,8 @@ private struct SimulatorSection: View {
 private struct PersonaGoalSection: View {
     @Bindable var vm: GoalInputViewModel
     var body: some View {
-        SectionPanel(title: "Persona & Goal") {
-            VStack(alignment: .leading, spacing: 10) {
+        PanelContainer(title: "Persona & Goal") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
                 Text("Persona — who you're playing").font(.subheadline.weight(.medium))
                 TextField("e.g. first-time user, never seen this app",
                           text: $vm.personaText, axis: .vertical)
@@ -210,24 +212,25 @@ private struct PersonaGoalSection: View {
                     .frame(minHeight: 96)
                     .scrollContentBackground(.hidden)
                     .background(
-                        RoundedRectangle(cornerRadius: 6)
+                        RoundedRectangle(cornerRadius: Theme.radius.input)
                             .fill(Color(nsColor: .textBackgroundColor))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                        RoundedRectangle(cornerRadius: Theme.radius.input)
+                            .stroke(Color.harnessLine, lineWidth: 0.5)
                     )
                     .overlay(alignment: .topLeading) {
                         if vm.goalText.isEmpty {
                             Text("Describe what you want the user to accomplish, in their words. Don't name buttons or screens.")
                                 .font(.body)
                                 .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 8)
+                                .padding(.horizontal, Theme.spacing.s)
+                                .padding(.vertical, Theme.spacing.s)
                                 .allowsHitTesting(false)
                         }
                     }
             }
+            .padding(Theme.spacing.l)
         }
     }
 }
@@ -235,10 +238,10 @@ private struct PersonaGoalSection: View {
 private struct ModeAndModelSection: View {
     @Bindable var vm: GoalInputViewModel
     var body: some View {
-        SectionPanel(title: "Run options") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 24) {
-                    VStack(alignment: .leading, spacing: 4) {
+        PanelContainer(title: "Run options") {
+            VStack(alignment: .leading, spacing: Theme.spacing.m) {
+                HStack(spacing: Theme.spacing.xl) {
+                    VStack(alignment: .leading, spacing: Theme.spacing.xs) {
                         Text("Mode").font(.subheadline.weight(.medium))
                         Picker("", selection: $vm.mode) {
                             Text("Step-by-step").tag(RunMode.stepByStep)
@@ -248,7 +251,7 @@ private struct ModeAndModelSection: View {
                         .pickerStyle(.segmented)
                         .frame(width: 280)
                     }
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: Theme.spacing.xs) {
                         Text("Model").font(.subheadline.weight(.medium))
                         Picker("", selection: $vm.model) {
                             Text("Opus 4.7").tag(AgentModel.opus47)
@@ -268,30 +271,7 @@ private struct ModeAndModelSection: View {
                     .frame(width: 200, alignment: .leading)
                 }
             }
+            .padding(Theme.spacing.l)
         }
-    }
-}
-
-private struct SectionPanel<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .tracking(0.6)
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        )
     }
 }

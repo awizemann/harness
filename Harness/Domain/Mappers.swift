@@ -107,6 +107,70 @@ extension PreviewFrictionKind {
     }
 }
 
+// MARK: - Run record snapshot (production → preview shape, for SidebarRow)
+
+extension PreviewRun {
+    /// Adapt a `RunRecordSnapshot` to the shape `SidebarRow` consumes. The
+    /// row only needs counts + identity + verdict, so steps/friction arrays
+    /// stay empty here — the right pane parses the events.jsonl on demand.
+    init(_ snapshot: RunRecordSnapshot) {
+        let elapsed: String
+        if let completedAt = snapshot.completedAt {
+            let s = max(0, Int(completedAt.timeIntervalSince(snapshot.createdAt)))
+            elapsed = String(format: "%02d:%02d", s / 60, s % 60)
+        } else {
+            elapsed = "—"
+        }
+        let mappedVerdict: PreviewVerdict = snapshot.verdict.map(PreviewVerdict.init) ?? .blocked
+        // Synthesize a placeholder step entry per step so SidebarRow's
+        // `run.steps.count` count renders correctly. The thumbnails / detail
+        // are unused on the row.
+        let stepStubs: [PreviewStep] = (0..<snapshot.stepCount).map { i in
+            PreviewStep(
+                n: i + 1,
+                observation: "",
+                intent: "",
+                action: PreviewToolCall(kind: .tap, arg: nil),
+                thumbnail: nil,
+                friction: nil
+            )
+        }
+        let frictionStubs: [PreviewFrictionEvent] = (0..<snapshot.frictionCount).map { i in
+            PreviewFrictionEvent(
+                timestamp: "",
+                stepN: i + 1,
+                kind: .deadEnd,
+                title: "",
+                detail: "",
+                agentQuote: ""
+            )
+        }
+        let modelLabel = AgentModel(rawValue: snapshot.modelRaw)?.displayName ?? snapshot.modelRaw
+        let modeLabel: String = {
+            switch RunMode(rawValue: snapshot.modeRaw) {
+            case .stepByStep: return "Step-by-step"
+            case .autonomous: return "Autonomous"
+            case .none: return snapshot.modeRaw
+            }
+        }()
+        self.init(
+            goal: snapshot.goal,
+            persona: snapshot.persona,
+            model: modelLabel,
+            mode: modeLabel,
+            project: snapshot.displayName,
+            scheme: "",
+            device: snapshot.simulatorName,
+            startedAt: "",
+            elapsed: elapsed,
+            stepBudget: max(snapshot.stepCount, 40),
+            verdict: mappedVerdict,
+            steps: stepStubs,
+            friction: frictionStubs
+        )
+    }
+}
+
 // MARK: - Step (production → preview shape, for the StepFeedCell)
 
 extension PreviewStep {

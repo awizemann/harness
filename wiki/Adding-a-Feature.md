@@ -35,6 +35,16 @@ Services come in via initializer or `@Environment`. **Never** import a sibling f
 - View body never touches the filesystem or spawns subprocesses.
 - `@State` count ≤ ~10 per view — extract sub-views if approaching the limit.
 
+### 5a. Token discipline
+
+Read [`Design-System.md`](Design-System.md) for the full primitive table. Hard rules:
+
+- **No magic numbers.** Use `Theme.spacing.{xs/s/m/l/xl/xxl}` (4/8/12/16/24/32) and `Theme.radius.{chip/pill/button/input/panel/card/sheet/window}`. If you need a value the tokens don't cover, extend `Theme` rather than hardcoding.
+- **No system colors for chrome.** `.red`/`.green`/`.orange`/`.yellow` literals leak through appearance switches. Use `Color.harnessFailure`/`harnessSuccess`/`harnessWarning`/`harnessBlocked` for verdict semantics, `Color.harnessText{2,3,4}` for grey text, `Color.harnessLine` for hairlines.
+- **Prefer the primitive.** Re-rolling a panel? It's `PanelContainer`. Re-rolling an empty state? `EmptyStateView`. Re-rolling a status indicator? `StatusChip`. Re-rolling a tool-call render? `ToolCallChip`.
+- **Map production types at the boundary.** Feature views touch real `Verdict`/`ToolCall`/`FrictionKind` — primitives consume `Preview*` shapes. The mappers in `Harness/Domain/Mappers.swift` bridge the two; extend that file rather than duplicating mapping inline.
+- **Font tokens.** `HFont.{title1/title2/title3/headline/headlineMono/body/bodyMuted/caption/captionMono/micro/mono}`. `.font(.system(size:))` is a smell — use a token or extend `HFont`.
+
 ### 6. Tests
 
 - View-model unit tests: state transitions, error mapping. No UI.
@@ -53,15 +63,15 @@ Run [`../standards/AUDIT_CHECKLIST.md`](../standards/AUDIT_CHECKLIST.md) over th
 
 ## Real examples
 
-(Filled in as features land in Phase 3.)
+- `GoalInput/` — Project picker + scheme resolver + persona/goal text + mode/model/budget. Each section is a `PanelContainer` titled `"Project"` / `"Simulator"` / `"Persona & Goal"` / `"Run options"`. Hand-off via `AppContainer.stagePendingRun(_:)`.
+- `RunSession/` — Three-pane HSplitView: LeftRail (status block + meta), centered `SimulatorMirrorView` with a `StatusChip` overlay and `ApprovalCardWrapper` rising from the bottom, right-rail step feed. Consumes `AsyncThrowingStream<RunEvent>` from `RunCoordinator.run(_:approvals:)`.
+- `RunHistory/` — `List` + `.searchable` + `SegmentedToggle<VerdictFilter>` toolbar. Empty states use `EmptyStateView`. Right-click → "Export Run…" zips the run dir via `ProcessRunner`-spawned `/usr/bin/zip` to an `NSSavePanel` destination.
+- `RunReplay/` — `PanelContainer`-wrapped screenshot pane + step-detail pane. Tool-call → `ToolCallChip`, friction → `FrictionTag`. Multi-step runs scrub via `TimelineScrubber`; single-step runs fall back to a simple counter (the primitive divides by `stepCount - 1`).
+- `Settings/` — Native `Form` + `Section`. Health rows render as `StatusChip`s mapped via `wdaStatusKind`. Defaults section is plain `Picker` / `Stepper` / `Toggle`.
+- `FrictionReport/` — Friction-only timeline for the selected run. Top summary band + per-event `FrictionReportCard` (screenshot left, agent metadata + detail + observation quote right). Toolbar `SegmentedToggle<FrictionKindFilter>` collapses the production friction taxonomy into `All / Ambiguous / Missing / Dead-ends`. "Jump to step" sets `coordinator.replayJumpToStep`, `RunReplayViewModel.anchorStep` reads it once on load and seeks `currentStepIndex`. PDF / Markdown / Share toolbar items are stubs — see [`docs/DESIGN_BACKLOG.md`](../docs/DESIGN_BACKLOG.md).
 
-- `GoalInput/` — TBD
-- `RunSession/` — TBD
-- `RunHistory/` — TBD
-- `RunReplay/` — TBD
-- `FrictionReport/` — TBD
-- `Settings/` — TBD
+For the agent-loop primer that ties the run lifecycle together, see [Agent-Loop.md](Agent-Loop.md).
 
 ---
 
-_Last updated: 2026-05-03 — initial scaffolding._
+_Last updated: 2026-05-04 — Phase 4 added the token-discipline section + filled in the real examples._

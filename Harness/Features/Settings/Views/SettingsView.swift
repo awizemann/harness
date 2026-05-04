@@ -24,13 +24,15 @@ struct SettingsView: View {
                 Button("Close") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
-            .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 8)
+            .padding(.horizontal, Theme.spacing.l)
+            .padding(.top, Theme.spacing.l)
+            .padding(.bottom, Theme.spacing.s)
             Divider()
             Form {
                 Section("Anthropic API key") {
                     if state.apiKeyPresent {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        HStack(spacing: Theme.spacing.s) {
+                            StatusChip(kind: .done)
                             Text("Stored in Keychain.")
                             Spacer()
                             Button("Replace…") { state.apiKeyPresent = false }
@@ -38,7 +40,7 @@ struct SettingsView: View {
                     } else {
                         SecureField("sk-ant-…", text: $apiKey)
                         if let err = saveError {
-                            Text(err).foregroundStyle(.red).font(.callout)
+                            Text(err).foregroundStyle(Color.harnessFailure).font(.callout)
                         }
                         HStack {
                             Spacer()
@@ -67,17 +69,15 @@ struct SettingsView: View {
                            isOn: $state.keepSimulatorVisible)
                 }
                 Section("Tooling") {
-                    HStack {
-                        Image(systemName: state.xcodebuildAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(state.xcodebuildAvailable ? .green : .orange)
+                    HStack(spacing: Theme.spacing.s) {
+                        StatusChip(kind: state.xcodebuildAvailable ? .done : .awaiting)
                         Text("xcodebuild")
                         Spacer()
                         Text(state.toolPaths?.xcodebuild?.path ?? "—")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
-                    HStack {
-                        Image(systemName: state.wdaReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(state.wdaReady ? .green : .orange)
+                    HStack(spacing: Theme.spacing.s) {
+                        StatusChip(kind: wdaStatusKind)
                         Text(state.wdaBuildInProgress ? "WebDriverAgent (building…)" : "WebDriverAgent")
                         Spacer()
                         Text(state.wdaReady ? "ready" : "not built for selected simulator")
@@ -95,6 +95,12 @@ struct SettingsView: View {
             .formStyle(.grouped)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var wdaStatusKind: StatusKind {
+        if state.wdaReady { return .done }
+        if state.wdaBuildInProgress { return .running }
+        return .awaiting
     }
 
     private func save() async {

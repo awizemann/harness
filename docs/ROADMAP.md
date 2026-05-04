@@ -83,14 +83,18 @@ Wiki updates carrying forward: `Adding-a-Feature.md` will be filled with the Goa
 
 ---
 
-## Phase 4 — Polish
+## Phase 4 — Polish ✅ shipped 2026-05-04
 
-- [ ] Cycle detector + step/token-budget bail-outs verified.
-- [ ] Stop button cascades cancellation reliably.
-- [ ] Coordinate-overlay visualization (last-tap dot animates correctly across resolutions).
-- [ ] Run filtering / search / export.
-- [ ] Crash-resilience test: kill Harness mid-run; reopen; confirm partial run is parseable.
-- [ ] Code-sign + notarize a Developer ID build; ship to a couple of friendly devs.
+- [x] Cycle detector + step/token-budget bail-outs verified. (`RunCoordinatorReplayTests.cycleDetectorTrips()` + `stepBudgetShortCircuit()`.)
+- [x] Stop button cascades cancellation reliably. (`RunSessionViewModel.stop()` → approval gate `.stop` + `runTask.cancel()`; `endInputSessionRunsOnThrow` covers the failure path.)
+- [x] Coordinate-overlay visualization (last-tap dot animates correctly across resolutions). (`SimulatorMirrorView` scales `lastTapPoint` by `frame.width / deviceSize.width`; agent and user-forwarded taps both wire `RunSessionViewModel.lastTapPoint`.)
+- [x] Run filtering / search / export. (`RunHistoryView` `.searchable` + `SegmentedToggle` over `VerdictFilter`; right-click → "Export Run…" zips the run dir via `/usr/bin/zip` to an `NSSavePanel` destination.)
+- [x] Crash-resilience: partial-run replay loads without crash. (`CrashResilienceTests` covers mid-row truncation, mid-step truncation, and trailing-garbage scenarios; `RunReplayViewModelTests` covers the zero-step case.)
+- [x] Design-system unification: every feature view consumes `HarnessDesign` primitives + `Theme.*` / `HFont.*` / `Color.harness*` tokens. No more `.red`/`.green`/`.orange` literals or magic paddings.
+
+Deferred from this phase:
+
+- Code-sign + notarize a Developer ID build. Apple Development codesigning works today (see `f80bf98 fix(XcodeBuilder,WDABuilder): ad-hoc sign…`); the full notarytool + Developer ID + distribution pipeline waits until v1 ship.
 
 ---
 

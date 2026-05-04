@@ -288,4 +288,17 @@ final class RunSessionViewModel {
         let s = elapsedSeconds % 60
         return String(format: "%02d:%02d", m, s)
     }
+
+    /// Map the run's `Status` onto the `StatusChip` primitive's smaller enum.
+    /// Returns `nil` for `.idle` (no run in flight → no chip rendered).
+    var statusKind: StatusKind? {
+        switch status {
+        case .idle:                       return nil
+        case .starting, .building, .launching, .running:
+            return .running
+        case .awaitingApproval:           return .awaiting
+        case .completed:                  return .done
+        case .failed:                     return .paused
+        }
+    }
 }

@@ -14,6 +14,7 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
     case newRun
     case activeRun
     case history
+    case friction
 
     var id: String { rawValue }
 
@@ -22,6 +23,7 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
         case .newRun: return "New Run"
         case .activeRun: return "Active Run"
         case .history: return "History"
+        case .friction: return "Friction"
         }
     }
 
@@ -30,6 +32,7 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
         case .newRun: return "plus.circle"
         case .activeRun: return "play.circle"
         case .history: return "clock.arrow.circlepath"
+        case .friction: return "exclamationmark.triangle"
         }
     }
 }
@@ -59,6 +62,11 @@ final class AppCoordinator {
     var isSettingsOpen: Bool = false
     /// Run id whose replay is open (in a sheet). Nil = closed.
     var replayingRunID: UUID?
+
+    /// One-shot anchor: when non-nil at the moment a replay opens, the
+    /// `RunReplayViewModel` seeks to that step on first load and clears
+    /// the value. Set by FrictionReport's "Jump to step" buttons.
+    var replayJumpToStep: Int?
 
     // MARK: Navigation helpers
 

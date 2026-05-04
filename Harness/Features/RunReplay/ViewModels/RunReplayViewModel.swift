@@ -31,6 +31,10 @@ final class RunReplayViewModel {
     var steps: [StepView] = []
     var currentStepIndex: Int = 0
     var loadError: String?
+    /// Indices of steps in `steps` that carry at least one friction event.
+    /// Computed once at parse time and consumed by the `TimelineScrubber`
+    /// to render taller amber ticks at those positions.
+    var frictionStepIndices: Set<Int> = []
     /// True while the initial parse is in flight. The view distinguishes
     /// "still loading" from "loaded with zero steps" so the empty-state copy
     /// doesn't flash before parsing finishes.
@@ -47,6 +51,12 @@ final class RunReplayViewModel {
         guard currentStepIndex >= 0, currentStepIndex < steps.count else { return nil }
         return steps[currentStepIndex]
     }
+
+    /// Optional one-shot step anchor. When set before `load(_:)`, the view
+    /// model seeks `currentStepIndex` to the step matching this value
+    /// (1-based, clamped) and clears the anchor. Used by FrictionReport's
+    /// "Jump to step" deep link.
+    var anchorStep: Int?
 
     func load(runID: UUID) async {
         loadError = nil
@@ -104,7 +114,18 @@ final class RunReplayViewModel {
                 )
             }
 
-            currentStepIndex = 0
+            frictionStepIndices = Set(
+                steps.enumerated()
+                    .filter { !$0.element.frictionEvents.isEmpty }
+                    .map { $0.offset }
+            )
+            if let anchor = anchorStep,
+               let idx = steps.firstIndex(where: { $0.n == anchor }) {
+                currentStepIndex = idx
+            } else {
+                currentStepIndex = 0
+            }
+            anchorStep = nil
         } catch {
             loadError = error.localizedDescription
         }

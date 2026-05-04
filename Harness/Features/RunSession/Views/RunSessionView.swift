@@ -49,14 +49,20 @@ struct RunSessionView: View {
                         }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(16)
+                    .padding(Theme.spacing.l)
+                    .overlay(alignment: .topTrailing) {
+                        if let kind = vm.statusKind {
+                            StatusChip(kind: kind)
+                                .padding(Theme.spacing.l)
+                        }
+                    }
                     if case .awaitingApproval = vm.status, let pending = vm.pendingApproval {
                         ApprovalCardWrapper(pending: pending,
                                             onApprove: vm.approve,
                                             onSkip: vm.skip,
                                             onReject: { vm.reject(note: "User rejected") })
                             .frame(maxWidth: 460)
-                            .padding(.bottom, 24)
+                            .padding(.bottom, Theme.spacing.xl)
                     }
                 }
                 .layoutPriority(1)
@@ -93,22 +99,22 @@ struct RunSessionView: View {
 private struct LeftRail: View {
     @Bindable var vm: RunSessionViewModel
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Theme.spacing.m) {
             statusBlock
             if let req = vm.request {
                 metaBlock(req: req)
             }
             Spacer()
         }
-        .padding(16)
+        .padding(Theme.spacing.l)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
     private var statusBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Theme.spacing.s) {
             Text("STATUS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.spacing.s) {
                 Circle().fill(statusColor).frame(width: 8, height: 8)
                 Text(statusLabel).font(.body.weight(.medium))
             }
@@ -117,7 +123,7 @@ private struct LeftRail: View {
             }
             Text("Friction events: \(vm.frictionFeed.count)").font(.caption).foregroundStyle(.secondary)
             if let err = vm.runError {
-                Text(err).font(.caption).foregroundStyle(.red)
+                Text(err).font(.caption).foregroundStyle(Color.harnessFailure)
             }
         }
     }
@@ -159,17 +165,17 @@ private struct LeftRail: View {
 
     private var statusColor: Color {
         switch vm.status {
-        case .idle: return .secondary
-        case .starting, .building, .launching: return .orange
+        case .idle: return Color.harnessText3
+        case .starting, .building, .launching: return Color.harnessWarning
         case .running: return Color.harnessAccent
-        case .awaitingApproval: return .yellow
+        case .awaitingApproval: return Color.harnessWarning
         case .completed(let v):
             switch v {
-            case .success: return .green
-            case .failure: return .red
-            case .blocked: return .orange
+            case .success: return Color.harnessSuccess
+            case .failure: return Color.harnessFailure
+            case .blocked: return Color.harnessBlocked
             }
-        case .failed: return .red
+        case .failed: return Color.harnessFailure
         }
     }
 
@@ -191,10 +197,12 @@ private struct StepFeedRail: View {
                 Spacer()
                 Text("\(vm.feed.count)").font(.caption).foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
+            .padding(.horizontal, Theme.spacing.m)
+            .padding(.top, Theme.spacing.m)
+            .padding(.bottom, Theme.spacing.s)
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: Theme.spacing.s) {
                         ForEach(vm.feed) { step in
                             StepFeedCell(step: step)
                                 .id(step.n)
@@ -203,7 +211,8 @@ private struct StepFeedRail: View {
                             FrictionRow(event: f).id("f-\(f.id)")
                         }
                     }
-                    .padding(.horizontal, 8).padding(.bottom, 12)
+                    .padding(.horizontal, Theme.spacing.s)
+                    .padding(.bottom, Theme.spacing.m)
                 }
                 .onChange(of: vm.feed.count) {
                     if let last = vm.feed.last {
@@ -221,11 +230,11 @@ private struct StepFeedRail: View {
 private struct FrictionRow: View {
     let event: PreviewFrictionEvent
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: Theme.spacing.s) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(Color.harnessWarning)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+                HStack(spacing: Theme.spacing.s) {
                     Text("Step \(event.stepN)")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -234,14 +243,14 @@ private struct FrictionRow: View {
                 Text(event.detail).font(.callout).foregroundStyle(.secondary)
             }
         }
-        .padding(10)
+        .padding(Theme.spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: Theme.radius.button)
                 .fill(Color.harnessWarning.opacity(0.10))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: Theme.radius.button)
                 .stroke(Color.harnessWarning.opacity(0.30), lineWidth: 0.5)
         )
     }
@@ -275,11 +284,11 @@ private struct FailureView: View {
     @Bindable var vm: RunSessionViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spacing.l) {
+            HStack(spacing: Theme.spacing.m) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(Color.harnessWarning)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Run failed").font(.title3.weight(.semibold))
                     if let req = vm.request {
@@ -293,15 +302,15 @@ private struct FailureView: View {
                 Text(vm.runError ?? "Unknown error.")
                     .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
+                    .padding(Theme.spacing.m)
                     .textSelection(.enabled)
                     .background(
-                        RoundedRectangle(cornerRadius: 6)
+                        RoundedRectangle(cornerRadius: Theme.radius.button)
                             .fill(Color(nsColor: .textBackgroundColor))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                        RoundedRectangle(cornerRadius: Theme.radius.button)
+                            .stroke(Color.harnessLine, lineWidth: 0.5)
                     )
             }
             .frame(maxHeight: 320)
@@ -311,18 +320,18 @@ private struct FailureView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
+                    .padding(Theme.spacing.m)
                     .background(
-                        RoundedRectangle(cornerRadius: 6)
+                        RoundedRectangle(cornerRadius: Theme.radius.button)
                             .fill(Color.harnessAccent.opacity(0.10))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6)
+                        RoundedRectangle(cornerRadius: Theme.radius.button)
                             .stroke(Color.harnessAccent.opacity(0.25), lineWidth: 0.5)
                     )
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.spacing.s) {
                 if let logURL = vm.buildLogURL,
                    FileManager.default.fileExists(atPath: logURL.path) {
                     Button {
@@ -347,7 +356,7 @@ private struct FailureView: View {
 
             Spacer()
         }
-        .padding(28)
+        .padding(Theme.spacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("Active Run — Failed")
     }
@@ -358,17 +367,12 @@ private struct FailureView: View {
 private struct EmptyRunState: View {
     @Environment(AppCoordinator.self) private var coordinator
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "play.circle")
-                .font(.system(size: 56, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("No run in flight").font(.title3.weight(.medium))
-            Text("Compose a goal under New Run, then click Start.")
-                .font(.callout).foregroundStyle(.secondary)
-            Button("New Run") { coordinator.selectedSection = .newRun }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 8)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        EmptyStateView(
+            symbol: "play.circle",
+            title: "No run in flight",
+            subtitle: "Compose a goal under New Run, then click Start.",
+            ctaTitle: "New Run",
+            onCta: { coordinator.selectedSection = .newRun }
+        )
     }
 }

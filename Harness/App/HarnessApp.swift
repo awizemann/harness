@@ -112,6 +112,8 @@ private struct DetailRouter: View {
             RunSessionView()
         case .history:
             RunHistoryView()
+        case .friction:
+            FrictionReportView()
         }
     }
 }

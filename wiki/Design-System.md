@@ -46,33 +46,28 @@ Used as `.font(HFont.body)` etc.
 
 ## Primitives
 
-| Primitive | File | Used by |
+Every primitive ships with a `#Preview`; the "Used by" column is the production wiring as of Phase 4. If you add a new feature view, prefer reusing a primitive over re-rolling one — the design-token discipline section in [`Adding-a-Feature.md`](Adding-a-Feature.md) lists the do/don'ts.
+
+| Primitive | File | Used by (production) |
 |---|---|---|
-| `PanelContainer<Content>` | `HarnessDesign/Primitives/PanelContainer.swift` | Every screen |
-| `StepFeedCell` | `HarnessDesign/Primitives/StepFeedCell.swift` | RunSession, RunReplay, FrictionReport |
-| `ToolCallChip` | `HarnessDesign/Primitives/ToolCallChip.swift` | StepFeedCell |
-| `VerdictPill` | `HarnessDesign/Primitives/VerdictPill.swift` | RunHistory, RunReplay header |
-| `FrictionTag` | `HarnessDesign/Primitives/FrictionTag.swift` | FrictionReport, StepFeed |
-| `SimulatorMirrorView` | `HarnessDesign/Primitives/SimulatorMirrorView.swift` | RunSession, RunReplay |
-| `ApprovalCard` | `HarnessDesign/Primitives/ApprovalCard.swift` | RunSession (step mode) |
-| `PersonaGoalForm` | `HarnessDesign/Primitives/PersonaGoalForm.swift` | GoalInput |
-| `SegmentedToggle<T>` | `HarnessDesign/Primitives/SegmentedToggle.swift` | GoalInput, RunReplay |
-| `TimelineScrubber` | `HarnessDesign/Primitives/TimelineScrubber.swift` | RunReplay |
-| `SidebarRow` | `HarnessDesign/Primitives/SidebarRow.swift` | RunHistory |
-| `EmptyStateView` | `HarnessDesign/Primitives/EmptyStateView.swift` | First-run, empty history, no friction |
-| `StatusChip` | `HarnessDesign/Primitives/StatusChip.swift` | RunSession (top-right of mirror) |
+| `PanelContainer<Content>` | `HarnessDesign/Primitives/PanelContainer.swift` | GoalInput sections, RunReplay screenshot + step-detail panes |
+| `StepFeedCell` | `HarnessDesign/Primitives/StepFeedCell.swift` | RunSession step feed |
+| `ToolCallChip` | `HarnessDesign/Primitives/ToolCallChip.swift` | StepFeedCell, RunReplay step detail |
+| `VerdictPill` | `HarnessDesign/Primitives/VerdictPill.swift` | RunHistory rows, RunReplay header |
+| `FrictionTag` | `HarnessDesign/Primitives/FrictionTag.swift` | RunSession friction rows, RunReplay step detail, FrictionReport cards |
+| `SimulatorMirrorView` | `HarnessDesign/Primitives/SimulatorMirrorView.swift` | RunSession (live mirror with last-tap dot) |
+| `ApprovalCard` | `HarnessDesign/Primitives/ApprovalCard.swift` | RunSession (step mode, via `ApprovalCardWrapper`) |
+| `PersonaGoalForm` | `HarnessDesign/Primitives/PersonaGoalForm.swift` | Available; GoalInput currently inlines the equivalent fields |
+| `SegmentedToggle<T>` | `HarnessDesign/Primitives/SegmentedToggle.swift` | RunHistory verdict filter |
+| `TimelineScrubber` | `HarnessDesign/Primitives/TimelineScrubber.swift` | RunReplay scrubber (multi-step runs) |
+| `SidebarRow` | `HarnessDesign/Primitives/SidebarRow.swift` | RunHistory left rail (consumes `PreviewRun` via the `RunRecordSnapshot` adapter in `Mappers.swift`) |
+| `FlowLayout` | `HarnessDesign/Primitives/FlowLayout.swift` | RunHistory detail "Path" panel — reusable chip flow |
+| `EmptyStateView` | `HarnessDesign/Primitives/EmptyStateView.swift` | RunHistory (no runs / no matches / no selection), RunSession (idle), RunReplay (load error / no steps) |
+| `StatusChip` | `HarnessDesign/Primitives/StatusChip.swift` | RunSession mirror overlay, Settings tooling rows, RunHistory detail header (in-progress runs) |
 
 ## Screens
 
-Layout drafts in `HarnessDesign/Screens/` — composed from primitives, bound to mock data:
-
-- `GoalInputView`
-- `RunSessionView`
-- `RunHistoryView`
-- `RunReplayView`
-- `FrictionReportView`
-
-Phase 3 wires real view-models in place of the mock data. The primitives themselves don't change.
+The production feature views live under `Harness/Features/<Feature>/Views/` and consume the primitives above. The original mock-data screen drafts that shipped under `HarnessDesign/Screens/` were removed in Phase 3 (they collided with the real Features views by filename). Primitives + DesignSystem stay.
 
 ## Mock data
 
@@ -103,4 +98,4 @@ See [`../standards/05-design-system.md §10`](../standards/05-design-system.md).
 
 ---
 
-_Last updated: 2026-05-03 — Phase 1 reconciled token names with the real code; HarnessDesign included in target rather than packaged._
+_Last updated: 2026-05-04 — RunHistory now uses the list/detail layout, FrictionReport shipped as the fourth sidebar section. Out-of-scope follow-ups tracked in [`docs/DESIGN_BACKLOG.md`](../docs/DESIGN_BACKLOG.md)._

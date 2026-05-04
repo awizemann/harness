@@ -23,17 +23,17 @@ struct FirstRunWizard: View {
         VStack(spacing: 0) {
             header
             Divider()
-            ScrollView { contentBody.padding(24) }
+            ScrollView { contentBody.padding(Theme.spacing.xl) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             footer
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color.harnessBg)
         .task { await state.refreshAll() }
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: Theme.spacing.m) {
             Image(systemName: "wand.and.stars")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(Color.harnessAccent)
@@ -44,12 +44,13 @@ struct FirstRunWizard: View {
             }
             Spacer()
         }
-        .padding(.horizontal, 24).padding(.vertical, 16)
+        .padding(.horizontal, Theme.spacing.xl)
+        .padding(.vertical, Theme.spacing.l)
     }
 
     @ViewBuilder
     private var contentBody: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Theme.spacing.l) {
             apiKeySection
             toolingSection
             simulatorSection
@@ -59,11 +60,11 @@ struct FirstRunWizard: View {
     // MARK: API key
 
     private var apiKeySection: some View {
-        SectionCard(
+        WizardCard(
             title: "Anthropic API key",
             subtitle: "Stored in your macOS Keychain (service \"com.harness.anthropic\"). Never written to disk or logs."
         ) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
                 if state.apiKeyPresent {
                     StatusLine(ok: true, label: "API key present")
                 } else {
@@ -71,7 +72,7 @@ struct FirstRunWizard: View {
                         .textFieldStyle(.roundedBorder)
                         .disableAutocorrection(true)
                     if let err = saveError {
-                        Text(err).font(.callout).foregroundStyle(.red)
+                        Text(err).font(.callout).foregroundStyle(Color.harnessFailure)
                     }
                     HStack {
                         Button("Save key") {
@@ -95,11 +96,11 @@ struct FirstRunWizard: View {
     // MARK: Tooling
 
     private var toolingSection: some View {
-        SectionCard(
+        WizardCard(
             title: "External tools",
             subtitle: "Harness drives your iOS Simulator via xcodebuild + WebDriverAgent (vendored as a submodule)."
         ) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
                 StatusLine(ok: state.xcodebuildAvailable,
                            label: state.xcodebuildAvailable ? "xcodebuild available" : "xcodebuild not found")
                 if !state.xcodebuildAvailable {
@@ -122,14 +123,14 @@ struct FirstRunWizard: View {
                     .disabled(state.defaultSimulatorUDID == nil)
                 }
                 if state.wdaBuildInProgress {
-                    HStack(spacing: 8) {
+                    HStack(spacing: Theme.spacing.s) {
                         ProgressView().controlSize(.small)
                         Text("Running `xcodebuild build-for-testing` against vendor/WebDriverAgent…")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                 }
                 if let err = wdaBuildError {
-                    Text(err).font(.callout).foregroundStyle(.red)
+                    Text(err).font(.callout).foregroundStyle(Color.harnessFailure)
                 }
 
                 Button("Re-check") {
@@ -140,7 +141,7 @@ struct FirstRunWizard: View {
                     }
                 }
                 .buttonStyle(.borderless)
-                .padding(.top, 4)
+                .padding(.top, Theme.spacing.xs)
             }
         }
     }
@@ -163,14 +164,14 @@ struct FirstRunWizard: View {
     // MARK: Simulators
 
     private var simulatorSection: some View {
-        SectionCard(
+        WizardCard(
             title: "iOS Simulators",
             subtitle: "These are the devices Harness can drive. Boot one in Xcode if the list is empty."
         ) {
             if state.simulators.isEmpty {
                 StatusLine(ok: false, label: "No simulators found")
             } else {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xs) {
                     ForEach(state.simulators.prefix(8), id: \.udid) { sim in
                         Text("• \(sim.name) · \(sim.runtime)")
                             .font(.callout)
@@ -192,7 +193,7 @@ struct FirstRunWizard: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         }
-        .padding(16)
+        .padding(Theme.spacing.l)
     }
 
     private func save() async {
@@ -212,26 +213,30 @@ struct FirstRunWizard: View {
 
 // MARK: - Helpers
 
-private struct SectionCard<Content: View>: View {
+/// Wizard-specific card: title + subtitle on top, content below. Visually
+/// related to `PanelContainer` but the wizard's title block is two lines
+/// (heading + descriptive subtitle) where `PanelContainer`'s title is one
+/// line of chrome.
+private struct WizardCard<Content: View>: View {
     let title: String
     let subtitle: String
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Theme.spacing.s) {
             Text(title).font(.headline)
             Text(subtitle).font(.callout).foregroundStyle(.secondary)
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
+        .padding(Theme.spacing.m)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor))
+            RoundedRectangle(cornerRadius: Theme.radius.panel)
+                .fill(Color.harnessPanel)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: Theme.radius.panel)
+                .stroke(Color.harnessLine, lineWidth: 0.5)
         )
     }
 }
@@ -240,9 +245,9 @@ private struct StatusLine: View {
     let ok: Bool
     let label: String
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Theme.spacing.s) {
             Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(ok ? Color.green : Color.orange)
+                .foregroundStyle(ok ? Color.harnessSuccess : Color.harnessWarning)
             Text(label).font(.callout)
         }
     }
@@ -252,13 +257,14 @@ private struct InstallHint: View {
     let text: String
     let command: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
             Text(text).font(.callout).foregroundStyle(.secondary)
             HStack {
                 Text(command)
                     .font(.system(.callout, design: .monospaced))
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .textBackgroundColor)))
+                    .padding(.horizontal, Theme.spacing.s)
+                    .padding(.vertical, Theme.spacing.xs)
+                    .background(RoundedRectangle(cornerRadius: Theme.radius.button).fill(Color(nsColor: .textBackgroundColor)))
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(command, forType: .string)
