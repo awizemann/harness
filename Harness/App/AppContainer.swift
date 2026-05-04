@@ -61,16 +61,17 @@ final class AppContainer {
         self.claudeClient = ClaudeClient(keychain: keychain)
         self.promptLibrary = PromptLibrary()
 
-        // History store — fall through to a fresh in-memory container if
-        // the on-disk store can't be opened (rare; would be permission issues).
-        if let store = try? RunHistoryStore() {
-            self.runHistory = store
-        } else if let memory = try? RunHistoryStore.inMemory() {
-            self.runHistory = memory
-        } else {
-            // Should be unreachable. If it happens, the UI surfaces it via
-            // a follow-up view.
-            fatalError("Could not initialize RunHistoryStore")
+        // History store — open the on-disk store. RunHistoryStore's init
+        // handles SwiftData migration failures internally by deleting the
+        // corrupt file and retrying (pre-release policy; data loss is
+        // acceptable while we iterate). If even the retry fails, that's a
+        // real environmental problem (permissions, disk full) and we let
+        // it propagate so the diagnostic isn't hidden behind a silent
+        // in-memory fallback.
+        do {
+            self.runHistory = try RunHistoryStore.openDefault()
+        } catch {
+            fatalError("Could not initialize RunHistoryStore: \(error.localizedDescription)")
         }
 
         self.appState = AppState(

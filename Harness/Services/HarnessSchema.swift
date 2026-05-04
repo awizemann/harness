@@ -141,10 +141,229 @@ enum HarnessSchemaV1: VersionedSchema {
     }
 }
 
-// MARK: - V2 (active shape)
-
+// MARK: - V2 (originally shipped: no legsJSON, no cost columns)
+//
+// V2's @Model types are nested in this enum so they remain a *distinct*
+// class identity from V3's file-scope types. SwiftData computes a per-
+// `VersionedSchema` checksum from each schema's `models` array — if two
+// schemas list the same Swift types it rejects the migration plan with
+// `Duplicate version checksums across stages detected`. Each version
+// must have its own typed namespace.
+//
+// CoreData entity names default to the simple class name, so
+// `HarnessSchemaV2.RunRecord` and the file-scope `RunRecord` both map
+// to the entity literally named `"RunRecord"` — the same SQLite table
+// continues across the version, and additive lightweight migration
+// applies the column delta automatically.
 enum HarnessSchemaV2: VersionedSchema {
     static var versionIdentifier: Schema.Version { .init(2, 0, 0) }
+    static var models: [any PersistentModel.Type] {
+        [
+            RunRecord.self,
+            Application.self,
+            Persona.self,
+            Action.self,
+            ActionChain.self,
+            ActionChainStep.self
+        ]
+    }
+
+    @Model
+    final class RunRecord {
+        @Attribute(.unique) var id: UUID
+        var name: String?
+        var createdAt: Date
+        var completedAt: Date?
+        var projectPath: String
+        var scheme: String
+        var displayName: String
+        var simulatorUDID: String
+        var simulatorName: String
+        var simulatorRuntime: String
+        var goal: String
+        var persona: String
+        var modelRaw: String
+        var modeRaw: String
+        var verdictRaw: String?
+        var summary: String?
+        var stepCount: Int
+        var frictionCount: Int
+        var wouldRealUserSucceed: Bool
+        var tokensUsedInput: Int
+        var tokensUsedOutput: Int
+        var runDirectoryPath: String
+        @Relationship(deleteRule: .nullify) var application: HarnessSchemaV2.Application?
+        @Relationship(deleteRule: .nullify) var persona_: HarnessSchemaV2.Persona?
+        @Relationship(deleteRule: .nullify) var action: HarnessSchemaV2.Action?
+        @Relationship(deleteRule: .nullify) var actionChain: HarnessSchemaV2.ActionChain?
+        var applicationLookupID: UUID?
+        var personaLookupID: UUID?
+        var actionLookupID: UUID?
+        var actionChainLookupID: UUID?
+
+        init(
+            id: UUID,
+            createdAt: Date,
+            projectPath: String,
+            scheme: String,
+            displayName: String,
+            simulatorUDID: String,
+            simulatorName: String,
+            simulatorRuntime: String,
+            goal: String,
+            persona: String,
+            modelRaw: String,
+            modeRaw: String,
+            runDirectoryPath: String
+        ) {
+            self.id = id
+            self.createdAt = createdAt
+            self.projectPath = projectPath
+            self.scheme = scheme
+            self.displayName = displayName
+            self.simulatorUDID = simulatorUDID
+            self.simulatorName = simulatorName
+            self.simulatorRuntime = simulatorRuntime
+            self.goal = goal
+            self.persona = persona
+            self.modelRaw = modelRaw
+            self.modeRaw = modeRaw
+            self.runDirectoryPath = runDirectoryPath
+            self.stepCount = 0
+            self.frictionCount = 0
+            self.wouldRealUserSucceed = false
+            self.tokensUsedInput = 0
+            self.tokensUsedOutput = 0
+        }
+    }
+
+    @Model
+    final class Application {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+        var projectPath: String
+        var projectBookmark: Data?
+        var scheme: String
+        var defaultSimulatorUDID: String?
+        var defaultSimulatorName: String?
+        var defaultSimulatorRuntime: String?
+        var defaultModelRaw: String
+        var defaultModeRaw: String
+        var defaultStepBudget: Int
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            createdAt: Date,
+            lastUsedAt: Date,
+            archivedAt: Date? = nil,
+            projectPath: String,
+            projectBookmark: Data? = nil,
+            scheme: String,
+            defaultSimulatorUDID: String? = nil,
+            defaultSimulatorName: String? = nil,
+            defaultSimulatorRuntime: String? = nil,
+            defaultModelRaw: String,
+            defaultModeRaw: String,
+            defaultStepBudget: Int
+        ) {
+            self.id = id
+            self.name = name
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+            self.projectPath = projectPath
+            self.projectBookmark = projectBookmark
+            self.scheme = scheme
+            self.defaultSimulatorUDID = defaultSimulatorUDID
+            self.defaultSimulatorName = defaultSimulatorName
+            self.defaultSimulatorRuntime = defaultSimulatorRuntime
+            self.defaultModelRaw = defaultModelRaw
+            self.defaultModeRaw = defaultModeRaw
+            self.defaultStepBudget = defaultStepBudget
+        }
+    }
+
+    @Model
+    final class Persona {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var blurb: String
+        var promptText: String
+        var isBuiltIn: Bool
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+
+        init(id: UUID = UUID(), name: String, blurb: String, promptText: String, isBuiltIn: Bool, createdAt: Date, lastUsedAt: Date, archivedAt: Date? = nil) {
+            self.id = id; self.name = name; self.blurb = blurb
+            self.promptText = promptText; self.isBuiltIn = isBuiltIn
+            self.createdAt = createdAt; self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+        }
+    }
+
+    @Model
+    final class Action {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var promptText: String
+        var notes: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+
+        init(id: UUID = UUID(), name: String, promptText: String, notes: String, createdAt: Date, lastUsedAt: Date, archivedAt: Date? = nil) {
+            self.id = id; self.name = name; self.promptText = promptText
+            self.notes = notes; self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt; self.archivedAt = archivedAt
+        }
+    }
+
+    @Model
+    final class ActionChain {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var notes: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+        @Relationship(deleteRule: .cascade) var steps: [HarnessSchemaV2.ActionChainStep] = []
+
+        init(id: UUID = UUID(), name: String, notes: String, createdAt: Date, lastUsedAt: Date, archivedAt: Date? = nil) {
+            self.id = id; self.name = name; self.notes = notes
+            self.createdAt = createdAt; self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+        }
+    }
+
+    @Model
+    final class ActionChainStep {
+        @Attribute(.unique) var id: UUID
+        var index: Int
+        @Relationship(deleteRule: .nullify) var action: HarnessSchemaV2.Action?
+        var preservesState: Bool
+
+        init(id: UUID = UUID(), index: Int, action: HarnessSchemaV2.Action? = nil, preservesState: Bool) {
+            self.id = id; self.index = index; self.action = action
+            self.preservesState = preservesState
+        }
+    }
+}
+
+// MARK: - V3 (active shape — adds `legsJSON` + `tokensUsedCacheRead` +
+//                            `tokensUsedCacheCreation` to RunRecord)
+//
+// V3's `@Model` types are at file scope so production callers reference
+// `RunRecord` / `Application` / etc. without a namespace. The schema
+// checksum differs from V2 because V3's models are different Swift
+// types — SwiftData accepts the V2→V3 lightweight stage and adds the
+// new columns to the existing `"RunRecord"` table.
+enum HarnessSchemaV3: VersionedSchema {
+    static var versionIdentifier: Schema.Version { .init(3, 0, 0) }
     static var models: [any PersistentModel.Type] {
         [
             RunRecord.self,
@@ -498,11 +717,11 @@ enum HarnessMigrationPlan: SchemaMigrationPlan {
     )
 
     static var schemas: [any VersionedSchema.Type] {
-        [HarnessSchemaV1.self, HarnessSchemaV2.self]
+        [HarnessSchemaV1.self, HarnessSchemaV2.self, HarnessSchemaV3.self]
     }
 
     static var stages: [MigrationStage] {
-        [v1ToV2]
+        [v1ToV2, v2ToV3]
     }
 
     static let v1ToV2 = MigrationStage.custom(
@@ -514,27 +733,40 @@ enum HarnessMigrationPlan: SchemaMigrationPlan {
         }
     )
 
+    /// Lightweight: adds `RunRecord.legsJSON`, `tokensUsedCacheRead`,
+    /// `tokensUsedCacheCreation` (all optional with nil defaults).
+    /// SwiftData fills NULL on existing rows; nothing to backfill.
+    static let v2ToV3 = MigrationStage.lightweight(
+        fromVersion: HarnessSchemaV2.self,
+        toVersion: HarnessSchemaV3.self
+    )
+
     /// Walk every `RunRecord` in the post-migration store, group by
     /// `(projectPath, scheme)`, and ensure one `Application` exists per
     /// tuple. Bind `runRecord.application` to the matching row. Idempotent —
     /// runs cleanly on a store that already has Applications.
+    ///
+    /// Reads through V2's nested model types (`HarnessSchemaV2.RunRecord` /
+    /// `HarnessSchemaV2.Application`) because this stage finishes the V1→V2
+    /// transition — the context is bound to V2's class identities here.
+    /// V2→V3 is lightweight and runs after this with no custom code.
     static func backfillApplications(context: ModelContext) throws {
-        let runs = try context.fetch(FetchDescriptor<RunRecord>())
+        let runs = try context.fetch(FetchDescriptor<HarnessSchemaV2.RunRecord>())
         guard !runs.isEmpty else { return }
 
-        let existing = try context.fetch(FetchDescriptor<Application>())
-        var byKey: [String: Application] = [:]
+        let existing = try context.fetch(FetchDescriptor<HarnessSchemaV2.Application>())
+        var byKey: [String: HarnessSchemaV2.Application] = [:]
         for app in existing {
             byKey[Self.key(projectPath: app.projectPath, scheme: app.scheme)] = app
         }
 
         for run in runs {
             let key = Self.key(projectPath: run.projectPath, scheme: run.scheme)
-            let app: Application
-            if let existing = byKey[key] {
-                app = existing
+            let app: HarnessSchemaV2.Application
+            if let existingApp = byKey[key] {
+                app = existingApp
             } else {
-                app = Application(
+                app = HarnessSchemaV2.Application(
                     name: run.displayName,
                     createdAt: run.createdAt,
                     lastUsedAt: run.completedAt ?? run.createdAt,

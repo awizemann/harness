@@ -226,29 +226,70 @@ actor RunHistoryStore: RunHistoryStoring {
     private let modelContainer: ModelContainer
     private var modelContext: ModelContext
 
-    /// Production initializer using the default app-support store.
-    /// In-memory variant exists for tests; see `inMemory()`.
-    init(url: URL? = nil) throws {
-        let schema = Schema(versionedSchema: HarnessSchemaV2.self)
-        let configuration: ModelConfiguration
-        if let url {
-            configuration = ModelConfiguration(schema: schema, url: url)
-        } else {
-            try HarnessPaths.ensureDirectory(HarnessPaths.appSupport)
-            let storeURL = HarnessPaths.appSupport.appendingPathComponent("history.store")
-            configuration = ModelConfiguration(schema: schema, url: storeURL)
+    /// Production initializer — opens the default app-support store with
+    /// pre-release reset-on-migration-failure semantics. Migration tests
+    /// and any other caller that wants strict failure propagation should
+    /// use `init(url:resetOnMigrationFailure:)` with `false`.
+    static func openDefault() throws -> RunHistoryStore {
+        try HarnessPaths.ensureDirectory(HarnessPaths.appSupport)
+        let url = HarnessPaths.appSupport.appendingPathComponent("history.store")
+        return try RunHistoryStore(url: url, resetOnMigrationFailure: true)
+    }
+
+    /// Designated initializer.
+    ///
+    /// Pre-release recovery policy (`resetOnMigrationFailure == true`): if
+    /// SwiftData can't migrate the on-disk store (typically after a model
+    /// change without a paired `MigrationStage`), we delete the SQLite
+    /// file + its WAL/SHM siblings and start over. Data loss is
+    /// acceptable while we're iterating; the alternative — silently
+    /// falling through to an in-memory store — was the bug that prompted
+    /// this rewrite (Applications / Personas / Actions appeared to
+    /// "disappear" on relaunch). When we get closer to ship we can
+    /// graduate this to an archive-and-warn flow.
+    ///
+    /// Tests pass `resetOnMigrationFailure: false` so a real migration
+    /// bug throws loudly instead of nuking the test fixture.
+    init(url: URL, resetOnMigrationFailure: Bool = false) throws {
+        let schema = Schema(versionedSchema: HarnessSchemaV3.self)
+        let configuration = ModelConfiguration(schema: schema, url: url)
+        do {
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: HarnessMigrationPlan.self,
+                configurations: [configuration]
+            )
+            self.modelContainer = container
+            self.modelContext = ModelContext(container)
+        } catch {
+            guard resetOnMigrationFailure else { throw error }
+            Self.logger.error("Couldn't open on-disk history store; deleting and starting fresh: \(error.localizedDescription, privacy: .public)")
+            Self.deleteStoreFiles(at: url)
+            // One retry against the cleaned slot. If this still fails it's a
+            // real problem (permissions, disk full) — let it propagate.
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: HarnessMigrationPlan.self,
+                configurations: [configuration]
+            )
+            self.modelContainer = container
+            self.modelContext = ModelContext(container)
         }
-        let container = try ModelContainer(
-            for: schema,
-            migrationPlan: HarnessMigrationPlan.self,
-            configurations: [configuration]
-        )
-        self.modelContainer = container
-        self.modelContext = ModelContext(container)
+    }
+
+    /// Remove the SQLite store file and its WAL/SHM siblings so the next
+    /// `ModelContainer` open starts clean.
+    nonisolated private static func deleteStoreFiles(at url: URL) {
+        let fm = FileManager.default
+        for path in [url.path, url.path + "-wal", url.path + "-shm"] {
+            if fm.fileExists(atPath: path) {
+                try? fm.removeItem(atPath: path)
+            }
+        }
     }
 
     static func inMemory() throws -> RunHistoryStore {
-        let schema = Schema(versionedSchema: HarnessSchemaV2.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV3.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true

@@ -61,7 +61,25 @@ The migration is mostly lightweight (column-add for the new RunRecord refs; new 
 4. Set `runRecord.application` to the matching row.
 5. Bump the Application's `lastUsedAt` to the most recent run's `completedAt ?? createdAt`.
 
-Both V1 and V2 expose a class named `RunRecord` (V1 nested under `HarnessSchemaV1`, V2 at file scope). The shared simple class name lets SwiftData's lightweight migration extend the existing `ZRUNRECORD` table in place rather than dropping and rebuilding it. The Persona seeding from `docs/PROMPTS/persona-defaults.md` runs in `RunHistoryStore.seedBuiltInPersonasIfNeeded(from:)` — invoked from the migration as well as on every app launch so future built-ins propagate forward.
+Both V1 and V2 expose a class named `RunRecord` (V1 nested under `HarnessSchemaV1`, V2 nested under `HarnessSchemaV2`). The shared simple class name lets SwiftData's lightweight migration extend the existing `ZRUNRECORD` table in place rather than dropping and rebuilding it. The Persona seeding from `docs/PROMPTS/persona-defaults.md` runs in `RunHistoryStore.seedBuiltInPersonasIfNeeded(from:)` — invoked from the migration as well as on every app launch so future built-ins propagate forward.
+
+### V2 → V3 (run-log enrichments)
+
+V3 adds three optional columns to `RunRecord`:
+
+- `legsJSON: String?` — JSON-encoded `[LegRecord]` for chain runs (added by Phase E).
+- `tokensUsedCacheRead: Int?` — Anthropic API cache-read tokens (added by cost tracking).
+- `tokensUsedCacheCreation: Int?` — Anthropic API cache-creation tokens (added by cost tracking).
+
+Migration is **lightweight** — `MigrationStage.lightweight(fromVersion: V2, toVersion: V3)`. Existing rows pick up `nil` defaults; nothing to backfill.
+
+V2's `@Model` types live nested under `HarnessSchemaV2`; V3's are at file scope (production code references `RunRecord` etc. unqualified). Each schema's checksum derives from the *Swift class identity* of its `models` array — two schemas listing the same Swift type collide with `Duplicate version checksums across stages detected` and the migration plan refuses to load. **Every new schema version must list a fresh set of nested `@Model` types**; see §10 below for the workflow.
+
+### Recovery policy (pre-release)
+
+Today `RunHistoryStore.openDefault()` opens the production store with `resetOnMigrationFailure: true`: if `ModelContainer(for:migrationPlan:configurations:)` throws, we delete the SQLite file + WAL/SHM siblings and retry once against a clean slot. Data loss is acceptable while we iterate; the previous behavior — silently falling through to an in-memory store — is what hid the V2→V3 migration bug behind a "saved Applications disappeared on relaunch" symptom. When we get closer to ship, graduate the rescue to archive-and-warn (rename the corrupted file, surface the recovery to the user via `AppState`).
+
+Tests construct stores via `RunHistoryStore(url: ..., resetOnMigrationFailure: false)` so a real migration bug throws loudly instead of nuking the test fixture.
 
 ---
 
@@ -188,3 +206,33 @@ If a model encodes JSON-serializable enrichments (e.g., a structured `summary` b
 - Tool-call payloads (JSONL).
 - Logs from `xcodebuild`, `simctl`, `idb` (write to disk under the run directory; SwiftData stores only a path).
 - Anything that grows linearly with run length. SwiftData is for the **index**, not the data.
+
+---
+
+## 10. Adding a column / new entity (the only correct workflow)
+
+The bug we hit at the V2→V3 boundary was modifying the file-scope `@Model` classes in place, twice, without bumping the schema version. SwiftData *appeared* to keep working — the runtime tolerates additive optional columns once or twice — until a user upgraded across both deltas at once and the on-disk hash no longer matched any stage in the migration plan. The on-disk store then refused to open; `try?` in `AppContainer.init` swallowed the error; the user dropped to an in-memory store and lost everything saved.
+
+**Never modify a shipped `@Model` class in place.** When you need to add, remove, or rename a stored property, do this:
+
+1. **Move the current shape into a versioned namespace.** If the class is at file scope today, nest it inside a fresh `enum HarnessSchemaVN: VersionedSchema` and add the previously file-scope class as a nested `@Model class` inside that enum. The CoreData entity name (defaults to the simple class name) stays the same — `HarnessSchemaVN.RunRecord` and the new file-scope `RunRecord` both map to the entity literally named `"RunRecord"`. SwiftData treats them as evolving the same SQLite table. **Do not rename the entity.**
+
+2. **Author the new shape at file scope.** Edit the file-scope `@Model class` (or add a new one) with the property you want. Production code keeps importing it unqualified.
+
+3. **Define `HarnessSchemaV(N+1)`** with `versionIdentifier: .init(N+1, 0, 0)` and `models: [...]` listing the file-scope types. Every entry in this array must be a *distinct Swift type identity* from what previous schemas list — that's how the runtime computes the per-stage checksum. Reusing the same type across two `VersionedSchema`s triggers `Duplicate version checksums across stages detected`.
+
+4. **Add a `MigrationStage`** to `HarnessMigrationPlan.stages`. Lightweight is enough for column-add or column-drop on optional fields with `nil` defaults; use `.custom(...)` only when you need a `didMigrate` to backfill data (e.g. the V1→V2 backfill that emits one Application per `(projectPath, scheme)` tuple).
+
+5. **Update `HarnessMigrationPlan.schemas`** to include the new schema in declaration order.
+
+6. **Point the production store at the new schema.** `Schema(versionedSchema: HarnessSchemaV(N+1).self)` in both `RunHistoryStore.init(url:resetOnMigrationFailure:)` and `RunHistoryStore.inMemory()`.
+
+7. **Custom `didMigrate` reads through V(N)'s nested types** — the context in a custom stage's closure is bound to the *target* schema, so when migrating V1 → V2, fetch via `HarnessSchemaV2.RunRecord` etc. (Apple's docs call this out tersely; it's easy to miss.)
+
+8. **Add a migration test.** Mirror `Tests/HarnessTests/SwiftDataMigrationTests.swift` — seed a V(N) on-disk store with the previous shape, open it via `RunHistoryStore(url:)` (which routes through the migration plan), and assert the new fields land with correct defaults / backfilled values.
+
+9. **Bump the doc.** Add a `### V(N) → V(N+1)` subsection above with the same shape as the existing ones — what columns moved, lightweight vs custom, what the `didMigrate` does if anything.
+
+The discipline is annoying but the failure mode is silent data loss across a user's library, so the discipline is the price of admission.
+
+A corollary: **don't** change a column's type, rename it, or change its optionality without graduating to a new schema version with an explicit stage. Lightweight migration handles additive optional columns; everything else is a hand-written stage.

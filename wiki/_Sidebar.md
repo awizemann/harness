@@ -22,6 +22,7 @@
 - [Build-and-Run](Build-and-Run.md)
 - [Adding-a-Feature](Adding-a-Feature.md)
 - [Adding-a-Service](Adding-a-Service.md)
+- [SwiftData-Migrations](SwiftData-Migrations.md)
 - [Testing](Testing.md)
 - [Design-System](Design-System.md)
 - [Standards-Index](Standards-Index.md)
