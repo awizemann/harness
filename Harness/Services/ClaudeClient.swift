@@ -80,6 +80,15 @@ struct LLMStepRequest: Sendable {
     let maxOutputTokens: Int
     /// Determinism toggle for replay/debug runs. False in production by default.
     let deterministic: Bool
+    /// Phase 2: optional platform-specific override block prepended to the
+    /// system prompt. Empty for iOS (which keeps the canonical iOS-flavoured
+    /// system prompt as-is); macOS / web pass a paragraph that re-frames
+    /// the model's UI metaphors.
+    let platformContext: String
+    /// Phase 2: substitution for `{{DEVICE_NAME}}`. iOS = "iPhone Simulator"
+    /// (back-compat default); macOS = the SUT's display name; web = the
+    /// browser identifier ("Embedded WebKit").
+    let deviceName: String
 
     init(
         model: AgentModel,
@@ -90,7 +99,9 @@ struct LLMStepRequest: Sendable {
         screenshotJPEG: Data,
         pointSize: CGSize,
         maxOutputTokens: Int = 1024,
-        deterministic: Bool = false
+        deterministic: Bool = false,
+        platformContext: String = "",
+        deviceName: String = "iPhone Simulator"
     ) {
         self.model = model
         self.systemPrompt = systemPrompt
@@ -101,6 +112,8 @@ struct LLMStepRequest: Sendable {
         self.pointSize = pointSize
         self.maxOutputTokens = maxOutputTokens
         self.deterministic = deterministic
+        self.platformContext = platformContext
+        self.deviceName = deviceName
     }
 }
 
@@ -250,7 +263,14 @@ actor ClaudeClient: LLMClient {
     // MARK: Request body
 
     private static func buildRequestBody(_ request: LLMStepRequest) -> Data {
-        let system = assembleSystem(request.systemPrompt, persona: request.persona, goal: request.goal, pointSize: request.pointSize)
+        let system = assembleSystem(
+            request.systemPrompt,
+            persona: request.persona,
+            goal: request.goal,
+            pointSize: request.pointSize,
+            platformContext: request.platformContext,
+            deviceName: request.deviceName
+        )
 
         // System: array form so each block can carry cache_control.
         let systemBlocks: [[String: Any]] = [
@@ -331,14 +351,26 @@ actor ClaudeClient: LLMClient {
 
     /// Concatenate system prompt + persona + goal + device line. Per
     /// `13-agent-loop.md §6` the persona goes in the system prompt, not the goal.
-    private static func assembleSystem(_ systemPrompt: String, persona: String, goal: String, pointSize: CGSize) -> String {
+    private static func assembleSystem(
+        _ systemPrompt: String,
+        persona: String,
+        goal: String,
+        pointSize: CGSize,
+        platformContext: String,
+        deviceName: String
+    ) -> String {
+        // Phase 2: prepend the platform-context override block when an
+        // adapter provides one (macOS / web). iOS adapters return "" so
+        // the canonical iOS-flavoured system prompt loads unchanged.
         var s = systemPrompt
-        // Substitute the device-context placeholder in the canonical prompt.
+        if !platformContext.isEmpty {
+            s = platformContext + "\n\n" + s
+        }
         s = s.replacingOccurrences(of: "{{POINT_WIDTH}}", with: "\(Int(pointSize.width))")
         s = s.replacingOccurrences(of: "{{POINT_HEIGHT}}", with: "\(Int(pointSize.height))")
         s = s.replacingOccurrences(of: "{{PERSONA}}", with: persona)
         s = s.replacingOccurrences(of: "{{GOAL}}", with: goal)
-        s = s.replacingOccurrences(of: "{{DEVICE_NAME}}", with: "iPhone Simulator")
+        s = s.replacingOccurrences(of: "{{DEVICE_NAME}}", with: deviceName)
         return s
     }
 
@@ -438,6 +470,28 @@ actor ClaudeClient: LLMClient {
                 frictionCount: intValue(input["friction_count"]) ?? 0,
                 wouldRealUserSucceed: (input["would_real_user_succeed"] as? Bool) ?? false
             )
+        // Phase 2 — macOS extensions:
+        case .rightClick:
+            payload = .rightClick(x: intValue(input["x"]) ?? 0, y: intValue(input["y"]) ?? 0)
+        case .keyShortcut:
+            let keys = (input["keys"] as? [String]) ?? []
+            payload = .keyShortcut(keys: keys)
+        case .scroll:
+            payload = .scroll(
+                x: intValue(input["x"]) ?? 0,
+                y: intValue(input["y"]) ?? 0,
+                dx: intValue(input["dx"]) ?? 0,
+                dy: intValue(input["dy"]) ?? 0
+            )
+        // Phase 3 — web extensions:
+        case .navigate:
+            payload = .navigate(url: (input["url"] as? String) ?? "")
+        case .back:
+            payload = .back
+        case .forward:
+            payload = .forward
+        case .refresh:
+            payload = .refresh
         }
 
         return ToolCall(tool: kind, input: payload, observation: observation, intent: intent)

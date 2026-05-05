@@ -9,6 +9,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct ApplicationCreateView: View {
 
@@ -56,9 +57,14 @@ struct ApplicationCreateView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.spacing.l) {
                     NameSection(vm: vm)
-                    PlatformSection()
-                    ProjectSection(vm: vm)
-                    SimulatorSection(vm: vm)
+                    PlatformSection(vm: vm)
+                    if vm.platformKind == .iosSimulator {
+                        ProjectSection(vm: vm)
+                        SimulatorSection(vm: vm)
+                    } else if vm.platformKind == .macosApp {
+                        MacAppSection(vm: vm)
+                        ProjectSection(vm: vm)   // optional for macOS — project+scheme is the build mode
+                    }
                     DefaultsSection(vm: vm)
                     if let err = vm.saveError {
                         Text(err)
@@ -117,29 +123,96 @@ private struct NameSection: View {
     }
 }
 
-/// Phase-1 platform picker. iOS Simulator is the only working option today;
-/// macOS / Web are visible but disabled with a "Coming soon" affordance,
-/// which gives the user a preview of where the project is headed and lets
-/// us validate the segmented-control layout before Phase 2/3 ship the
-/// driver implementations.
-///
-/// The selection isn't bound to view-model state because nothing is
-/// configurable yet — the create flow always saves `platformKindRaw =
-/// "ios_simulator"`. When Phase 2 lands, this section gains a
-/// `@Bindable var vm` and the disabled options become live.
+/// Phase 2 platform picker. iOS + macOS selectable; Web is "Coming soon".
+/// Tapping a chip flips `vm.platformKind`, which re-shapes the form
+/// (Simulator section vs Mac-bundle section).
 private struct PlatformSection: View {
+    @Bindable var vm: ApplicationCreateViewModel
+
     var body: some View {
         PanelContainer(title: "Platform") {
             VStack(alignment: .leading, spacing: Theme.spacing.m) {
                 HStack(spacing: Theme.spacing.s) {
                     ForEach(PlatformKind.allCases, id: \.self) { kind in
-                        PlatformChip(kind: kind, isSelected: kind == .iosSimulator)
+                        Button {
+                            guard kind.isAvailable else { return }
+                            vm.platformKind = kind
+                        } label: {
+                            PlatformChip(kind: kind, isSelected: kind == vm.platformKind)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!kind.isAvailable)
                     }
                 }
-                Text("iOS Simulator is the only working target today. macOS and Web land in Phase 2 and Phase 3 — see the public roadmap.")
+                Text(platformHelpText)
                     .font(.caption).foregroundStyle(.tertiary)
             }
             .padding(Theme.spacing.l)
+        }
+    }
+
+    private var platformHelpText: String {
+        switch vm.platformKind {
+        case .iosSimulator:
+            return "iOS Simulator. Provide an Xcode project + scheme; Harness builds with `xcodebuild` and drives the simulator via WebDriverAgent."
+        case .macosApp:
+            return "macOS app. Pick a pre-built .app (e.g. /System/Applications/TextEdit.app) for the fastest path, or provide a project + scheme to build with `xcodebuild` first."
+        case .web:
+            return "Web — coming in Phase 3."
+        }
+    }
+}
+
+/// macOS-only sub-form: pick a pre-built `.app` bundle. Shown alongside
+/// `ProjectSection` so the user can configure either path (project+scheme
+/// for build-from-source OR pre-built bundle for the fast path). The
+/// adapter prefers the bundle path when both are populated.
+private struct MacAppSection: View {
+    @Bindable var vm: ApplicationCreateViewModel
+
+    var body: some View {
+        PanelContainer(title: "macOS app bundle") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                HStack(spacing: Theme.spacing.s) {
+                    if let path = vm.macAppBundlePath, !path.isEmpty {
+                        Image(systemName: "macwindow")
+                            .foregroundStyle(Color.harnessAccent)
+                        Text((path as NSString).lastPathComponent)
+                            .font(.callout.weight(.medium))
+                        Text(path)
+                            .font(HFont.micro)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } else {
+                        Text("Optional — pick a pre-built .app to skip xcodebuild.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(vm.macAppBundlePath != nil ? "Change…" : "Pick…") {
+                        pickAppBundle()
+                    }
+                    if vm.macAppBundlePath != nil {
+                        Button("Clear") { vm.macAppBundlePath = nil }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                Text("If left empty, Harness builds the macOS scheme from the project below.")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(Theme.spacing.l)
+        }
+    }
+
+    private func pickAppBundle() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.title = "Pick a macOS app bundle"
+        panel.prompt = "Pick"
+        if panel.runModal() == .OK, let url = panel.url {
+            vm.macAppBundlePath = url.path
         }
     }
 }

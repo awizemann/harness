@@ -36,11 +36,12 @@ extension PreviewToolKind {
     /// `.complete` (renders generically).
     init(_ kind: ToolKind) {
         switch kind {
-        case .tap, .doubleTap: self = .tap
-        case .type:            self = .type
-        case .swipe:           self = .swipe
-        case .wait, .readScreen: self = .wait
-        case .pressButton, .noteFriction, .markGoalDone:
+        case .tap, .doubleTap, .rightClick: self = .tap
+        case .type:                          self = .type
+        case .swipe, .scroll:                self = .swipe
+        case .wait, .readScreen:             self = .wait
+        case .pressButton, .keyShortcut, .noteFriction, .markGoalDone,
+             .navigate, .back, .forward, .refresh:
             self = .complete
         }
     }
@@ -85,6 +86,17 @@ extension PreviewToolCall {
             return kind.rawValue
         case .markGoalDone(let verdict, _, _, _):
             return verdict.rawValue
+        case .rightClick(let x, let y):
+            return "rt (\(x), \(y))"
+        case .keyShortcut(let keys):
+            return keys.joined(separator: "+")
+        case .scroll(let x, let y, let dx, let dy):
+            return "(\(x),\(y)) Δ(\(dx),\(dy))"
+        case .navigate(let url):
+            return url.count > 32 ? String(url.prefix(31)) + "…" : url
+        case .back: return "←"
+        case .forward: return "→"
+        case .refresh: return "⟳"
         }
     }
 }

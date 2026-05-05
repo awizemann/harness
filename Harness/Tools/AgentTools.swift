@@ -2,29 +2,30 @@
 //  AgentTools.swift
 //  Harness
 //
-//  The model-facing tool schema. **This file and `https://github.com/awizemann/harness/wiki/Tool-Schema` must
-//  agree byte-for-byte** — a CI test (Phase 2) loads the wiki page, parses
-//  the documented schema, and #expects equality with `ToolSchema.toolDefinitions`.
+//  The model-facing tool schema. Phase 2 split this into per-platform
+//  builders so each `PlatformAdapter` can hand the agent only the tools
+//  its driver can actually execute.
 //
-//  Phase 1 ships the schema definitions only; the Phase 2 agent loop wires
-//  them through.
+//  **`ToolSchema.iOSToolDefinitions(...)` and `https://github.com/awizemann/harness/wiki/Tool-Schema`
+//  must agree byte-for-byte** (the iOS schema is the canonical reference;
+//  CI checks it). macOS / web schemas are documented inline in the wiki
+//  page's per-platform sections.
 //
-//  Implementation note: definitions are computed inline (not stored as static
-//  `[String: Any]` properties) because Swift 6 strict concurrency forbids
-//  non-Sendable static state. The cost is negligible — these are built once
-//  per Claude call.
+//  Implementation note: definitions are computed inline (not stored as
+//  static `[String: Any]` properties) because Swift 6 strict concurrency
+//  forbids non-Sendable static state. The cost is negligible — the array
+//  is built once per Claude call.
 //
 
 import Foundation
 
 enum ToolSchema {
 
-    // MARK: Public API
+    // MARK: - iOS (the original schema — unchanged shape, agent path)
 
-    /// Canonical JSON dictionaries for each tool. `cacheControl: true` adds the
-    /// Anthropic prompt-caching marker on the last tool definition (the runtime
-    /// caches the whole tools array on the first call of a run).
-    static func toolDefinitions(cacheControl: Bool) -> [[String: Any]] {
+    /// Canonical JSON dictionaries for the iOS tool set. `cacheControl` adds
+    /// the Anthropic prompt-caching marker on the last definition.
+    static func iOSToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
         var defs: [[String: Any]] = [
             tap(),
             doubleTap(),
@@ -44,8 +45,7 @@ enum ToolSchema {
         return defs
     }
 
-    /// Names in canonical order.
-    static let allToolNames: [String] = [
+    static let iOSToolNames: [String] = [
         ToolKind.tap.rawValue,
         ToolKind.doubleTap.rawValue,
         ToolKind.swipe.rawValue,
@@ -57,7 +57,94 @@ enum ToolSchema {
         ToolKind.markGoalDone.rawValue
     ]
 
-    // MARK: Per-tool definitions
+    // MARK: - macOS (Phase 2)
+    //
+    // Drops `swipe` / `press_button` (no hardware buttons on macOS, no
+    // touch swipe gestures), adds `right_click`, `key_shortcut`, `scroll`.
+    // `tap` is renamed-in-spirit to "click left mouse button" but we keep
+    // the same tool name so the agent's vocabulary stays small across
+    // platforms — the description tells the model what the click means
+    // for this platform.
+
+    static func macOSToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
+        var defs: [[String: Any]] = [
+            tapMac(),
+            doubleTapMac(),
+            rightClick(),
+            scroll(),
+            type(),
+            keyShortcut(),
+            wait(),
+            readScreen(),
+            noteFriction(),
+            markGoalDone()
+        ]
+        if cacheControl, !defs.isEmpty {
+            var last = defs[defs.count - 1]
+            last["cache_control"] = ["type": "ephemeral"]
+            defs[defs.count - 1] = last
+        }
+        return defs
+    }
+
+    static let macOSToolNames: [String] = [
+        ToolKind.tap.rawValue,
+        ToolKind.doubleTap.rawValue,
+        ToolKind.rightClick.rawValue,
+        ToolKind.scroll.rawValue,
+        ToolKind.type.rawValue,
+        ToolKind.keyShortcut.rawValue,
+        ToolKind.wait.rawValue,
+        ToolKind.readScreen.rawValue,
+        ToolKind.noteFriction.rawValue,
+        ToolKind.markGoalDone.rawValue
+    ]
+
+    // MARK: - Web (Phase 3) — placeholder schema; Phase 3 wires the driver.
+
+    static func webToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
+        var defs: [[String: Any]] = [
+            tapWeb(),
+            doubleTapMac(),
+            rightClick(),
+            scroll(),
+            type(),
+            keyShortcut(),
+            navigate(),
+            back(),
+            forward(),
+            refresh(),
+            wait(),
+            readScreen(),
+            noteFriction(),
+            markGoalDone()
+        ]
+        if cacheControl, !defs.isEmpty {
+            var last = defs[defs.count - 1]
+            last["cache_control"] = ["type": "ephemeral"]
+            defs[defs.count - 1] = last
+        }
+        return defs
+    }
+
+    static let webToolNames: [String] = [
+        ToolKind.tap.rawValue,
+        ToolKind.doubleTap.rawValue,
+        ToolKind.rightClick.rawValue,
+        ToolKind.scroll.rawValue,
+        ToolKind.type.rawValue,
+        ToolKind.keyShortcut.rawValue,
+        ToolKind.navigate.rawValue,
+        ToolKind.back.rawValue,
+        ToolKind.forward.rawValue,
+        ToolKind.refresh.rawValue,
+        ToolKind.wait.rawValue,
+        ToolKind.readScreen.rawValue,
+        ToolKind.noteFriction.rawValue,
+        ToolKind.markGoalDone.rawValue
+    ]
+
+    // MARK: - Per-tool definitions
 
     private static func tap() -> [String: Any] {
         [
@@ -76,10 +163,61 @@ enum ToolSchema {
         ]
     }
 
+    private static func tapMac() -> [String: Any] {
+        [
+            "name": "tap",
+            "description": "Click the left mouse button at one point. Coordinates in window points (top-left origin within the captured window).",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "x": ["type": "integer"],
+                    "y": ["type": "integer"],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["x", "y", "observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func tapWeb() -> [String: Any] {
+        [
+            "name": "tap",
+            "description": "Click at one point. Coordinates in CSS pixels (top-left origin within the rendered viewport).",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "x": ["type": "integer"],
+                    "y": ["type": "integer"],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["x", "y", "observation", "intent"]
+            ]
+        ]
+    }
+
     private static func doubleTap() -> [String: Any] {
         [
             "name": "double_tap",
             "description": "Tap twice quickly at one point.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "x": ["type": "integer"],
+                    "y": ["type": "integer"],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["x", "y", "observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func doubleTapMac() -> [String: Any] {
+        [
+            "name": "double_tap",
+            "description": "Double-click the left mouse button at one point. (Same name as iOS double-tap; click on macOS / web.)",
             "input_schema": [
                 "type": "object",
                 "properties": [
@@ -210,4 +348,136 @@ enum ToolSchema {
             ]
         ]
     }
+
+    // MARK: - macOS / web extensions
+
+    private static func rightClick() -> [String: Any] {
+        [
+            "name": "right_click",
+            "description": "Right-click (secondary click) at one point — opens context menus on macOS / web.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "x": ["type": "integer"],
+                    "y": ["type": "integer"],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["x", "y", "observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func scroll() -> [String: Any] {
+        [
+            "name": "scroll",
+            "description": "Scroll wheel at a point. Positive dy = scroll down; positive dx = scroll right. Magnitude in 'lines' (one notch ≈ 1).",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "x": ["type": "integer"],
+                    "y": ["type": "integer"],
+                    "dx": ["type": "integer", "description": "Horizontal scroll lines."],
+                    "dy": ["type": "integer", "description": "Vertical scroll lines."],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["x", "y", "dx", "dy", "observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func keyShortcut() -> [String: Any] {
+        [
+            "name": "key_shortcut",
+            "description": "Press a keyboard shortcut. Pass modifiers + the final key in order, e.g. ['cmd','shift','n']. Modifier names: 'cmd', 'shift', 'option', 'control', 'fn'.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "keys": [
+                        "type": "array",
+                        "items": ["type": "string"],
+                        "description": "Modifiers first, ending with the final key (e.g. 'n', 'return', 'escape')."
+                    ],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["keys", "observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func navigate() -> [String: Any] {
+        [
+            "name": "navigate",
+            "description": "Load a URL in the embedded browser.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "url": ["type": "string"],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["url", "observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func back() -> [String: Any] {
+        [
+            "name": "back",
+            "description": "Browser back button.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func forward() -> [String: Any] {
+        [
+            "name": "forward",
+            "description": "Browser forward button.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["observation", "intent"]
+            ]
+        ]
+    }
+
+    private static func refresh() -> [String: Any] {
+        [
+            "name": "refresh",
+            "description": "Reload the current page.",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["observation", "intent"]
+            ]
+        ]
+    }
+}
+
+// MARK: - Backwards compatibility
+
+extension ToolSchema {
+    /// Pre-Phase-2 callers used `toolDefinitions(cacheControl:)`; this
+    /// shim keeps existing tests / callers compiling while the migration
+    /// completes. New code should call the per-platform variant.
+    static func toolDefinitions(cacheControl: Bool) -> [[String: Any]] {
+        iOSToolDefinitions(cacheControl: cacheControl)
+    }
+
+    static var allToolNames: [String] { iOSToolNames }
 }

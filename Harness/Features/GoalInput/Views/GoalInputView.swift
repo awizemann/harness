@@ -407,7 +407,11 @@ struct GoalInputView: View {
                 mode: request.mode,
                 stepBudget: request.stepBudget,
                 tokenBudget: request.tokenBudget,
-                platformKindRaw: activeApplication?.platformKindRaw
+                platformKindRaw: activeApplication?.platformKindRaw,
+                macAppBundlePath: activeApplication?.macAppBundlePath,
+                webStartURL: activeApplication?.webStartURL,
+                webViewportWidthPt: activeApplication?.webViewportWidthPt,
+                webViewportHeightPt: activeApplication?.webViewportHeightPt
             )
         }
         coordinator.startedRun(id: request.id)

@@ -45,6 +45,15 @@ struct RunRequest: Sendable, Hashable, Codable {
     /// resolves nil to `.iosSimulator` — phase 1 ships only iOS.
     let platformKindRaw: String?
 
+    /// Phase 2: pre-built macOS .app path for `.macosApp` runs (optional —
+    /// when nil, the macOS adapter falls back to xcodebuild + `project`).
+    let macAppBundlePath: String?
+
+    /// Phase 3: web start URL + viewport for `.web` runs.
+    let webStartURL: String?
+    let webViewportWidthPt: Int?
+    let webViewportHeightPt: Int?
+
     /// Resolved platform kind for this run.
     var platformKind: PlatformKind { PlatformKind.from(rawValue: platformKindRaw) }
 
@@ -62,7 +71,11 @@ struct RunRequest: Sendable, Hashable, Codable {
         mode: RunMode = .stepByStep,
         stepBudget: Int = 40,
         tokenBudget: Int = 250_000,
-        platformKindRaw: String? = nil
+        platformKindRaw: String? = nil,
+        macAppBundlePath: String? = nil,
+        webStartURL: String? = nil,
+        webViewportWidthPt: Int? = nil,
+        webViewportHeightPt: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -78,12 +91,17 @@ struct RunRequest: Sendable, Hashable, Codable {
         self.stepBudget = stepBudget
         self.tokenBudget = tokenBudget
         self.platformKindRaw = platformKindRaw
+        self.macAppBundlePath = macAppBundlePath
+        self.webStartURL = webStartURL
+        self.webViewportWidthPt = webViewportWidthPt
+        self.webViewportHeightPt = webViewportHeightPt
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, goal, persona
         case applicationID, personaID, payload, project, simulator
         case model, mode, stepBudget, tokenBudget, platformKindRaw
+        case macAppBundlePath, webStartURL, webViewportWidthPt, webViewportHeightPt
     }
 
     init(from decoder: Decoder) throws {
@@ -103,6 +121,10 @@ struct RunRequest: Sendable, Hashable, Codable {
         self.tokenBudget = try c.decode(Int.self, forKey: .tokenBudget)
         // V4: optional in the Codable shape; missing → nil → defaults to iOS.
         self.platformKindRaw = try c.decodeIfPresent(String.self, forKey: .platformKindRaw)
+        self.macAppBundlePath = try c.decodeIfPresent(String.self, forKey: .macAppBundlePath)
+        self.webStartURL = try c.decodeIfPresent(String.self, forKey: .webStartURL)
+        self.webViewportWidthPt = try c.decodeIfPresent(Int.self, forKey: .webViewportWidthPt)
+        self.webViewportHeightPt = try c.decodeIfPresent(Int.self, forKey: .webViewportHeightPt)
     }
 }
 
@@ -263,18 +285,41 @@ struct ToolCall: Sendable, Hashable, Codable {
 /// tools because the model called them by snake_case names that
 /// `ToolKind(rawValue:)` rejected.
 enum ToolKind: String, Sendable, Hashable, Codable, CaseIterable {
+    // Universal (every platform).
     case tap            = "tap"
     case doubleTap      = "double_tap"
-    case swipe          = "swipe"
     case type           = "type"
-    case pressButton    = "press_button"
     case wait           = "wait"
     case readScreen     = "read_screen"
     case noteFriction   = "note_friction"
     case markGoalDone   = "mark_goal_done"
+    // iOS-specific.
+    case swipe          = "swipe"
+    case pressButton    = "press_button"
+    // macOS / web — Phase 2 + 3.
+    case rightClick     = "right_click"
+    case keyShortcut    = "key_shortcut"
+    case scroll         = "scroll"
+    // Web-only.
+    case navigate       = "navigate"
+    case back           = "back"
+    case forward        = "forward"
+    case refresh        = "refresh"
 }
 
 /// Tagged-union payload for any tool. Field names match `https://github.com/awizemann/harness/wiki/Tool-Schema`.
+///
+/// Variants are partitioned by platform:
+///   - `tap` / `doubleTap` / `type` / `wait` / `readScreen` / `noteFriction`
+///     / `markGoalDone` — universal.
+///   - `swipe` / `pressButton` — iOS-only.
+///   - `rightClick` / `keyShortcut` / `scroll` — macOS / web.
+///   - `navigate` / `back` / `forward` / `refresh` — web-only.
+///
+/// A `PlatformAdapter` advertises only its subset via
+/// `toolDefinitions(...)`, so the model never emits a variant the active
+/// driver can't execute. If it ever does, `UXDriverError.unsupportedTool`
+/// surfaces the bug at the boundary.
 enum ToolInput: Sendable, Hashable, Codable {
     case tap(x: Int, y: Int)
     case doubleTap(x: Int, y: Int)
@@ -285,6 +330,17 @@ enum ToolInput: Sendable, Hashable, Codable {
     case readScreen
     case noteFriction(kind: FrictionKind, detail: String)
     case markGoalDone(verdict: Verdict, summary: String, frictionCount: Int, wouldRealUserSucceed: Bool)
+    // macOS / web extensions:
+    case rightClick(x: Int, y: Int)
+    /// Modifier-key combination + final key. e.g. `["cmd", "shift", "n"]`.
+    case keyShortcut(keys: [String])
+    /// Scroll wheel — positive `dy` = scroll down, positive `dx` = scroll right.
+    case scroll(x: Int, y: Int, dx: Int, dy: Int)
+    // Web-only:
+    case navigate(url: String)
+    case back
+    case forward
+    case refresh
 }
 
 struct ToolResult: Sendable, Hashable, Codable {

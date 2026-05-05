@@ -79,12 +79,11 @@ enum PlatformKind: String, Codable, CaseIterable, Sendable, Hashable {
     }
 
     /// Whether the platform is selectable in the create-Application UI today.
-    /// Phase 1 ships only iOS as user-selectable; the other two are visible
-    /// but locked with a "Coming soon" affordance until Phase 2 / 3 land.
+    /// Phase 2 lit up macOS; web ships in Phase 3.
     var isAvailable: Bool {
         switch self {
         case .iosSimulator: true
-        case .macosApp:     false
+        case .macosApp:     true
         case .web:          false
         }
     }
@@ -93,7 +92,7 @@ enum PlatformKind: String, Codable, CaseIterable, Sendable, Hashable {
     var availabilityNote: String? {
         switch self {
         case .iosSimulator: nil
-        case .macosApp:     "Coming soon — Phase 2"
+        case .macosApp:     nil
         case .web:          "Coming soon — Phase 3"
         }
     }

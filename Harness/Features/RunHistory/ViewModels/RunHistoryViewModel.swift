@@ -230,6 +230,24 @@ final class RunHistoryViewModel {
                 frictionCount: (dict["friction_count"] as? Int) ?? 0,
                 wouldRealUserSucceed: (dict["would_real_user_succeed"] as? Bool) ?? false
             )
+        // Phase 2 — macOS extensions:
+        case .rightClick:
+            input = .rightClick(x: (dict["x"] as? Int) ?? 0, y: (dict["y"] as? Int) ?? 0)
+        case .keyShortcut:
+            input = .keyShortcut(keys: (dict["keys"] as? [String]) ?? [])
+        case .scroll:
+            input = .scroll(
+                x: (dict["x"] as? Int) ?? 0,
+                y: (dict["y"] as? Int) ?? 0,
+                dx: (dict["dx"] as? Int) ?? 0,
+                dy: (dict["dy"] as? Int) ?? 0
+            )
+        // Phase 3 — web extensions:
+        case .navigate:
+            input = .navigate(url: (dict["url"] as? String) ?? "")
+        case .back: input = .back
+        case .forward: input = .forward
+        case .refresh: input = .refresh
         }
         return ToolCall(
             tool: kind,

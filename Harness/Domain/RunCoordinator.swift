@@ -39,6 +39,16 @@ actor RunCoordinator {
     private let history: any RunHistoryStoring
     private let windowController: any SimulatorWindowControlling
     private let hideSimulator: Bool
+    /// Phase 2: shared services bundle that platform adapters draw from
+    /// when the coordinator dispatches a non-iOS run. Kept as a stored
+    /// field so the actor doesn't have to thread services through every
+    /// call.
+    private let platformServices: PlatformAdapterServices
+
+    /// Phase 2: optional injection point for tests that want to swap the
+    /// platform adapter (e.g. fake driver). Production runs leave this
+    /// nil and `RunCoordinator` constructs the adapter via the factory.
+    private let platformAdapterOverride: (any PlatformAdapter)?
 
     /// Per-run iterator over the user-approval stream (step mode). The
     /// iterator's `next()` is `nonisolated`, so reading the iterator
@@ -58,7 +68,11 @@ actor RunCoordinator {
         llm: any LLMClient,
         history: any RunHistoryStoring,
         windowController: any SimulatorWindowControlling = NoopWindowController(),
-        hideSimulator: Bool = false
+        hideSimulator: Bool = false,
+        promptLibrary: any PromptLoading = PromptLibrary(),
+        toolLocator: (any ToolLocating)? = nil,
+        processRunner: (any ProcessRunning)? = nil,
+        platformAdapterOverride: (any PlatformAdapter)? = nil
     ) {
         self.builder = builder
         self.driver = driver
@@ -67,6 +81,20 @@ actor RunCoordinator {
         self.history = history
         self.windowController = windowController
         self.hideSimulator = hideSimulator
+        // Default to a fresh ProcessRunner / ToolLocator pair when the
+        // caller didn't override — production callers (AppContainer) pass
+        // explicit instances; tests can pass nils and get sensible
+        // defaults without ceremony.
+        let resolvedProcess: any ProcessRunning = processRunner ?? ProcessRunner()
+        let resolvedTools: any ToolLocating = toolLocator ?? ToolLocator(processRunner: resolvedProcess)
+        self.platformServices = PlatformAdapterServices(
+            processRunner: resolvedProcess,
+            toolLocator: resolvedTools,
+            xcodeBuilder: builder,
+            simulatorDriver: driver,
+            promptLibrary: promptLibrary
+        )
+        self.platformAdapterOverride = platformAdapterOverride
     }
 
     // MARK: Run
@@ -120,50 +148,42 @@ actor RunCoordinator {
         try await logger.append(.runStarted(from: request))
         continuation.yield(.runStarted(request))
 
-        // Build.
-        continuation.yield(.buildStarted)
-        let build = try await builder.build(
-            project: request.project.path,
-            scheme: request.project.scheme,
-            runID: request.id
-        )
-        continuation.yield(.buildCompleted(appBundle: build.appBundle, bundleID: build.bundleIdentifier))
-
-        // Lifecycle: cleanupWDA → boot → install → launch → startInputSession.
-        //
-        // WDA runs as `xcodebuild test-without-building` against the simulator;
-        // a prior crash can leave an orphan xcodebuild process bound to the
-        // same simulator. cleanupWDA pkills it before we boot so a fresh
-        // session opens cleanly. (We migrated away from idb in Phase 5
-        // because idb's HID injection no longer reaches the responder chain
-        // on iOS 26+. WDA goes through XCUICoordinate.tap, which does.)
-        await driver.cleanupWDA(udid: request.simulator.udid)
-        try await driver.boot(request.simulator)
-        try await driver.install(build.appBundle, on: request.simulator)
-        try await driver.launch(bundleID: build.bundleIdentifier, on: request.simulator)
-        try await driver.startInputSession(request.simulator)
+        // Phase 2: dispatch to the right `PlatformAdapter` based on the
+        // run's `platformKind`. iOS still goes through XcodeBuilder +
+        // SimulatorDriver + WDA; macOS goes through MacAppLauncher +
+        // CGEvent. The coordinator no longer cares which.
+        let adapter: any PlatformAdapter
+        if let override = platformAdapterOverride {
+            adapter = override
+        } else {
+            adapter = try PlatformAdapterFactory.make(for: request, services: platformServices)
+        }
+        let session = try await adapter.prepare(request, runID: request.id, continuation: continuation)
+        // Resolve the platform-context override block once per run; it's
+        // static for the duration so every `AgentLoopState` reuses it.
+        let platformContext = (try? await adapter.systemPromptContext(deviceLabel: session.displayLabel)) ?? ""
         if hideSimulator {
             await windowController.hide()
         }
-        continuation.yield(.simulatorReady(request.simulator))
 
-        // From here down, the WDA input session is live. Whatever happens —
-        // success, failure, cancellation — `endInputSession` must run before
-        // we return so the xcodebuild test runner doesn't outlive the run.
+        // From here down, the platform's input session is live. Whatever
+        // happens — success, failure, cancellation — `teardown` must run
+        // before we return.
         do {
             try await runAllLegs(
                 request: request,
-                build: build,
+                session: session,
+                platformContext: platformContext,
                 approvals: approvals,
                 continuation: continuation,
                 logger: logger
             )
         } catch {
-            await driver.endInputSession()
+            await adapter.teardown(session)
             if hideSimulator { await windowController.unhide() }
             throw error
         }
-        await driver.endInputSession()
+        await adapter.teardown(session)
         if hideSimulator { await windowController.unhide() }
     }
 
@@ -182,7 +202,8 @@ actor RunCoordinator {
     /// screen" state shouldn't bleed into the next).
     private func runAllLegs(
         request: RunRequest,
-        build: BuildResult,
+        session: RunSession,
+        platformContext: String,
         approvals: AsyncStream<UserApproval>?,
         continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation,
         logger: RunLogger
@@ -207,14 +228,10 @@ actor RunCoordinator {
         for leg in legs {
             try Task.checkCancellation()
 
-            // Reinstall + relaunch between legs when the chain step doesn't
-            // preserve state. The first leg always inherits the install we
-            // already did up in `execute()`, so `preservesState` on leg 0
-            // is irrelevant.
+            // Per-leg relaunch when state shouldn't carry. The driver
+            // owns the platform-specific reinstall/relaunch logic.
             if leg.index > 0 && !leg.preservesState {
-                try await driver.terminate(bundleID: build.bundleIdentifier, on: request.simulator)
-                try await driver.install(build.appBundle, on: request.simulator)
-                try await driver.launch(bundleID: build.bundleIdentifier, on: request.simulator)
+                try await session.driver.relaunchForNewLeg()
             }
 
             // Reset the cycle detector and conversation history per leg.
@@ -242,6 +259,8 @@ actor RunCoordinator {
             do {
                 result = try await runLeg(
                     request: request,
+                    session: session,
+                    platformContext: platformContext,
                     leg: leg,
                     startStepIndex: globalStepIndex,
                     initialUsage: totalUsage,
@@ -493,6 +512,8 @@ actor RunCoordinator {
     /// losing positions.
     private func runLeg(
         request: RunRequest,
+        session: RunSession,
+        platformContext: String,
         leg: ChainLeg,
         startStepIndex: Int,
         initialUsage: TokenUsage,
@@ -518,7 +539,11 @@ actor RunCoordinator {
             mode: request.mode,
             stepBudget: request.stepBudget,
             tokenBudget: request.tokenBudget,
-            platformKindRaw: request.platformKindRaw
+            platformKindRaw: request.platformKindRaw,
+            macAppBundlePath: request.macAppBundlePath,
+            webStartURL: request.webStartURL,
+            webViewportWidthPt: request.webViewportWidthPt,
+            webViewportHeightPt: request.webViewportHeightPt
         )
 
         var stepIndex = startStepIndex                     // global, gap-free
@@ -565,9 +590,10 @@ actor RunCoordinator {
             // Capture screenshot. Write PNG before stepStarted row (per standard 08).
             let screenshotURL: URL
             let screenshotData: Data
+            let captureMetadata: ScreenshotMetadata
             do {
                 let url = HarnessPaths.screenshot(for: request.id, step: stepIndex)
-                _ = try await driver.screenshot(request.simulator, into: url)
+                captureMetadata = try await session.driver.screenshot(into: url)
                 screenshotURL = url
                 screenshotData = (try? Data(contentsOf: url)) ?? Data()
             } catch {
@@ -588,9 +614,14 @@ actor RunCoordinator {
 
             let stepStartedAt = ContinuousClock().now
 
-            // Compress screenshot for the LLM call.
+            // Compress screenshot for the LLM call. Downscale to the
+            // capture's reported point size so the model speaks in the
+            // same units it sees. iOS uses simulator pointSize; macOS
+            // uses the captured window's logical size; web uses CSS
+            // pixels — the platform driver returned the right value
+            // via `ScreenshotMetadata.pointSize`.
             let jpegForLLM = Self.downscaleJPEG(screenshotData,
-                                                 toPointSize: request.simulator.pointSize)
+                                                 toPointSize: captureMetadata.pointSize)
                 ?? screenshotData
 
             // Decision. The agent loop sees the leg's `goal` via the
@@ -604,7 +635,10 @@ actor RunCoordinator {
                     stepIndex: stepIndex,
                     history: history,
                     currentScreenshotJPEG: jpegForLLM,
-                    tokensUsedSoFar: totalUsage
+                    tokensUsedSoFar: totalUsage,
+                    sessionPointSize: captureMetadata.pointSize,
+                    platformContext: platformContext,
+                    deviceName: session.displayLabel
                 ))
             } catch let e as AgentLoopError {
                 // Loop-internal failure → emit `agent_blocked` friction and end the leg.
@@ -655,7 +689,7 @@ actor RunCoordinator {
 
             if userDecision == .approved {
                 do {
-                    try await Self.executeTool(decision.toolCall, on: request.simulator, driver: driver)
+                    try await session.driver.execute(decision.toolCall)
                 } catch {
                     executionSuccess = false
                     executionError = error.localizedDescription
@@ -768,33 +802,6 @@ actor RunCoordinator {
             nextGlobalStepIndex: stepsExecuted > 0 ? stepIndex + 1 : stepIndex,
             totalUsage: totalUsage
         )
-    }
-
-    // MARK: Tool execution
-
-    private static func executeTool(_ call: ToolCall, on ref: SimulatorRef, driver: any SimulatorDriving) async throws {
-        switch call.input {
-        case .tap(let x, let y):
-            try await driver.tap(at: CGPoint(x: x, y: y), on: ref)
-        case .doubleTap(let x, let y):
-            try await driver.doubleTap(at: CGPoint(x: x, y: y), on: ref)
-        case .swipe(let x1, let y1, let x2, let y2, let ms):
-            try await driver.swipe(
-                from: CGPoint(x: x1, y: y1),
-                to: CGPoint(x: x2, y: y2),
-                duration: .milliseconds(ms),
-                on: ref
-            )
-        case .type(let text):
-            try await driver.type(text, on: ref)
-        case .pressButton(let button):
-            try await driver.pressButton(button, on: ref)
-        case .wait(let ms):
-            try? await Task.sleep(for: .milliseconds(ms))
-        case .readScreen, .noteFriction, .markGoalDone:
-            // Non-action tools: no driver call needed.
-            return
-        }
     }
 
     // MARK: Helpers

@@ -25,7 +25,16 @@ final class ApplicationCreateViewModel {
     // MARK: Form state
 
     var name: String = ""
+    /// Phase 2: which platform the user is creating an app for. iOS today,
+    /// macOS in Phase 2, web in Phase 3. The form re-shapes (Simulator
+    /// section vs Mac-bundle section) based on this.
+    var platformKind: PlatformKind = .iosSimulator
     var simulatorUDID: String?
+    /// Phase 2 — macOS pre-built `.app` path. When set, the run launches
+    /// this bundle via NSWorkspace and skips xcodebuild entirely. When
+    /// nil, the form expects a normal Project + scheme (xcodebuild
+    /// macOS build).
+    var macAppBundlePath: String?
     var defaultModel: AgentModel = .opus47
     var defaultMode: RunMode = .stepByStep
     var defaultStepBudget: Int = 40
@@ -39,11 +48,21 @@ final class ApplicationCreateViewModel {
     // MARK: Validation
 
     var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && picker.projectURL != nil
-            && !picker.selectedScheme.isEmpty
-            && (simulatorUDID?.isEmpty == false)
-            && picker.schemeSupportsIOSSimulator
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        switch platformKind {
+        case .iosSimulator:
+            return picker.projectURL != nil
+                && !picker.selectedScheme.isEmpty
+                && (simulatorUDID?.isEmpty == false)
+                && picker.schemeSupportsIOSSimulator
+        case .macosApp:
+            // Either pre-built .app path OR project + scheme.
+            if let path = macAppBundlePath, !path.isEmpty { return true }
+            return picker.projectURL != nil && !picker.selectedScheme.isEmpty
+        case .web:
+            // Phase 3 lights this up.
+            return false
+        }
     }
 
     // MARK: Init
@@ -79,30 +98,60 @@ final class ApplicationCreateViewModel {
     /// so the snapshot carries everything `ApplicationDetailView` needs to
     /// render without re-querying.
     func makeSnapshot(simulators: [SimulatorRef]) -> ApplicationSnapshot? {
-        guard canSave,
-              let projectURL = picker.projectURL,
-              let udid = simulatorUDID else { return nil }
+        guard canSave else { return nil }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sim = simulators.first(where: { $0.udid == udid })
-        return ApplicationSnapshot(
-            id: UUID(),
-            name: trimmedName,
-            createdAt: Date(),
-            lastUsedAt: Date(),
-            archivedAt: nil,
-            // Phase 1 ships iOS as the only selectable platform; the
-            // create form's segment is locked to iOS until Phase 2/3 land.
-            platformKindRaw: PlatformKind.iosSimulator.rawValue,
-            projectPath: projectURL.path,
-            projectBookmark: nil,
-            scheme: picker.selectedScheme,
-            defaultSimulatorUDID: udid,
-            defaultSimulatorName: sim?.name,
-            defaultSimulatorRuntime: sim?.runtime,
-            defaultModelRaw: defaultModel.rawValue,
-            defaultModeRaw: defaultMode.rawValue,
-            defaultStepBudget: defaultStepBudget
-        )
+
+        switch platformKind {
+        case .iosSimulator:
+            guard let projectURL = picker.projectURL,
+                  let udid = simulatorUDID else { return nil }
+            let sim = simulators.first(where: { $0.udid == udid })
+            return ApplicationSnapshot(
+                id: UUID(),
+                name: trimmedName,
+                createdAt: Date(),
+                lastUsedAt: Date(),
+                archivedAt: nil,
+                platformKindRaw: PlatformKind.iosSimulator.rawValue,
+                projectPath: projectURL.path,
+                projectBookmark: nil,
+                scheme: picker.selectedScheme,
+                defaultSimulatorUDID: udid,
+                defaultSimulatorName: sim?.name,
+                defaultSimulatorRuntime: sim?.runtime,
+                defaultModelRaw: defaultModel.rawValue,
+                defaultModeRaw: defaultMode.rawValue,
+                defaultStepBudget: defaultStepBudget
+            )
+
+        case .macosApp:
+            // Two valid configs: pre-built .app path OR project + scheme.
+            // Mirror both into the snapshot so RunCoordinator's adapter
+            // can choose the right launch path.
+            let projectURL = picker.projectURL
+            return ApplicationSnapshot(
+                id: UUID(),
+                name: trimmedName,
+                createdAt: Date(),
+                lastUsedAt: Date(),
+                archivedAt: nil,
+                platformKindRaw: PlatformKind.macosApp.rawValue,
+                projectPath: projectURL?.path ?? "",
+                projectBookmark: nil,
+                scheme: picker.selectedScheme,
+                defaultSimulatorUDID: nil,
+                defaultSimulatorName: nil,
+                defaultSimulatorRuntime: nil,
+                macAppBundlePath: macAppBundlePath,
+                macAppBundleBookmark: nil,
+                defaultModelRaw: defaultModel.rawValue,
+                defaultModeRaw: defaultMode.rawValue,
+                defaultStepBudget: defaultStepBudget
+            )
+
+        case .web:
+            return nil
+        }
     }
 
     /// Reset to default form state for a fresh sheet open.

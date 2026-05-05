@@ -96,6 +96,13 @@ final class RunSessionViewModel {
             case .readScreen: return "Re-read the screen"
             case .noteFriction(let kind, _): return "Note friction (\(kind.rawValue))"
             case .markGoalDone(let v, _, _, _): return "Mark goal done (\(v.rawValue))"
+            case .rightClick(let x, let y): return "Right-click (\(x), \(y))"
+            case .keyShortcut(let keys): return "Shortcut \(keys.joined(separator: "+"))"
+            case .scroll(let x, let y, let dx, let dy): return "Scroll (\(x), \(y)) Δ(\(dx), \(dy))"
+            case .navigate(let url): return "Navigate \(url)"
+            case .back: return "Browser back"
+            case .forward: return "Browser forward"
+            case .refresh: return "Refresh"
             }
         }
     }

@@ -30,6 +30,35 @@ struct AgentLoopState: Sendable {
     let history: [LLMTurn]
     let currentScreenshotJPEG: Data
     let tokensUsedSoFar: TokenUsage
+    /// Phase 2: per-session canvas data the agent loop hands the LLM.
+    /// `RunCoordinator` derives these from the `RunSession` returned by
+    /// the active `PlatformAdapter` (iOS sim point size / mac window
+    /// point size / web CSS-pixel viewport).
+    let sessionPointSize: CGSize
+    let platformContext: String
+    let deviceName: String
+
+    init(
+        request: RunRequest,
+        stepIndex: Int,
+        history: [LLMTurn],
+        currentScreenshotJPEG: Data,
+        tokensUsedSoFar: TokenUsage,
+        sessionPointSize: CGSize? = nil,
+        platformContext: String = "",
+        deviceName: String = "iPhone Simulator"
+    ) {
+        self.request = request
+        self.stepIndex = stepIndex
+        self.history = history
+        self.currentScreenshotJPEG = currentScreenshotJPEG
+        self.tokensUsedSoFar = tokensUsedSoFar
+        // Default to the SimulatorRef pointSize so legacy callers (tests
+        // that pre-date PlatformAdapter) keep working without ceremony.
+        self.sessionPointSize = sessionPointSize ?? request.simulator.pointSize
+        self.platformContext = platformContext
+        self.deviceName = deviceName
+    }
 }
 
 /// What the loop returns each step. Maps onto the action the orchestrator
@@ -179,9 +208,11 @@ actor AgentLoop: AgentLooping {
                     goal: state.request.goal,
                     history: compacted,
                     screenshotJPEG: state.currentScreenshotJPEG,
-                    pointSize: state.request.simulator.pointSize,
+                    pointSize: state.sessionPointSize,
                     maxOutputTokens: 1024,
-                    deterministic: false
+                    deterministic: false,
+                    platformContext: state.platformContext,
+                    deviceName: state.deviceName
                 ))
                 return AgentDecision(
                     toolCall: response.toolCall,

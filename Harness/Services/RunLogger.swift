@@ -561,6 +561,17 @@ extension LogRow {
                 "friction_count": count,
                 "would_real_user_succeed": wrus
             ]
+        // Phase 2 — macOS / web extensions:
+        case .rightClick(let x, let y):
+            dict = ["x": x, "y": y]
+        case .keyShortcut(let keys):
+            dict = ["keys": keys]
+        case .scroll(let x, let y, let dx, let dy):
+            dict = ["x": x, "y": y, "dx": dx, "dy": dy]
+        case .navigate(let url):
+            dict = ["url": url]
+        case .back, .forward, .refresh:
+            dict = [:]
         }
         let data = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])
         return String(data: data, encoding: .utf8) ?? "{}"
