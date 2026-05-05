@@ -371,14 +371,14 @@ enum ToolSchema {
     private static func scroll() -> [String: Any] {
         [
             "name": "scroll",
-            "description": "Scroll wheel at a point. Positive dy = scroll down; positive dx = scroll right. Magnitude in 'lines' (one notch ≈ 1).",
+            "description": "Scroll at a point. Positive dy = scroll DOWN (content moves up); positive dx = scroll RIGHT. Magnitude is in PIXELS — half a viewport is typically 300–400. The driver finds the nearest scrollable container under (x, y) and scrolls it.",
             "input_schema": [
                 "type": "object",
                 "properties": [
-                    "x": ["type": "integer"],
-                    "y": ["type": "integer"],
-                    "dx": ["type": "integer", "description": "Horizontal scroll lines."],
-                    "dy": ["type": "integer", "description": "Vertical scroll lines."],
+                    "x": ["type": "integer", "description": "x coordinate of the cursor for the scroll event"],
+                    "y": ["type": "integer", "description": "y coordinate of the cursor for the scroll event"],
+                    "dx": ["type": "integer", "description": "Horizontal pixels to scroll. 0 for vertical-only."],
+                    "dy": ["type": "integer", "description": "Vertical pixels to scroll. 300–400 ≈ half a viewport."],
                     "observation": ["type": "string"],
                     "intent": ["type": "string"]
                 ],

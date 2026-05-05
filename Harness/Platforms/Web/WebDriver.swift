@@ -133,24 +133,56 @@ actor WebDriver: UXDriving {
     }
 
     private func dispatchScroll(x: Int, y: Int, dx: Int, dy: Int) async throws {
-        // Convert "lines" to pixels — 40px per line is the de facto
-        // browser convention.
-        let pxX = dx * 40
-        let pxY = dy * 40
+        // Web's scroll unit is **pixels** (positive dy = down, positive
+        // dx = right). Synthetic `WheelEvent`s carry `isTrusted: false`
+        // and browsers refuse to perform native scrolling for them, so
+        // we don't bother dispatching one — we drive the scroll by
+        // walking up from the point under the cursor to the nearest
+        // scrollable ancestor and calling `scrollBy` on it. Falls back
+        // to `window.scrollBy` if nothing in the ancestor chain is a
+        // scroll container.
+        //
+        // Also dispatches a wheel event AFTER the scroll so any
+        // page-level listeners (infinite-scroll triggers, fancy
+        // parallax) still get a signal that scrolling happened. The
+        // event is informational, not load-bearing.
         let js = """
         (() => {
-          const x = \(x), y = \(y);
-          const el = document.elementFromPoint(x, y) || document.scrollingElement;
-          if (!el) return false;
-          // Dispatch a wheel event on the element under the pointer.
-          el.dispatchEvent(new WheelEvent('wheel', {
-            bubbles: true, cancelable: true,
-            clientX: x, clientY: y,
-            deltaX: \(pxX), deltaY: \(pxY)
-          }));
-          // Also nudge the scrolling element directly so scrollable
-          // containers without explicit wheel listeners still respond.
-          (el.scrollBy || (() => {})).call(el, \(pxX), \(pxY));
+          const x = \(x), y = \(y), dx = \(dx), dy = \(dy);
+          // Walk up from the point looking for a scrollable container.
+          // Match what desktop browsers do: a container is scrollable
+          // when its computed overflow is auto/scroll AND its scroll
+          // size exceeds its client size on the relevant axis.
+          let el = document.elementFromPoint(x, y);
+          let scroller = null;
+          while (el && el !== document.documentElement && el !== document.body) {
+            const cs = getComputedStyle(el);
+            const oy = cs.overflowY, ox = cs.overflowX;
+            const wantsY = (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight;
+            const wantsX = (ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth;
+            if ((dy !== 0 && wantsY) || (dx !== 0 && wantsX)) {
+              scroller = el; break;
+            }
+            el = el.parentElement;
+          }
+          // Fall back to the document's scrolling element (window) when
+          // no inner container handles the axis.
+          if (!scroller) {
+            (window.scrollBy || (() => {})).call(window, dx, dy);
+          } else {
+            scroller.scrollBy(dx, dy);
+          }
+          // Informational wheel event after the fact, for sites that
+          // hook into wheel without doing the actual scrolling
+          // themselves.
+          const target = scroller || document.scrollingElement || document.body;
+          if (target) {
+            target.dispatchEvent(new WheelEvent('wheel', {
+              bubbles: true, cancelable: true,
+              clientX: x, clientY: y,
+              deltaX: dx, deltaY: dy
+            }));
+          }
           return true;
         })();
         """

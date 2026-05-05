@@ -242,13 +242,14 @@ actor MacAppDriver: UXDriving {
         // intended view (apps that key off mouse-over scroll routing).
         try postOne(type: .mouseMoved, location: global, mouseButton: .left, clickState: 0)
 
-        // Scale "lines" → CGEvent units. macOS CGEventCreateScrollWheelEvent
-        // takes "line" scrolls — natural scroll is up-positive, but we
-        // expose a UI-style convention (positive = down). Negate for the
-        // CGEvent.
+        // Pixel-precise scroll. macOS CGEvent's natural scroll is
+        // up-positive, but we expose a UI-style convention (positive =
+        // down). Negate for the CGEvent. Using .pixel keeps the
+        // tool's `dy` unit consistent across web + macOS — both
+        // interpret it as pixels of intended scroll.
         guard let event = CGEvent(
             scrollWheelEvent2Source: nil,
-            units: .line,
+            units: .pixel,
             wheelCount: 2,
             wheel1: Int32(-dy),
             wheel2: Int32(dx),
