@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Harness — AI-driven user testing for iOS, on your Mac</title>
+<meta name="description" content="A native macOS dev tool that drives an iOS Simulator with an AI agent. Write a goal in plain language; get a replayable run with friction events.">
+<meta name="theme-color" content="#0E0F12">
+<meta property="og:title" content="Harness — AI-driven user testing for iOS, on your Mac">
+<meta property="og:description" content="Write a goal in plain language; an LLM agent reads the simulator, taps and types, and tells you where the experience falls down.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://awizemann.github.io/harness/">
+<meta property="og:image" content="https://awizemann.github.io/harness/assets/icon.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="/harness/favicon.png">
+<link rel="apple-touch-icon" href="/harness/apple-touch-icon.png">
+<link rel="manifest" href="/harness/manifest.webmanifest">
+<link rel="canonical" href="https://awizemann.github.io/harness/">
+<link rel="stylesheet" href="/harness/styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="wrap topbar-row">
+    <a class="brand" href="/harness/">
+      <img src="/harness/assets/icon.png" width="32" height="32" alt="" aria-hidden="true">
+      <span>Harness</span>
+    </a>
+    <nav class="nav" aria-label="Primary">
+      <a href="https://github.com/awizemann/harness">Repo</a>
+      <a href="https://github.com/awizemann/harness/wiki">Wiki</a>
+      <a href="https://github.com/awizemann/harness/blob/main/docs/ROADMAP.md">Roadmap</a>
+      <a href="https://github.com/awizemann/harness/issues">Issues</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> alpha · macOS · open source</p>
+        <h1>AI-driven user testing for iOS, on your Mac.</h1>
+        <p class="lede">Write a goal in plain language. Pick a persona. Harness builds your iOS project, boots the simulator, and an LLM agent reads screenshots, taps, swipes, and types — pursuing the goal the way a real user would, and flagging UX friction along the way.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/awizemann/harness">View on GitHub</a>
+          <a class="btn btn-ghost" href="https://github.com/awizemann/harness/wiki">Read the Wiki</a>
+        </div>
+        <p class="meta">Version <code>0.1.0</code> · MIT licensed · Last updated 2026-05-05</p>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <img src="/harness/assets/icon.png" width="320" height="320" alt="">
+      </div>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="how">
+    <div class="wrap">
+      <h2 id="how">Not a UI test. A user test.</h2>
+      <p class="sub">No accessibility identifiers. No source-code access. No pre-written plan. The agent reasons from "what's on screen" — the way a person would.</p>
+      <ol class="steps">
+        <li>
+          <h3>Write the goal</h3>
+          <p>"I want to sign up and create my first list." "Delete my account." "Find a vegetarian restaurant near me and save it."</p>
+        </li>
+        <li>
+          <h3>Pick a persona</h3>
+          <p>"First-time user, never seen the app." "Returning power user." "Person in a hurry on a flaky network."</p>
+        </li>
+        <li>
+          <h3>Watch it run</h3>
+          <p>Harness builds your project, boots the simulator, and the agent drives. Every screen and action is logged.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="band band-alt" aria-labelledby="artifacts">
+    <div class="wrap">
+      <h2 id="artifacts">Three artifacts come out of every run.</h2>
+      <div class="cards">
+        <article class="card">
+          <h3>Did the goal complete?</h3>
+          <p>A verdict — success, failure, or blocked — with a one-paragraph summary in the agent's own words.</p>
+        </article>
+        <article class="card">
+          <h3>What was the path?</h3>
+          <p>A replayable timeline of every screen the agent saw and every action it took. Scrub it like a video.</p>
+        </article>
+        <article class="card">
+          <h3>Where was the friction?</h3>
+          <p>Timestamped events the agent flagged as confusing, ambiguous, or dead-end — typed by friction kind so you can scan them.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="how-it-works">
+    <div class="wrap">
+      <h2 id="how-it-works">How the agent works</h2>
+      <p class="sub">A loop of <em>see → reason → act</em>, powered by Claude tool use. Each cycle: take a screenshot, give it to the model with the goal and recent history, get back a tool call (tap, swipe, type, scroll, screenshot, mark friction, finish). Append to the run log. Repeat.</p>
+      <ul class="bullets">
+        <li><strong>Vision-grounded.</strong> Coordinates come from the model's read of the screenshot, not from a11y trees or stable selectors.</li>
+        <li><strong>Persona-conditioned.</strong> The same goal under "first-time user" vs. "returning expert" produces different paths and different friction.</li>
+        <li><strong>Replayable.</strong> Every run writes append-only JSONL plus screenshots. Open an old run and step through it like a flight recorder.</li>
+        <li><strong>Cycle-aware.</strong> A built-in detector spots loops and forces the agent to break out or call it.</li>
+      </ul>
+      <p class="cta-inline">Deeper details on <a href="https://github.com/awizemann/harness/wiki/Agent-Loop">Agent-Loop</a>, <a href="https://github.com/awizemann/harness/wiki/Tool-Schema">Tool-Schema</a>, and <a href="https://github.com/awizemann/harness/wiki/Run-Replay-Format">Run-Replay-Format</a> on the wiki.</p>
+    </div>
+  </section>
+
+  <section class="band band-alt" aria-labelledby="get-started">
+    <div class="wrap">
+      <h2 id="get-started">Get started</h2>
+      <p class="sub">Harness is alpha. Build from source today; binary releases follow.</p>
+
+      <h3 class="h3-tight">Prerequisites</h3>
+      <ul class="bullets">
+        <li>macOS 14 or later, Xcode 16+ (Swift 6 strict concurrency)</li>
+        <li><a href="https://brew.sh">Homebrew</a> + <code>idb-companion</code> + <a href="https://github.com/yonaskolb/XcodeGen">xcodegen</a></li>
+        <li>An <a href="https://console.anthropic.com">Anthropic API key</a> (stored in the macOS Keychain on first run)</li>
+      </ul>
+
+      <h3 class="h3-tight">Build</h3>
+      <pre class="code"><code>git clone https://github.com/awizemann/harness.git
+cd harness
+git submodule update --init --recursive
+brew tap facebook/fb &amp;&amp; brew install idb-companion xcodegen
+xcodegen generate
+open Harness.xcodeproj</code></pre>
+
+      <p class="cta-inline">Full setup, including first-run WDA build details, lives on <a href="https://github.com/awizemann/harness/wiki/Build-and-Run">Build-and-Run</a>.</p>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="contributing">
+    <div class="wrap">
+      <h2 id="contributing">Contributing</h2>
+      <p class="sub">PRs welcome. The <a href="https://github.com/awizemann/harness/blob/main/CONTRIBUTING.md">contributing guide</a> covers setup, the architecture rules, and the public-surfaces sync rule. Each public surface (this site, the wiki, the README) is updated in the same PR as the code change that affects it.</p>
+      <ul class="bullets">
+        <li><strong>Architecture:</strong> MVVM-F, Swift 6 strict concurrency, single subprocess actor.</li>
+        <li><strong>Standards live in</strong> <a href="https://github.com/awizemann/harness/tree/main/standards"><code>standards/</code></a> — read them before adding code.</li>
+        <li><strong>The wiki</strong> at <a href="https://github.com/awizemann/harness/wiki">github.com/awizemann/harness/wiki</a> is the dev reference.</li>
+      </ul>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-row">
+    <p>© 2026 Alan Wizemann · <a href="https://github.com/awizemann/harness/blob/main/LICENSE">MIT</a> · <a href="https://github.com/awizemann/harness">Source</a> · <a href="https://github.com/awizemann/harness/wiki">Wiki</a></p>
+    <p class="footer-meta">v<code>0.1.0</code> · 2026-05-05</p>
+  </div>
+</footer>
+
+<script src="/harness/app.js" defer></script>
+</body>
+</html>
