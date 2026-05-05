@@ -56,6 +56,7 @@ struct ApplicationCreateView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.spacing.l) {
                     NameSection(vm: vm)
+                    PlatformSection()
                     ProjectSection(vm: vm)
                     SimulatorSection(vm: vm)
                     DefaultsSection(vm: vm)
@@ -113,6 +114,72 @@ private struct NameSection: View {
             }
             .padding(Theme.spacing.l)
         }
+    }
+}
+
+/// Phase-1 platform picker. iOS Simulator is the only working option today;
+/// macOS / Web are visible but disabled with a "Coming soon" affordance,
+/// which gives the user a preview of where the project is headed and lets
+/// us validate the segmented-control layout before Phase 2/3 ship the
+/// driver implementations.
+///
+/// The selection isn't bound to view-model state because nothing is
+/// configurable yet — the create flow always saves `platformKindRaw =
+/// "ios_simulator"`. When Phase 2 lands, this section gains a
+/// `@Bindable var vm` and the disabled options become live.
+private struct PlatformSection: View {
+    var body: some View {
+        PanelContainer(title: "Platform") {
+            VStack(alignment: .leading, spacing: Theme.spacing.m) {
+                HStack(spacing: Theme.spacing.s) {
+                    ForEach(PlatformKind.allCases, id: \.self) { kind in
+                        PlatformChip(kind: kind, isSelected: kind == .iosSimulator)
+                    }
+                }
+                Text("iOS Simulator is the only working target today. macOS and Web land in Phase 2 and Phase 3 — see the public roadmap.")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(Theme.spacing.l)
+        }
+    }
+}
+
+private struct PlatformChip: View {
+    let kind: PlatformKind
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: kind.symbolName)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(kind.shortLabel)
+                    .font(.callout.weight(.semibold))
+                Spacer(minLength: 0)
+            }
+            if let note = kind.availabilityNote {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(kind.subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.button, style: .continuous)
+                .fill(isSelected ? Color.harnessAccentSoft : Color.harnessPanel2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius.button, style: .continuous)
+                .stroke(isSelected ? Color.harnessAccent : Color.harnessLineStrong, lineWidth: isSelected ? 1.4 : 1)
+        )
+        .opacity(kind.isAvailable ? 1.0 : 0.55)
     }
 }
 

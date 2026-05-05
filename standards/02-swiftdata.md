@@ -73,7 +73,27 @@ V3 adds three optional columns to `RunRecord`:
 
 Migration is **lightweight** — `MigrationStage.lightweight(fromVersion: V2, toVersion: V3)`. Existing rows pick up `nil` defaults; nothing to backfill.
 
-V2's `@Model` types live nested under `HarnessSchemaV2`; V3's are at file scope (production code references `RunRecord` etc. unqualified). Each schema's checksum derives from the *Swift class identity* of its `models` array — two schemas listing the same Swift type collide with `Duplicate version checksums across stages detected` and the migration plan refuses to load. **Every new schema version must list a fresh set of nested `@Model` types**; see §10 below for the workflow.
+V2's `@Model` types live nested under `HarnessSchemaV2`; V3's used to live at file scope but were moved nested under `HarnessSchemaV3` when V4 landed (see V3→V4 below — the same nesting trick V2→V3 used). Each schema's checksum derives from the *Swift class identity* of its `models` array — two schemas listing the same Swift type collide with `Duplicate version checksums across stages detected` and the migration plan refuses to load. **Every new schema version must list a fresh set of nested `@Model` types**; see §10 below for the workflow.
+
+### V3 → V4 (platform discriminator)
+
+V4 adds the multi-platform foundation: every Application now declares whether it's an iOS Simulator app (today's only working option), a macOS app (Phase 2), or a web app (Phase 3). Per-platform optional fields land on the `Application` row alongside, so the schema doesn't need to grow again when Phase 2 / 3 ship the driver implementations.
+
+`Application` gains:
+
+- `platformKindRaw: String?` — discriminator. `nil` resolves to `.iosSimulator` via `PlatformKind.from(rawValue:)`.
+- `macAppBundlePath: String?`, `macAppBundleBookmark: Data?` — pre-built `.app` mode for macOS (Phase 2 wires the launcher).
+- `webStartURL: String?`, `webViewportWidthPt: Int?`, `webViewportHeightPt: Int?` — Phase 3 wires the embedded WebKit driver.
+
+`RunRecord` gains:
+
+- `platformKindRaw: String?` — which platform a run drove. `nil` on legacy V3 rows; `RunRecord.platformKind` resolves nil to `.iosSimulator`.
+
+Migration is **lightweight** — `MigrationStage.lightweight(fromVersion: V3, toVersion: V4)`. All new columns are optional with `nil` defaults; existing rows decode cleanly and resolve to iOS at read time. Nothing to backfill.
+
+V3's nested types: `HarnessSchemaV3.RunRecord`, `HarnessSchemaV3.Application`, etc. — each with V3-namespaced `@Relationship` types (e.g. `var application: HarnessSchemaV3.Application?`). V4's `@Model` types are now at file scope; production code references `Application` / `RunRecord` unqualified and reads the V4 shape.
+
+The migration test that goes with this stage lives in `Tests/HarnessTests/SwiftDataMigrationTests.swift` — the `seedV3` helper stamps a fresh on-disk store with V3 only, then the test reopens through the full `HarnessMigrationPlan` and asserts that legacy Applications resolve to `.iosSimulator` and that V4 round-trips preserve the explicit value.
 
 ### Recovery policy (pre-release)
 

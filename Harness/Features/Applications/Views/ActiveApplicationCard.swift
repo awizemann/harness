@@ -22,9 +22,13 @@ struct ActiveApplicationCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Theme.spacing.s) {
-                Image(systemName: "square.stack.3d.up.fill")
+                // Per-platform icon — surfaces what kind of app this is.
+                // Phase 1 ships only iOS, so this is always `iphone.gen3`
+                // today; Phase 2 / 3 light up `macwindow` and `globe`.
+                Image(systemName: application.platformKind.symbolName)
                     .font(.system(size: 14))
                     .foregroundStyle(Color.harnessAccent)
+                    .help(application.platformKind.displayName)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(application.name)
                         .font(HFont.row.weight(.medium))

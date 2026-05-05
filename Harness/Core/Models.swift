@@ -39,6 +39,14 @@ struct RunRequest: Sendable, Hashable, Codable {
     let mode: RunMode
     let stepBudget: Int
     let tokenBudget: Int
+    /// V4: which platform this run targets. Optional in the Codable shape so
+    /// historical request blobs (none on disk today, but keep room) and
+    /// any test that omits the field decode cleanly. `platformKind`
+    /// resolves nil to `.iosSimulator` — phase 1 ships only iOS.
+    let platformKindRaw: String?
+
+    /// Resolved platform kind for this run.
+    var platformKind: PlatformKind { PlatformKind.from(rawValue: platformKindRaw) }
 
     init(
         id: UUID = UUID(),
@@ -53,7 +61,8 @@ struct RunRequest: Sendable, Hashable, Codable {
         model: AgentModel = .opus47,
         mode: RunMode = .stepByStep,
         stepBudget: Int = 40,
-        tokenBudget: Int = 250_000
+        tokenBudget: Int = 250_000,
+        platformKindRaw: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -68,6 +77,32 @@ struct RunRequest: Sendable, Hashable, Codable {
         self.mode = mode
         self.stepBudget = stepBudget
         self.tokenBudget = tokenBudget
+        self.platformKindRaw = platformKindRaw
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, goal, persona
+        case applicationID, personaID, payload, project, simulator
+        case model, mode, stepBudget, tokenBudget, platformKindRaw
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        self.goal = try c.decode(String.self, forKey: .goal)
+        self.persona = try c.decode(String.self, forKey: .persona)
+        self.applicationID = try c.decodeIfPresent(UUID.self, forKey: .applicationID)
+        self.personaID = try c.decodeIfPresent(UUID.self, forKey: .personaID)
+        self.payload = try c.decodeIfPresent(RunPayload.self, forKey: .payload) ?? .ad_hoc
+        self.project = try c.decode(ProjectRequest.self, forKey: .project)
+        self.simulator = try c.decode(SimulatorRef.self, forKey: .simulator)
+        self.model = try c.decode(AgentModel.self, forKey: .model)
+        self.mode = try c.decode(RunMode.self, forKey: .mode)
+        self.stepBudget = try c.decode(Int.self, forKey: .stepBudget)
+        self.tokenBudget = try c.decode(Int.self, forKey: .tokenBudget)
+        // V4: optional in the Codable shape; missing → nil → defaults to iOS.
+        self.platformKindRaw = try c.decodeIfPresent(String.self, forKey: .platformKindRaw)
     }
 }
 
@@ -445,26 +480,87 @@ enum UserApproval: Sendable, Hashable {
 
 /// Sendable mirror of the `Application` `@Model`. The `archived` flag
 /// surfaces `archivedAt != nil` for view consumption.
+///
+/// V4 added `platformKindRaw` plus per-platform optional fields (macOS
+/// .app path, web start URL + viewport). The optional fields are
+/// interpreted only when `platformKind` matches; ignore them otherwise.
 struct ApplicationSnapshot: Sendable, Hashable, Equatable {
     let id: UUID
     let name: String
     let createdAt: Date
     let lastUsedAt: Date
     let archivedAt: Date?
+    /// V4: platform discriminator. `nil` decodes to `.iosSimulator` via
+    /// `PlatformKind.from(rawValue:)`.
+    let platformKindRaw: String?
     let projectPath: String
     let projectBookmark: Data?
     let scheme: String
     let defaultSimulatorUDID: String?
     let defaultSimulatorName: String?
     let defaultSimulatorRuntime: String?
+    /// V4 macOS app fields (interpreted only when `platformKind == .macosApp`).
+    let macAppBundlePath: String?
+    let macAppBundleBookmark: Data?
+    /// V4 web app fields (interpreted only when `platformKind == .web`).
+    let webStartURL: String?
+    let webViewportWidthPt: Int?
+    let webViewportHeightPt: Int?
     let defaultModelRaw: String
     let defaultModeRaw: String
     let defaultStepBudget: Int
+
+    init(
+        id: UUID,
+        name: String,
+        createdAt: Date,
+        lastUsedAt: Date,
+        archivedAt: Date? = nil,
+        platformKindRaw: String? = nil,
+        projectPath: String,
+        projectBookmark: Data? = nil,
+        scheme: String,
+        defaultSimulatorUDID: String? = nil,
+        defaultSimulatorName: String? = nil,
+        defaultSimulatorRuntime: String? = nil,
+        macAppBundlePath: String? = nil,
+        macAppBundleBookmark: Data? = nil,
+        webStartURL: String? = nil,
+        webViewportWidthPt: Int? = nil,
+        webViewportHeightPt: Int? = nil,
+        defaultModelRaw: String,
+        defaultModeRaw: String,
+        defaultStepBudget: Int
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.lastUsedAt = lastUsedAt
+        self.archivedAt = archivedAt
+        self.platformKindRaw = platformKindRaw
+        self.projectPath = projectPath
+        self.projectBookmark = projectBookmark
+        self.scheme = scheme
+        self.defaultSimulatorUDID = defaultSimulatorUDID
+        self.defaultSimulatorName = defaultSimulatorName
+        self.defaultSimulatorRuntime = defaultSimulatorRuntime
+        self.macAppBundlePath = macAppBundlePath
+        self.macAppBundleBookmark = macAppBundleBookmark
+        self.webStartURL = webStartURL
+        self.webViewportWidthPt = webViewportWidthPt
+        self.webViewportHeightPt = webViewportHeightPt
+        self.defaultModelRaw = defaultModelRaw
+        self.defaultModeRaw = defaultModeRaw
+        self.defaultStepBudget = defaultStepBudget
+    }
 
     var archived: Bool { archivedAt != nil }
     var defaultModel: AgentModel? { AgentModel(rawValue: defaultModelRaw) }
     var defaultMode: RunMode? { RunMode(rawValue: defaultModeRaw) }
     var projectURL: URL { URL(fileURLWithPath: projectPath) }
+    /// Resolved platform kind. Reads `platformKindRaw` and falls back to
+    /// `.iosSimulator` for legacy snapshots / nil values.
+    var platformKind: PlatformKind { PlatformKind.from(rawValue: platformKindRaw) }
 }
 
 struct PersonaSnapshot: Sendable, Hashable, Equatable {

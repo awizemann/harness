@@ -517,7 +517,8 @@ actor RunCoordinator {
             model: request.model,
             mode: request.mode,
             stepBudget: request.stepBudget,
-            tokenBudget: request.tokenBudget
+            tokenBudget: request.tokenBudget,
+            platformKindRaw: request.platformKindRaw
         )
 
         var stepIndex = startStepIndex                     // global, gap-free

@@ -129,6 +129,12 @@ struct RunRecordSnapshot: Sendable, Hashable {
     /// added this column via additive lightweight migration on V2.
     let legsJSON: String?
 
+    /// V4: which platform kind this run drove. `nil` for legacy V3 rows;
+    /// `platformKind` resolves nil to `.iosSimulator`.
+    let platformKindRaw: String?
+
+    var platformKind: PlatformKind { PlatformKind.from(rawValue: platformKindRaw) }
+
     var verdict: Verdict? { verdictRaw.flatMap(Verdict.init(rawValue:)) }
     var runDirectoryURL: URL { URL(fileURLWithPath: runDirectoryPath) }
 
@@ -183,7 +189,8 @@ struct RunRecordSnapshot: Sendable, Hashable {
         personaID: UUID? = nil,
         actionID: UUID? = nil,
         actionChainID: UUID? = nil,
-        legsJSON: String? = nil
+        legsJSON: String? = nil,
+        platformKindRaw: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -214,6 +221,7 @@ struct RunRecordSnapshot: Sendable, Hashable {
         self.actionID = actionID
         self.actionChainID = actionChainID
         self.legsJSON = legsJSON
+        self.platformKindRaw = platformKindRaw
     }
 }
 
@@ -251,7 +259,7 @@ actor RunHistoryStore: RunHistoryStoring {
     /// Tests pass `resetOnMigrationFailure: false` so a real migration
     /// bug throws loudly instead of nuking the test fixture.
     init(url: URL, resetOnMigrationFailure: Bool = false) throws {
-        let schema = Schema(versionedSchema: HarnessSchemaV3.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV4.self)
         let configuration = ModelConfiguration(schema: schema, url: url)
         do {
             let container = try ModelContainer(
@@ -289,7 +297,7 @@ actor RunHistoryStore: RunHistoryStoring {
     }
 
     static func inMemory() throws -> RunHistoryStore {
-        let schema = Schema(versionedSchema: HarnessSchemaV3.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV4.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true
@@ -333,6 +341,7 @@ actor RunHistoryStore: RunHistoryStoring {
             row.tokensUsedCacheRead = snapshot.tokensUsedCacheRead
             row.tokensUsedCacheCreation = snapshot.tokensUsedCacheCreation
             row.legsJSON = snapshot.legsJSON
+            row.platformKindRaw = snapshot.platformKindRaw
             if let app { row.application = app; row.applicationLookupID = app.id }
             if let persona { row.persona_ = persona; row.personaLookupID = persona.id }
             if let action { row.action = action; row.actionLookupID = action.id }
@@ -361,6 +370,7 @@ actor RunHistoryStore: RunHistoryStoring {
                 tokensUsedInput: snapshot.tokensUsedInput,
                 tokensUsedOutput: snapshot.tokensUsedOutput,
                 runDirectoryPath: snapshot.runDirectoryPath,
+                platformKindRaw: snapshot.platformKindRaw,
                 application: app,
                 persona_: persona,
                 action: action,
@@ -454,12 +464,18 @@ actor RunHistoryStore: RunHistoryStoring {
             row.name = snapshot.name
             row.lastUsedAt = snapshot.lastUsedAt
             row.archivedAt = snapshot.archivedAt
+            row.platformKindRaw = snapshot.platformKindRaw
             row.projectPath = snapshot.projectPath
             row.projectBookmark = snapshot.projectBookmark
             row.scheme = snapshot.scheme
             row.defaultSimulatorUDID = snapshot.defaultSimulatorUDID
             row.defaultSimulatorName = snapshot.defaultSimulatorName
             row.defaultSimulatorRuntime = snapshot.defaultSimulatorRuntime
+            row.macAppBundlePath = snapshot.macAppBundlePath
+            row.macAppBundleBookmark = snapshot.macAppBundleBookmark
+            row.webStartURL = snapshot.webStartURL
+            row.webViewportWidthPt = snapshot.webViewportWidthPt
+            row.webViewportHeightPt = snapshot.webViewportHeightPt
             row.defaultModelRaw = snapshot.defaultModelRaw
             row.defaultModeRaw = snapshot.defaultModeRaw
             row.defaultStepBudget = snapshot.defaultStepBudget
@@ -470,12 +486,18 @@ actor RunHistoryStore: RunHistoryStoring {
                 createdAt: snapshot.createdAt,
                 lastUsedAt: snapshot.lastUsedAt,
                 archivedAt: snapshot.archivedAt,
+                platformKindRaw: snapshot.platformKindRaw,
                 projectPath: snapshot.projectPath,
                 projectBookmark: snapshot.projectBookmark,
                 scheme: snapshot.scheme,
                 defaultSimulatorUDID: snapshot.defaultSimulatorUDID,
                 defaultSimulatorName: snapshot.defaultSimulatorName,
                 defaultSimulatorRuntime: snapshot.defaultSimulatorRuntime,
+                macAppBundlePath: snapshot.macAppBundlePath,
+                macAppBundleBookmark: snapshot.macAppBundleBookmark,
+                webStartURL: snapshot.webStartURL,
+                webViewportWidthPt: snapshot.webViewportWidthPt,
+                webViewportHeightPt: snapshot.webViewportHeightPt,
                 defaultModelRaw: snapshot.defaultModelRaw,
                 defaultModeRaw: snapshot.defaultModeRaw,
                 defaultStepBudget: snapshot.defaultStepBudget
@@ -801,7 +823,8 @@ actor RunHistoryStore: RunHistoryStoring {
             personaID: row.personaLookupID,
             actionID: row.actionLookupID,
             actionChainID: row.actionChainLookupID,
-            legsJSON: row.legsJSON
+            legsJSON: row.legsJSON,
+            platformKindRaw: row.platformKindRaw
         )
     }
 
@@ -812,12 +835,18 @@ actor RunHistoryStore: RunHistoryStoring {
             createdAt: row.createdAt,
             lastUsedAt: row.lastUsedAt,
             archivedAt: row.archivedAt,
+            platformKindRaw: row.platformKindRaw,
             projectPath: row.projectPath,
             projectBookmark: row.projectBookmark,
             scheme: row.scheme,
             defaultSimulatorUDID: row.defaultSimulatorUDID,
             defaultSimulatorName: row.defaultSimulatorName,
             defaultSimulatorRuntime: row.defaultSimulatorRuntime,
+            macAppBundlePath: row.macAppBundlePath,
+            macAppBundleBookmark: row.macAppBundleBookmark,
+            webStartURL: row.webStartURL,
+            webViewportWidthPt: row.webViewportWidthPt,
+            webViewportHeightPt: row.webViewportHeightPt,
             defaultModelRaw: row.defaultModelRaw,
             defaultModeRaw: row.defaultModeRaw,
             defaultStepBudget: row.defaultStepBudget
@@ -956,7 +985,8 @@ extension RunRecordSnapshot {
             personaID: request.personaID,
             actionID: resolvedActionID,
             actionChainID: resolvedChainID,
-            legsJSON: legsJSON
+            legsJSON: legsJSON,
+            platformKindRaw: request.platformKindRaw
         )
     }
 }

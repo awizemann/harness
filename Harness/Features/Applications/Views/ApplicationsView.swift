@@ -263,8 +263,11 @@ private struct ApplicationRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: Theme.spacing.s) {
-                Image(systemName: "square.stack.3d.up.fill")
+                // Per-platform icon. Phase 1 only iOS today; Phase 2 / 3
+                // light up macOS / web variants.
+                Image(systemName: application.platformKind.symbolName)
                     .foregroundStyle(Color.harnessAccent)
+                    .help(application.platformKind.displayName)
                 Text(application.name)
                     .font(HFont.row)
                     .foregroundStyle(Color.harnessText)

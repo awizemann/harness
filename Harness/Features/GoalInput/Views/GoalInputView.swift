@@ -387,8 +387,11 @@ struct GoalInputView: View {
             vm.startError = "Couldn't compose the run. Make sure a persona and an action / chain are picked."
             return
         }
-        // Stamp the active Application id onto the request so the
-        // history index can scope by it.
+        // Stamp the active Application id and its platformKind onto the
+        // request so the history index can scope by app, and the
+        // dispatcher (Phase 2+) can route to the right driver. Today
+        // platformKind is always iOS — but threading it now means
+        // Phase 2 lands without touching this call site.
         if let appID = coordinator.selectedApplicationID {
             request = RunRequest(
                 id: request.id,
@@ -403,7 +406,8 @@ struct GoalInputView: View {
                 model: request.model,
                 mode: request.mode,
                 stepBudget: request.stepBudget,
-                tokenBudget: request.tokenBudget
+                tokenBudget: request.tokenBudget,
+                platformKindRaw: activeApplication?.platformKindRaw
             )
         }
         coordinator.startedRun(id: request.id)

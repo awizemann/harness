@@ -175,6 +175,76 @@ struct SwiftDataMigrationTests {
         #expect(app.lastUsedAt == Date(timeIntervalSince1970: 500))
     }
 
+    // MARK: - V3 → V4 (platform discriminator)
+
+    @Test("V3 store reopens as V4: Applications gain platformKindRaw=nil → resolved to .iosSimulator")
+    func v3ToV4_existingApplications_defaultToIOS() async throws {
+        let storeURL = Self.makeStoreURL()
+        defer { Self.removeStore(at: storeURL) }
+
+        let appID = UUID()
+        try Self.seedV3(at: storeURL) { context in
+            context.insert(HarnessSchemaV3.Application(
+                id: appID,
+                name: "Pre-V4 app",
+                createdAt: Date(timeIntervalSince1970: 100),
+                lastUsedAt: Date(timeIntervalSince1970: 200),
+                projectPath: "/tmp/legacy.xcodeproj",
+                scheme: "LegacyScheme",
+                defaultSimulatorUDID: "UDID-LEGACY",
+                defaultSimulatorName: "iPhone Legacy",
+                defaultSimulatorRuntime: "iOS 18.4",
+                defaultModelRaw: AgentModel.opus47.rawValue,
+                defaultModeRaw: RunMode.stepByStep.rawValue,
+                defaultStepBudget: 40
+            ))
+        }
+
+        // Reopen via the production store, which routes through the full
+        // migration plan (V3→V4 lightweight stage adds the optional column).
+        let store = try RunHistoryStore(url: storeURL)
+        let apps = try await store.applications(includeArchived: true)
+        #expect(apps.count == 1)
+        let app = try #require(apps.first)
+        // Legacy row had no platformKindRaw column → nil → resolves to iOS.
+        #expect(app.platformKindRaw == nil)
+        #expect(app.platformKind == .iosSimulator)
+        // V4 macOS / web fields land as nil for legacy rows.
+        #expect(app.macAppBundlePath == nil)
+        #expect(app.webStartURL == nil)
+    }
+
+    @Test("V4 round-trip: an Application written with platformKind survives reopen")
+    func v4_application_roundtrip() async throws {
+        let storeURL = Self.makeStoreURL()
+        defer { Self.removeStore(at: storeURL) }
+
+        let store = try RunHistoryStore(url: storeURL)
+        let snapshot = ApplicationSnapshot(
+            id: UUID(),
+            name: "iOS App",
+            createdAt: Date(timeIntervalSince1970: 100),
+            lastUsedAt: Date(timeIntervalSince1970: 200),
+            archivedAt: nil,
+            platformKindRaw: PlatformKind.iosSimulator.rawValue,
+            projectPath: "/tmp/explicit.xcodeproj",
+            projectBookmark: nil,
+            scheme: "ExplicitScheme",
+            defaultSimulatorUDID: "UDID-EXPLICIT",
+            defaultSimulatorName: "iPhone Explicit",
+            defaultSimulatorRuntime: "iOS 26.0",
+            defaultModelRaw: AgentModel.opus47.rawValue,
+            defaultModeRaw: RunMode.stepByStep.rawValue,
+            defaultStepBudget: 40
+        )
+        try await store.upsert(snapshot)
+
+        let reread = try await store.application(id: snapshot.id)
+        let app = try #require(reread)
+        #expect(app.platformKindRaw == PlatformKind.iosSimulator.rawValue)
+        #expect(app.platformKind == .iosSimulator)
+    }
+
     // MARK: - Helpers
 
     /// Build a unique on-disk URL under the per-test temp directory. The
@@ -219,4 +289,38 @@ struct SwiftDataMigrationTests {
 private enum V1OnlyMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] { [HarnessSchemaV1.self] }
     static var stages: [MigrationStage] { [] }
+}
+
+extension SwiftDataMigrationTests {
+    /// Open `storeURL` with V3 schema (using the V1→V2→V3 plan, no V4) so
+    /// SwiftData stamps the store with V3's version identifier. The caller
+    /// seeds V3 rows; the test then reopens through the full plan to
+    /// exercise V3→V4.
+    fileprivate static func seedV3(at storeURL: URL, _ seed: (ModelContext) throws -> Void) throws {
+        let schema = Schema(versionedSchema: HarnessSchemaV3.self)
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: V3OnlyMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let context = ModelContext(container)
+        try seed(context)
+        if context.hasChanges {
+            try context.save()
+        }
+        _ = container
+    }
+}
+
+/// Migration plan that stops at V3 — used by `seedV3(...)` so the test
+/// fixture is stamped with V3's version identifier and the production
+/// `HarnessMigrationPlan` can pick up from there at reopen time.
+private enum V3OnlyMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [HarnessSchemaV1.self, HarnessSchemaV2.self, HarnessSchemaV3.self]
+    }
+    static var stages: [MigrationStage] {
+        [HarnessMigrationPlan.v1ToV2, HarnessMigrationPlan.v2ToV3]
+    }
 }

@@ -90,6 +90,9 @@ final class ApplicationCreateViewModel {
             createdAt: Date(),
             lastUsedAt: Date(),
             archivedAt: nil,
+            // Phase 1 ships iOS as the only selectable platform; the
+            // create form's segment is locked to iOS until Phase 2/3 land.
+            platformKindRaw: PlatformKind.iosSimulator.rawValue,
             projectPath: projectURL.path,
             projectBookmark: nil,
             scheme: picker.selectedScheme,
