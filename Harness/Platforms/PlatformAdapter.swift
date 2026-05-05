@@ -95,8 +95,7 @@ enum PlatformAdapterFactory {
         case .macosApp:
             return MacOSPlatformAdapter(services: services)
         case .web:
-            // Phase 3 — flips on when WebPlatformAdapter ships.
-            throw PlatformAdapterFactoryError.notImplemented(kind: .web)
+            return WebPlatformAdapter(services: services)
         }
     }
 }

@@ -35,6 +35,10 @@ final class ApplicationCreateViewModel {
     /// nil, the form expects a normal Project + scheme (xcodebuild
     /// macOS build).
     var macAppBundlePath: String?
+    /// Phase 3 — web form fields.
+    var webStartURL: String = ""
+    var webViewportWidth: Int = 1280
+    var webViewportHeight: Int = 800
     var defaultModel: AgentModel = .opus47
     var defaultMode: RunMode = .stepByStep
     var defaultStepBudget: Int = 40
@@ -60,8 +64,9 @@ final class ApplicationCreateViewModel {
             if let path = macAppBundlePath, !path.isEmpty { return true }
             return picker.projectURL != nil && !picker.selectedScheme.isEmpty
         case .web:
-            // Phase 3 lights this up.
-            return false
+            // Phase 3 — only require a non-empty URL that parses.
+            let trimmed = webStartURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty && URL(string: trimmed) != nil
         }
     }
 
@@ -150,7 +155,27 @@ final class ApplicationCreateViewModel {
             )
 
         case .web:
-            return nil
+            let trimmed = webStartURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ApplicationSnapshot(
+                id: UUID(),
+                name: trimmedName,
+                createdAt: Date(),
+                lastUsedAt: Date(),
+                archivedAt: nil,
+                platformKindRaw: PlatformKind.web.rawValue,
+                projectPath: "",
+                projectBookmark: nil,
+                scheme: "",
+                defaultSimulatorUDID: nil,
+                defaultSimulatorName: nil,
+                defaultSimulatorRuntime: nil,
+                webStartURL: trimmed,
+                webViewportWidthPt: webViewportWidth,
+                webViewportHeightPt: webViewportHeight,
+                defaultModelRaw: defaultModel.rawValue,
+                defaultModeRaw: defaultMode.rawValue,
+                defaultStepBudget: defaultStepBudget
+            )
         }
     }
 

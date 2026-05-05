@@ -64,6 +64,8 @@ struct ApplicationCreateView: View {
                     } else if vm.platformKind == .macosApp {
                         MacAppSection(vm: vm)
                         ProjectSection(vm: vm)   // optional for macOS — project+scheme is the build mode
+                    } else if vm.platformKind == .web {
+                        WebSection(vm: vm)
                     }
                     DefaultsSection(vm: vm)
                     if let err = vm.saveError {
@@ -213,6 +215,48 @@ private struct MacAppSection: View {
         panel.prompt = "Pick"
         if panel.runModal() == .OK, let url = panel.url {
             vm.macAppBundlePath = url.path
+        }
+    }
+}
+
+/// Web-only sub-form: URL + viewport. The agent loads `webStartURL` in
+/// an embedded `WKWebView` sized to the requested CSS-pixel viewport.
+private struct WebSection: View {
+    @Bindable var vm: ApplicationCreateViewModel
+
+    var body: some View {
+        PanelContainer(title: "Web app") {
+            VStack(alignment: .leading, spacing: Theme.spacing.m) {
+                VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                    Text("Start URL")
+                        .font(.callout.weight(.medium))
+                    TextField("https://example.com/login", text: $vm.webStartURL)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                    Text("The agent loads this URL on first step. Cookies persist across legs in the same run.")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                HStack(spacing: Theme.spacing.l) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Viewport width (px)")
+                            .font(.callout.weight(.medium))
+                        TextField("1280", value: $vm.webViewportWidth, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Viewport height (px)")
+                            .font(.callout.weight(.medium))
+                        TextField("800", value: $vm.webViewportHeight, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+                    }
+                    Spacer()
+                }
+                Text("Default 1280×800 (desktop). Try 375×812 to test a mobile-shaped viewport.")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(Theme.spacing.l)
         }
     }
 }
