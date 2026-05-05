@@ -20,6 +20,8 @@
 #   2. App Store Connect API key stored for notarytool as profile "harness-notary":
 #        xcrun notarytool store-credentials "harness-notary" \
 #          --key ~/.private/AuthKey_XXXX.p8 --key-id <KEY_ID> --issuer <ISSUER_ID>
+#      OR reuse another profile under the same Apple developer + Team ID
+#      via the env var, e.g.: `HARNESS_NOTARY_PROFILE=scarf-notary ./release.sh 0.1.0`.
 #   3. gh CLI authed:
 #        gh auth status
 #
@@ -49,7 +51,7 @@ TEAM_ID="3Q6X2L86C4"
 BUNDLE_ID="com.harness.app"
 SCHEME="Harness"
 PROJECT="Harness.xcodeproj"
-NOTARY_PROFILE="harness-notary"
+NOTARY_PROFILE="${HARNESS_NOTARY_PROFILE:-harness-notary}"
 SIGNING_IDENTITY="Developer ID Application"
 DOWNLOAD_URL_BASE="https://github.com/awizemann/harness/releases/download"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
