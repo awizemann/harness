@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Harness — AI-driven user testing for iOS, on your Mac</title>
-<meta name="description" content="A native macOS dev tool that drives an iOS Simulator with an AI agent. Write a goal in plain language; get a replayable run with friction events.">
+<title>Harness — AI-driven user testing for iOS, macOS, and the web</title>
+<meta name="description" content="A native macOS dev tool that drives an iOS Simulator, a macOS app, or a web app with an AI agent. Write a goal in plain language; get a replayable run with friction events.">
 <meta name="theme-color" content="#0E0F12">
-<meta property="og:title" content="Harness — AI-driven user testing for iOS, on your Mac">
-<meta property="og:description" content="Write a goal in plain language; an LLM agent reads the simulator, taps and types, and tells you where the experience falls down.">
+<meta property="og:title" content="Harness — AI-driven user testing for iOS, macOS, and the web">
+<meta property="og:description" content="Write a goal in plain language; an LLM agent reads the screen, drives the UI, and tells you where the experience falls down. iOS Simulator, macOS apps, web apps.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://awizemann.github.io/harness/">
 <meta property="og:image" content="https://awizemann.github.io/harness/assets/icon.png">
@@ -41,14 +41,14 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> alpha · macOS · open source</p>
-        <h1>AI-driven user testing for iOS, on your Mac.</h1>
-        <p class="lede">Write a goal in plain language. Pick a persona. Harness builds your iOS project, boots the simulator, and an LLM agent reads screenshots, taps, swipes, and types — pursuing the goal the way a real user would, and flagging UX friction along the way.</p>
+        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> v{{VERSION}} · macOS · open source</p>
+        <h1>AI-driven user testing for iOS, macOS, and the web.</h1>
+        <p class="lede">Write a goal in plain language. Pick a persona. Harness drives your target — iOS Simulator, macOS app, or a URL in an embedded browser — and an LLM agent reads the screen, clicks, types, scrolls, navigates. It pursues the goal the way a real user would, and flags UX friction along the way.</p>
         <div class="cta-row">
-          <a class="btn btn-primary" href="https://github.com/awizemann/harness">View on GitHub</a>
-          <a class="btn btn-ghost" href="https://github.com/awizemann/harness/wiki">Read the Wiki</a>
+          <a class="btn btn-primary" href="https://github.com/awizemann/harness/releases/latest">Download v{{VERSION}}</a>
+          <a class="btn btn-ghost" href="https://github.com/awizemann/harness">View on GitHub</a>
         </div>
-        <p class="meta">Version <code>{{VERSION}}</code> · MIT licensed · Last updated {{LASTMOD}}</p>
+        <p class="meta">macOS 14+ · MIT licensed · Last updated {{LASTMOD}}</p>
       </div>
       <div class="hero-art" aria-hidden="true">
         <img src="/harness/assets/icon.png" width="320" height="320" alt="">
@@ -71,13 +71,34 @@
         </li>
         <li>
           <h3>Watch it run</h3>
-          <p>Harness builds your project, boots the simulator, and the agent drives. Every screen and action is logged.</p>
+          <p>Harness launches your target — iOS sim, macOS app, or web app — and the agent drives. Every screen and action is logged.</p>
         </li>
       </ol>
     </div>
   </section>
 
-  <section class="band band-alt" aria-labelledby="artifacts">
+  <section class="band band-alt" aria-labelledby="targets">
+    <div class="wrap">
+      <h2 id="targets">Drives three kinds of target.</h2>
+      <p class="sub">Per-app setting: declare what kind of thing you're testing once, and Harness picks the right driver. Run history, replay, and friction events look the same across all three.</p>
+      <div class="cards">
+        <article class="card">
+          <h3>iOS Simulator</h3>
+          <p><code>xcodebuild</code> + <code>simctl</code> + WebDriverAgent. Provide an Xcode project + scheme; Harness builds, boots a simulator, installs, launches, and drives via the simulator's responder chain.</p>
+        </article>
+        <article class="card">
+          <h3>macOS app</h3>
+          <p><code>NSWorkspace</code> launch (pre-built <code>.app</code> for the fast path, or build from a project). <code>CGEvent</code> for clicks / scroll / keyboard / shortcuts; <code>CGWindowListCreateImage</code> for window capture.</p>
+        </article>
+        <article class="card">
+          <h3>Web app</h3>
+          <p>Embedded <code>WKWebView</code> at any CSS-pixel viewport (1280×800 desktop, 375×812 mobile). JS-synthesised events for input; <code>WKWebView.takeSnapshot</code> for capture. WebKit-only in v0.1.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="artifacts">
     <div class="wrap">
       <h2 id="artifacts">Three artifacts come out of every run.</h2>
       <div class="cards">

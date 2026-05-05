@@ -2,12 +2,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: macOS 14+](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
-![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+![Targets: iOS · macOS · Web](https://img.shields.io/badge/targets-iOS%20%C2%B7%20macOS%20%C2%B7%20Web-3DDC97)
+![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
 
-> A native macOS developer tool that drives an iOS Simulator with an AI agent so you can run **user tests** against an in-development iOS app — not scripted UI tests, but real-user simulation.
+> A native macOS developer tool that drives an **iOS Simulator, a macOS app, or a web app** with an AI agent so you can run **user tests** — not scripted UI tests, but real-user simulation.
 
-You write a goal in plain language ("I want to sign up and create my first list", "delete my account", "find a vegetarian restaurant near me and save it") and a persona ("first-time user, never seen this app"). Harness builds your iOS project, boots the simulator, and an LLM agent reads screenshots, taps/swipes/types, and pursues the goal — narrating what it sees, flagging UX friction (dead ends, ambiguous labels, unresponsive controls), and stopping when it succeeds, fails, or would give up.
+You write a goal in plain language ("I want to sign up and create my first list", "delete my account", "find a vegetarian restaurant near me and save it") and a persona ("first-time user, never seen this app"). Harness builds (or just launches) your target, and an LLM agent reads screenshots, clicks/types/scrolls, and pursues the goal — narrating what it sees, flagging UX friction (dead ends, ambiguous labels, unresponsive controls), and stopping when it succeeds, fails, or would give up.
 
 Three artifacts come out of every run:
 
@@ -15,7 +16,17 @@ Three artifacts come out of every run:
 2. **What was the path?** — replayable sequence of screens + actions
 3. **Where was the friction?** — timestamped events the agent flagged as confusing
 
-> **Status:** Alpha. The foundation, standards, and design system are in place; application code is landing in phases per the public roadmap. Expect rough edges. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+## Targets
+
+| Kind | How Harness drives it |
+|---|---|
+| **iOS Simulator** | `xcodebuild` your project + scheme; `simctl` boot/install/launch; WebDriverAgent for input. |
+| **macOS app** | NSWorkspace launch (pre-built `.app` *or* xcodebuild macOS scheme); `CGEvent` for input; `CGWindowListCreateImage` for capture. |
+| **Web app** | Embedded `WKWebView` at a chosen viewport (e.g. 1280×800 desktop, 375×812 mobile); JS-synthesised events for input; `WKWebView.takeSnapshot` for capture. |
+
+Per-app setting: each Application declares its kind once at create time. The agent's tool schema (clicks vs swipes vs key shortcuts vs navigate) and the system-prompt context block re-shape per platform. Run history, replay, and friction reporting are platform-neutral.
+
+> **Status:** v0.1.0 (alpha). All three platforms are wired end-to-end. macOS needs Screen Recording permission. Web is WebKit-only in v0.1; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## First clone
 
