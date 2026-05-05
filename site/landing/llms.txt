@@ -1,0 +1,21 @@
+# Harness
+
+> A native macOS developer tool that drives an iOS Simulator with an AI agent so you can run real-user-style tests against an in-development iOS app — not scripted UI tests.
+
+You write a goal in plain language and a persona. Harness builds your iOS project, boots the simulator, and an LLM agent reads screenshots, taps/swipes/types, and pursues the goal — narrating what it sees, flagging UX friction, and stopping when it succeeds, fails, or would give up.
+
+Three artifacts come out of every run: a verdict (success/failure/blocked), a replayable timeline, and a list of timestamped friction events.
+
+## Project resources
+
+- [Source code](https://github.com/awizemann/harness) — Swift 6, SwiftUI, MVVM-F, native macOS app.
+- [Wiki](https://github.com/awizemann/harness/wiki) — architecture, services, agent loop, run-replay format, design system, contributor guides.
+- [Standards](https://github.com/awizemann/harness/tree/main/standards) — numbered architecture, code, and testing standards (read before contributing).
+- [Roadmap](https://github.com/awizemann/harness/blob/main/docs/ROADMAP.md) — public build order and milestones.
+- [Architecture overview](https://github.com/awizemann/harness/blob/main/docs/ARCHITECTURE.md) — system-level diagram and rationale.
+- [Agent prompts](https://github.com/awizemann/harness/tree/main/docs/PROMPTS) — system prompt, friction vocabulary, default personas (loaded as a bundle resource at runtime).
+- [Issues](https://github.com/awizemann/harness/issues) — bugs and feature requests.
+
+## License
+
+MIT — https://github.com/awizemann/harness/blob/main/LICENSE
