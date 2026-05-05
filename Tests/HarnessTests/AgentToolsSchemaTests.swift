@@ -3,7 +3,7 @@
 //  HarnessTests
 //
 //  Sanity-checks the model-facing tool schema. The full byte-for-byte agreement
-//  with `wiki/Tool-Schema.md` is enforced by a Phase 2 test that parses the
+//  with `https://github.com/awizemann/harness/wiki/Tool-Schema` is enforced by a Phase 2 test that parses the
 //  markdown; today we just verify the runtime shape is well-formed.
 //
 

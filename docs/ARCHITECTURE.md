@@ -134,4 +134,4 @@ No singletons except `ToolLocator` (paths to external CLIs) and the keychain acc
 - **Error surface.** Typed errors per layer (`ProcessFailure`, `BuildFailure`, `SimulatorError`, `ClaudeError`, `LogWriteFailure`). The view-model layer maps these to user-facing messages.
 - **Testing.** Every protocol has a mock; the agent loop has replay-based fixtures. See `standards/10-testing.md`.
 
-For per-component depth, see [`wiki/Core-Services.md`](../wiki/Core-Services.md).
+For per-component depth, see [[Core-Services](https://github.com/awizemann/harness/wiki/Core-Services)](../wiki/Core-Services.md).

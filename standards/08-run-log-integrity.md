@@ -2,7 +2,7 @@
 
 Applies to: **Harness**
 
-The replay UI is only as good as the JSONL it reads. A corrupt or partial run log isn't an inconvenience — it strands the artifact users came to Harness for. This standard codifies the invariants the writer must preserve and the parser must enforce. Pairs with `14-run-logging-format.md` (the schema) and `wiki/Run-Replay-Format.md` (the human-facing reference).
+The replay UI is only as good as the JSONL it reads. A corrupt or partial run log isn't an inconvenience — it strands the artifact users came to Harness for. This standard codifies the invariants the writer must preserve and the parser must enforce. Pairs with `14-run-logging-format.md` (the schema) and [Run-Replay-Format](https://github.com/awizemann/harness/wiki/Run-Replay-Format) (the human-facing reference).
 
 ---
 
@@ -142,7 +142,7 @@ When the schema bumps from v1 to v2:
 
 - Versioned decoders for v1 and v2 ship side-by-side.
 - A migration helper reads v1 runs and emits v2-shaped `Run` structs in memory (no rewriting on disk — old files stay v1 forever).
-- The `wiki/Run-Replay-Format.md` page is updated to document both versions and the migration mapping.
+- The [Run-Replay-Format](https://github.com/awizemann/harness/wiki/Run-Replay-Format) page is updated to document both versions and the migration mapping.
 
 ---
 

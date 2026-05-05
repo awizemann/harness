@@ -2,7 +2,7 @@
 
 Applies to: **Harness**
 
-The agent loop is the core mechanism. This standard captures the loop's algorithm, the friction taxonomy, and the system prompt's structure. Pairs with `07-ai-integration.md` (call-pattern guidance) and `wiki/Agent-Loop.md` (prose walkthrough with examples).
+The agent loop is the core mechanism. This standard captures the loop's algorithm, the friction taxonomy, and the system prompt's structure. Pairs with `07-ai-integration.md` (call-pattern guidance) and [Agent-Loop](https://github.com/awizemann/harness/wiki/Agent-Loop) (prose walkthrough with examples).
 
 ---
 
@@ -114,7 +114,7 @@ Plus one synthesized internally:
 
 - `agent_blocked` (not user-facing in the model's vocabulary) — emitted by the loop itself when it short-circuits on budget/cycle/parse failure.
 
-The taxonomy lives in `docs/PROMPTS/friction-vocab.md`. Adding a kind requires updating: that file, the system prompt, the `FrictionEvent.Kind` enum in `Harness/Core/Models.swift`, the `FrictionPill` styling in `HarnessDesign/`, and `wiki/Agent-Loop.md`.
+The taxonomy lives in `docs/PROMPTS/friction-vocab.md`. Adding a kind requires updating: that file, the system prompt, the `FrictionEvent.Kind` enum in `Harness/Core/Models.swift`, the `FrictionPill` styling in `HarnessDesign/`, and [Agent-Loop](https://github.com/awizemann/harness/wiki/Agent-Loop).
 
 ---
 

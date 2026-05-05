@@ -6,7 +6,7 @@
 //  active run; the actor owns the FileHandle and serializes every write.
 //
 //  Schema is documented in `standards/14-run-logging-format.md` and
-//  `wiki/Run-Replay-Format.md`. Invariants (one writer, fsync per row,
+//  `https://github.com/awizemann/harness/wiki/Run-Replay-Format`. Invariants (one writer, fsync per row,
 //  screenshot-before-event, schema-version tag) are tested by the round-trip
 //  suite.
 //

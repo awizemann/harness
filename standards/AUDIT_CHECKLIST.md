@@ -55,7 +55,7 @@ A checked box means the change conforms to the standard. A red flag means the st
 
 - [ ] System prompt loaded from `docs/PROMPTS/system-prompt.md`, not embedded as a string literal.
 - [ ] Persona + goal + system prompt + tool schema marked for prompt caching.
-- [ ] Tool schema in `Harness/Tools/AgentTools.swift` agrees with `wiki/Tool-Schema.md` byte-for-byte.
+- [ ] Tool schema in `Harness/Tools/AgentTools.swift` agrees with [Tool-Schema](https://github.com/awizemann/harness/wiki/Tool-Schema) byte-for-byte.
 - [ ] Token-budget check happens before each Claude call.
 - [ ] Errors mapped to typed `ClaudeError` cases, not raw `URLError`.
 - [ ] Prompt-injection regression test still green.

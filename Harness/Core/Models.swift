@@ -3,7 +3,7 @@
 //  Harness
 //
 //  Core domain types used across services and features. Plain values; Sendable
-//  by construction. Naming matches `wiki/Glossary.md` exactly.
+//  by construction. Naming matches `https://github.com/awizemann/harness/wiki/Glossary` exactly.
 //
 //  These are NOT the SwiftData @Model types (those live in
 //  Harness/Services/RunHistoryStore.swift when that lands). These are the
@@ -221,7 +221,7 @@ struct ToolCall: Sendable, Hashable, Codable {
 }
 
 /// The model-facing tool vocabulary. **Raw values are the snake_case names
-/// that match `wiki/Tool-Schema.md` and `Harness/Tools/AgentTools.swift`** —
+/// that match `https://github.com/awizemann/harness/wiki/Tool-Schema` and `Harness/Tools/AgentTools.swift`** —
 /// these are what Claude emits in `tool_use.name` and what we encode in
 /// JSONL `tool` fields. Bug fixed in commit a08b2a6+1: defaults to Swift
 /// identifiers (`noteFriction`, `doubleTap`, etc.) silently broke 5 of 9
@@ -239,7 +239,7 @@ enum ToolKind: String, Sendable, Hashable, Codable, CaseIterable {
     case markGoalDone   = "mark_goal_done"
 }
 
-/// Tagged-union payload for any tool. Field names match `wiki/Tool-Schema.md`.
+/// Tagged-union payload for any tool. Field names match `https://github.com/awizemann/harness/wiki/Tool-Schema`.
 enum ToolInput: Sendable, Hashable, Codable {
     case tap(x: Int, y: Int)
     case doubleTap(x: Int, y: Int)
@@ -301,7 +301,7 @@ struct FrictionEvent: Sendable, Hashable, Codable, Identifiable {
 
 /// Closed taxonomy. Matches `docs/PROMPTS/friction-vocab.md` exactly.
 /// Adding a kind requires updating: this enum, the markdown, the system prompt,
-/// HarnessDesign's friction styling, and `wiki/Agent-Loop.md`.
+/// HarnessDesign's friction styling, and `https://github.com/awizemann/harness/wiki/Agent-Loop`.
 enum FrictionKind: String, Sendable, Hashable, Codable, CaseIterable {
     /// Tried a path; nothing happened or backed out.
     case deadEnd = "dead_end"

@@ -15,7 +15,7 @@ Check every surface this PR affects. If a box is checked but the corresponding u
 - [ ] `README.md` — user-visible feature, screenshot, version bump, or status change
 - [ ] [GitHub Wiki](https://github.com/awizemann/harness/wiki) — new service, feature module, tool schema, run-log format, friction kind, or standards index
 - [ ] `site/landing/` — landing page copy, hero, screenshots, or new top-level capability
-- [ ] `standards/` — amended a standard (and updated `wiki/Standards-Index`)
+- [ ] `standards/` — amended a standard (and updated [Standards-Index](https://github.com/awizemann/harness/wiki/Standards-Index))
 - [ ] None of the above (bug fix, refactor, typo, internal cleanup, test-only)
 
 ## Verification

@@ -5,7 +5,7 @@
 //  Wraps `xcrun simctl` (lifecycle) and a WebDriverAgent test runner (input).
 //  The standard at `standards/12-simulator-control.md` is the invariants
 //  reference. The per-method command mapping lives in
-//  `wiki/Simulator-Driver.md`.
+//  `https://github.com/awizemann/harness/wiki/Simulator-Driver`.
 //
 //  Coordinate-space rule (the #1 expected failure mode): screenshots from
 //  `simctl io booted screenshot` are at PIXEL resolution. WDA's coordinate

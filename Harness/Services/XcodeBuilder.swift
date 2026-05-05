@@ -5,7 +5,7 @@
 //  Wraps `xcodebuild`. Builds the user's iOS project into a simulator-runnable
 //  .app bundle, with derived data isolated under the run directory.
 //
-//  See `wiki/Xcode-Builder.md` for the canonical flag-set rationale.
+//  See `https://github.com/awizemann/harness/wiki/Xcode-Builder` for the canonical flag-set rationale.
 //  See `standards/03-subprocess-and-filesystem.md` for the ProcessRunner contract.
 //
 

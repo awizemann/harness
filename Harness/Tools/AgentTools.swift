@@ -2,7 +2,7 @@
 //  AgentTools.swift
 //  Harness
 //
-//  The model-facing tool schema. **This file and `wiki/Tool-Schema.md` must
+//  The model-facing tool schema. **This file and `https://github.com/awizemann/harness/wiki/Tool-Schema` must
 //  agree byte-for-byte** — a CI test (Phase 2) loads the wiki page, parses
 //  the documented schema, and #expects equality with `ToolSchema.toolDefinitions`.
 //

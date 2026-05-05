@@ -2,7 +2,7 @@
 
 Applies to: **Harness**
 
-This standard is the senior reference for anyone touching Claude calls in Harness. The agent loop *is* Harness — every other surface exists to feed it inputs and visualize its outputs. Read this before changing prompts, schemas, or call patterns. Pairs with `13-agent-loop.md` (mechanical detail) and `wiki/Tool-Schema.md` (model-facing contract).
+This standard is the senior reference for anyone touching Claude calls in Harness. The agent loop *is* Harness — every other surface exists to feed it inputs and visualize its outputs. Read this before changing prompts, schemas, or call patterns. Pairs with `13-agent-loop.md` (mechanical detail) and [Tool-Schema](https://github.com/awizemann/harness/wiki/Tool-Schema) (model-facing contract).
 
 ---
 
@@ -59,7 +59,7 @@ Implementation lives in `Harness/Domain/AgentLoop.swift`'s `HistoryCompactor`. T
 
 ## 5. Tool schema is a contract
 
-The model-facing tool schema is documented in [`wiki/Tool-Schema.md`](../wiki/Tool-Schema.md) and implemented in `Harness/Tools/AgentTools.swift`. Both must agree byte-for-byte.
+The model-facing tool schema is documented in [[Tool-Schema](https://github.com/awizemann/harness/wiki/Tool-Schema)](../wiki/Tool-Schema.md) and implemented in `Harness/Tools/AgentTools.swift`. Both must agree byte-for-byte.
 
 CI check (planned): a unit test loads the wiki page, parses the documented schema, and `#expect`s it equals `AgentTools.allTools`. Drift fails the build.
 
@@ -164,7 +164,7 @@ When reviewing AI integration code:
 
 - [ ] Is the system prompt loaded from `docs/PROMPTS/system-prompt.md`, not embedded as a Swift literal?
 - [ ] Are persona + goal + system prompt all marked for caching?
-- [ ] Is the tool schema in `AgentTools.swift` consistent with `wiki/Tool-Schema.md`?
+- [ ] Is the tool schema in `AgentTools.swift` consistent with [Tool-Schema](https://github.com/awizemann/harness/wiki/Tool-Schema)?
 - [ ] Does the loop check `Task.checkCancellation()` at the top of each iteration?
 - [ ] Is there a token-budget check before each call?
 - [ ] Is the prompt-injection defense regression test still green?

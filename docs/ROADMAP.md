@@ -30,7 +30,7 @@ Deliverable: an Xcode project that builds, with the service skeletons wired up a
 - [x] `Harness/Services/XcodeBuilder.swift` — `xcodebuild` wrapper; derived data isolated; signing-error mapping; `.app` artifact pickup.
 - [x] `Harness/Services/SimulatorDriver.swift` — full `SimulatorDriving` protocol; pixel→point conversion in `toPoints` (unit-tested); idempotent boot.
 - [x] `Harness/Services/ClaudeClient.swift` — single-shot `step(_:)`; prompt-caching markers; full tool-call parsing; typed `ClaudeError` cases.
-- [x] `Harness/Tools/AgentTools.swift` — `ToolSchema.toolDefinitions(cacheControl:)` matching `wiki/Tool-Schema.md`.
+- [x] `Harness/Tools/AgentTools.swift` — `ToolSchema.toolDefinitions(cacheControl:)` matching [Tool-Schema](https://github.com/awizemann/harness/wiki/Tool-Schema).
 - [x] Tests: 28 across `HarnessPaths`, `ProcessRunner` (cancellation, streaming), `KeychainStore` (round-trip), `SimulatorDriver` (coord scaling, simctl JSON parsing), `AgentTools` (schema invariants).
 
 Wiki updates landed: `Core-Services.md` with shipped status, `Build-and-Run.md` filled in, `Design-System.md` reconciled to actual API names (`Theme.*` / `HFont.*` / `Color.harness*`), `Simulator-Driver.md` linked.

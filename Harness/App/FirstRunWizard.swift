@@ -4,7 +4,7 @@
 //
 //  Two-screen sheet shown on first launch (or when the API key is missing /
 //  external tooling isn't healthy). Surfaces actionable copy-paste install
-//  commands per `wiki/Build-and-Run.md`.
+//  commands per `https://github.com/awizemann/harness/wiki/Build-and-Run`.
 //
 
 import SwiftUI

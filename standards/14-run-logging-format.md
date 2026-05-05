@@ -2,7 +2,7 @@
 
 Applies to: **Harness**
 
-The on-disk format for run artifacts. Pairs with `08-run-log-integrity.md` (write/read invariants) and `wiki/Run-Replay-Format.md` (human-facing reference).
+The on-disk format for run artifacts. Pairs with `08-run-log-integrity.md` (write/read invariants) and [Run-Replay-Format](https://github.com/awizemann/harness/wiki/Run-Replay-Format) (human-facing reference).
 
 ---
 
@@ -131,7 +131,7 @@ The tool the agent emitted on this step. Reasoning fields included.
 }
 ```
 
-The `input` schema varies by `tool`. See `wiki/Tool-Schema.md` for each tool's payload.
+The `input` schema varies by `tool`. See [Tool-Schema](https://github.com/awizemann/harness/wiki/Tool-Schema) for each tool's payload.
 
 ### `tool_result`
 
@@ -243,7 +243,7 @@ When `schemaVersion` bumps:
 
 1. Add a new versioned decoder.
 2. Keep the old one. Don't migrate on disk.
-3. Update `wiki/Run-Replay-Format.md` to document both versions.
+3. Update [Run-Replay-Format](https://github.com/awizemann/harness/wiki/Run-Replay-Format) to document both versions.
 4. Update the round-trip test (`Tests/HarnessTests/RunLoggerRoundTripTests.swift`) to cover the new version while keeping the old version's fixture green.
 
 ### v1 → v2 reader migration *(Phase E)*

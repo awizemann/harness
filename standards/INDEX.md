@@ -56,7 +56,7 @@ If either becomes relevant, copy from `../scarf/scarf/standards/` and adapt.
 ### When standards change
 1. Edit the file.
 2. Update the version + `Last Updated` line at the top of `INDEX.md`.
-3. Update [`wiki/Standards-Index.md`](../wiki/Standards-Index.md) if the standard's title or scope changed.
+3. Update [[Standards-Index](https://github.com/awizemann/harness/wiki/Standards-Index)](../wiki/Standards-Index.md) if the standard's title or scope changed.
 4. Mention in the next CLAUDE.md commit if the change affects daily workflow.
 
 ---

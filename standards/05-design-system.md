@@ -157,7 +157,7 @@ Updating tokens or primitives:
 1. Open a PR against `HarnessDesign/`.
 2. Update every `#Preview` to demonstrate the new state.
 3. Update affected feature views to consume the new token or primitive variant.
-4. Update [`wiki/Design-System.md`](../wiki/Design-System.md) — the wiki page is the human-facing index that links to each primitive's source file.
+4. Update [[Design-System](https://github.com/awizemann/harness/wiki/Design-System)](../wiki/Design-System.md) — the wiki page is the human-facing index that links to each primitive's source file.
 5. If the change is non-trivial, mention it in the PR description so the reviewer notices the visual diff.
 
 The wiki page lists every token and primitive with one-line summaries; full source remains in `HarnessDesign/`.

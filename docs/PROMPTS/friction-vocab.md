@@ -5,7 +5,7 @@ The fixed taxonomy the agent uses when emitting `note_friction(kind: ..., detail
 - `docs/PROMPTS/system-prompt.md` (the model is told these kinds and what they mean)
 - `Harness/Core/Models.swift` (the `FrictionEvent.Kind` enum mirrors this list)
 - `HarnessDesign/` `FrictionPill` styling (one color per kind)
-- `wiki/Agent-Loop.md` (human-facing friction reference)
+- [Agent-Loop](https://github.com/awizemann/harness/wiki/Agent-Loop) (human-facing friction reference)
 
 Adding or renaming a kind requires updating all four.
 

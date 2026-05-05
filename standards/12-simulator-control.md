@@ -2,7 +2,7 @@
 
 Applies to: **Harness**
 
-How Harness drives the iOS Simulator. Pairs with `03-subprocess-and-filesystem.md` (process plumbing) and `wiki/Simulator-Driver.md` (the implementation deep-dive).
+How Harness drives the iOS Simulator. Pairs with `03-subprocess-and-filesystem.md` (process plumbing) and [Simulator-Driver](https://github.com/awizemann/harness/wiki/Simulator-Driver) (the implementation deep-dive).
 
 ---
 
@@ -144,7 +144,7 @@ When erase is off: previous state stays. If the simulator is already booted and 
 
 ## 8. Build artifact pickup
 
-After `xcodebuild` (see `wiki/Xcode-Builder.md`), the `.app` lives at:
+After `xcodebuild` (see [Xcode-Builder](https://github.com/awizemann/harness/wiki/Xcode-Builder)), the `.app` lives at:
 
 ```
 <derivedDataPath>/Build/Products/Debug-iphonesimulator/<TargetName>.app
