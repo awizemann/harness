@@ -18,7 +18,14 @@ struct ApplicationsView: View {
 
     @State private var vm: ApplicationsViewModel?
     @State private var searchText: String = ""
-    @State private var selectedID: UUID?
+    /// When the user clicks an Application row before any has been
+    /// activated yet, this holds the inspector's choice so the detail
+    /// pane opens. Once a row is the active scope (the common case),
+    /// the inspector follows `coordinator.selectedApplicationID`
+    /// directly — no separate state to keep in sync. Cleared when the
+    /// user picks something different (the click also calls `setActive`,
+    /// which writes the coordinator).
+    @State private var inspectorOverride: UUID?
     @State private var showingCreateSheet: Bool = false
     @State private var showingArchived: Bool = false
     @State private var rePickPicker: ProjectPicker?
@@ -43,6 +50,12 @@ struct ApplicationsView: View {
     private func content(vm: ApplicationsViewModel) -> some View {
         let filtered = vm.filtered(search: searchText)
         let visible = showingArchived ? filtered : filtered.filter { !$0.archived }
+        // The inspector follows the active scope by default. If the
+        // user clicked a non-active row, the override carries the
+        // inspector to that row until the next click resolves it.
+        let selectedID = inspectorOverride
+            ?? coordinator.selectedApplicationID
+            ?? visible.first?.id
         let selected = visible.first { $0.id == selectedID } ?? visible.first
 
         Group {
@@ -90,10 +103,24 @@ struct ApplicationsView: View {
             Task { await vm.reload(includeArchived: showingArchived) }
         }
         .onChange(of: selected?.id) { _, newID in
-            selectedID = newID
+            // Sync the override only when the resolved selection diverges
+            // from the active scope (e.g. fallback to first row before
+            // any activation has happened). This prevents the override
+            // from going stale on legitimate active-scope changes.
+            if newID != coordinator.selectedApplicationID {
+                inspectorOverride = newID
+            } else {
+                inspectorOverride = nil
+            }
             if let id = newID {
                 Task { await vm.loadRecentRuns(for: id) }
             }
+        }
+        .onChange(of: coordinator.selectedApplicationID) { _, _ in
+            // Once the active scope catches up to whatever the user
+            // clicked, the override is no longer needed — drop it so
+            // the inspector follows the coordinator from now on.
+            inspectorOverride = nil
         }
         .sheet(isPresented: $showingCreateSheet) {
             ApplicationCreateView(applicationsVM: vm)
@@ -188,7 +215,15 @@ struct ApplicationsView: View {
     @ViewBuilder
     private func rowButton(app: ApplicationSnapshot, selected: Bool) -> some View {
         Button {
-            selectedID = app.id
+            // Clicking a row activates that Application AND opens it in
+            // the inspector. Library apps work this way (Mail, Music) —
+            // selection IS scope. The redundant override clears once the
+            // coordinator catches up, avoiding the two-state sync that
+            // earlier required users to click multiple times to "stick".
+            inspectorOverride = app.id
+            if coordinator.selectedApplicationID != app.id {
+                Task { await vm?.setActive(app.id) }
+            }
         } label: {
             ApplicationRow(
                 application: app,
