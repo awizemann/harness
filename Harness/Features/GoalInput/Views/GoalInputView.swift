@@ -71,7 +71,7 @@ struct GoalInputView: View {
                 VStack(alignment: .leading, spacing: Theme.spacing.l) {
                     runNameRow(vm: vm)
                     heroHeading
-                    SimulatorSection(vm: vm)
+                    targetSection(vm: vm)
                     PersonaSection(vm: vm)
                     SourceSection(vm: vm)
                     runModeStrip(vm: vm)
@@ -92,6 +92,22 @@ struct GoalInputView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.harnessBg)
         .navigationTitle("")
+    }
+
+    /// Phase 2: the form's "where does this run?" section is platform-
+    /// shaped. iOS shows the simulator picker; macOS shows the launch-
+    /// target summary; web shows the URL + viewport. The active
+    /// Application's `platformKind` decides which renders.
+    @ViewBuilder
+    private func targetSection(vm: GoalInputViewModel) -> some View {
+        switch vm.platformKind {
+        case .iosSimulator:
+            SimulatorSection(vm: vm)
+        case .macosApp:
+            MacTargetSection(vm: vm, application: activeApplication)
+        case .web:
+            WebTargetSection(vm: vm, application: activeApplication)
+        }
     }
 
     // MARK: Section header
@@ -369,19 +385,57 @@ struct GoalInputView: View {
     }
 
     private func preflightStatus(vm: GoalInputViewModel) -> Preflight {
-        Preflight(
-            apiKey: state.apiKeyPresent,
-            simulator: state.simulators.contains(where: { $0.udid == vm.simulatorUDID }),
-            tooling: state.xcodebuildAvailable
-        )
+        // Per-platform preflight: iOS still cares about a booted
+        // simulator + xcodebuild; macOS / web only need the API key.
+        switch vm.platformKind {
+        case .iosSimulator:
+            return Preflight(
+                apiKey: state.apiKeyPresent,
+                simulator: state.simulators.contains(where: { $0.udid == vm.simulatorUDID }),
+                tooling: state.xcodebuildAvailable
+            )
+        case .macosApp, .web:
+            return Preflight(
+                apiKey: state.apiKeyPresent,
+                simulator: true,         // not applicable — render OK
+                tooling: true            // ditto
+            )
+        }
     }
 
     // MARK: Actions
 
     private func start(vm: GoalInputViewModel) async {
-        guard let sim = state.simulators.first(where: { $0.udid == vm.simulatorUDID }) else {
-            vm.startError = "Selected simulator not found. Refresh the list."
-            return
+        // Resolve the SimulatorRef the runtime needs. iOS picks from
+        // the live simctl list; macOS / web build a synthetic ref
+        // (the platform adapter ignores it but RunRequest still
+        // carries one for back-compat).
+        let sim: SimulatorRef
+        switch vm.platformKind {
+        case .iosSimulator:
+            guard let real = state.simulators.first(where: { $0.udid == vm.simulatorUDID }) else {
+                vm.startError = "Selected simulator not found. Refresh the list."
+                return
+            }
+            sim = real
+        case .macosApp:
+            sim = SimulatorRef(
+                udid: "macos-\(activeApplication?.id.uuidString ?? "unknown")",
+                name: activeApplication?.name ?? "macOS app",
+                runtime: "macOS",
+                pointSize: CGSize(width: 1280, height: 800),  // refined by adapter on first capture
+                scaleFactor: 1.0
+            )
+        case .web:
+            let w = vm.webViewportWidthPt
+            let h = vm.webViewportHeightPt
+            sim = SimulatorRef(
+                udid: "web-\(activeApplication?.id.uuidString ?? "unknown")",
+                name: activeApplication?.name ?? "Web",
+                runtime: "Web",
+                pointSize: CGSize(width: w, height: h),
+                scaleFactor: 1.0
+            )
         }
         guard var request = vm.buildRequest(simulator: sim) else {
             vm.startError = "Couldn't compose the run. Make sure a persona and an action / chain are picked."
@@ -469,6 +523,97 @@ private struct SimulatorSection: View {
                     vm.simulatorUDID = initial
                 }
             }
+        }
+    }
+}
+
+/// Phase 2: read-only target summary for a macOS Application. The user
+/// configures the launch target on the Application's detail page; this
+/// section just confirms what the run will use so they can sanity-check
+/// before pressing Start.
+private struct MacTargetSection: View {
+    @Environment(AppCoordinator.self) private var coordinator
+    @Bindable var vm: GoalInputViewModel
+    let application: ApplicationSnapshot?
+
+    var body: some View {
+        PanelContainer(title: "Target") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                HStack(spacing: Theme.spacing.s) {
+                    Image(systemName: "macwindow")
+                        .foregroundStyle(Color.harnessAccent)
+                    Text(launchSummary)
+                        .font(.callout)
+                        .foregroundStyle(Color.harnessText)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Edit application…") {
+                        coordinator.selectedSection = .applications
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Text(secondaryHint)
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(Theme.spacing.l)
+        }
+    }
+
+    private var launchSummary: String {
+        if let path = vm.macAppBundlePath, !path.isEmpty {
+            return (path as NSString).lastPathComponent
+        }
+        if !vm.selectedScheme.isEmpty, let url = vm.projectURL {
+            return "Build \(vm.selectedScheme) (\(url.lastPathComponent))"
+        }
+        return application?.name ?? "macOS app"
+    }
+
+    private var secondaryHint: String {
+        if let path = vm.macAppBundlePath, !path.isEmpty {
+            return "Pre-built bundle at \(path) — Harness launches via NSWorkspace and skips xcodebuild."
+        }
+        return "Harness will run xcodebuild on the project + scheme above and launch the resulting .app."
+    }
+}
+
+/// Phase 3: read-only target summary for a web Application.
+private struct WebTargetSection: View {
+    @Environment(AppCoordinator.self) private var coordinator
+    @Bindable var vm: GoalInputViewModel
+    let application: ApplicationSnapshot?
+
+    var body: some View {
+        PanelContainer(title: "Target") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                HStack(spacing: Theme.spacing.s) {
+                    Image(systemName: "globe")
+                        .foregroundStyle(Color.harnessAccent)
+                    Text(vm.webStartURL.isEmpty ? "(no start URL configured)" : vm.webStartURL)
+                        .font(.callout)
+                        .foregroundStyle(Color.harnessText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Edit application…") {
+                        coordinator.selectedSection = .applications
+                    }
+                    .buttonStyle(.borderless)
+                }
+                HStack(spacing: Theme.spacing.s) {
+                    Text("Viewport")
+                        .font(HFont.micro)
+                        .foregroundStyle(Color.harnessText3)
+                    Text("\(vm.webViewportWidthPt) × \(vm.webViewportHeightPt) px")
+                        .font(HFont.mono)
+                        .foregroundStyle(Color.harnessText2)
+                    Spacer()
+                }
+                Text("The agent loads the URL in an embedded WebKit browser. Cookies persist across legs.")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(Theme.spacing.l)
         }
     }
 }

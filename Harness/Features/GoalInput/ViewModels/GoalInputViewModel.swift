@@ -48,6 +48,18 @@ final class GoalInputViewModel {
     // MARK: Form state — non-project
 
     var simulatorUDID: String = ""
+    /// Phase 2: which kind of platform the active Application targets.
+    /// Drives form section visibility (Simulator vs Mac-target vs Web-
+    /// target) and per-platform `canStart` validation. Set by
+    /// `loadFromActiveApplication`.
+    var platformKind: PlatformKind = .iosSimulator
+    /// macOS pre-built `.app` path mirrored from the Application snapshot.
+    /// Used for the macOS target's read-only summary block.
+    var macAppBundlePath: String?
+    /// Web start URL + viewport mirrored from the Application snapshot.
+    var webStartURL: String = ""
+    var webViewportWidthPt: Int = 1280
+    var webViewportHeightPt: Int = 800
     /// Optional user-supplied run name. Empty falls back to a
     /// placeholder synthesized from the chosen action / chain + date.
     var runName: String = ""
@@ -95,34 +107,46 @@ final class GoalInputViewModel {
     var schemeSupportsIOSSimulator: Bool { picker.schemeSupportsIOSSimulator }
     var schemeCompatibilitySummary: String? { picker.schemeCompatibilitySummary }
 
-    /// Phase E start gate: project URL + scheme set, simulator picked,
-    /// scheme actually targets iOS Simulator, persona picked, and a
-    /// matching Action / Chain selected for the chosen source.
+    /// Phase 2: per-platform start gate.
+    ///
+    /// All platforms require: a persona is picked, and the chosen
+    /// source (action / chain) is valid + non-archived + non-broken.
+    ///
+    /// iOS additionally requires: project URL + scheme, the scheme
+    /// supports the iOS Simulator, and a simulator is picked.
+    ///
+    /// macOS additionally requires: either a project URL + scheme
+    /// (build mode) OR a pre-built `.app` path.
+    ///
+    /// Web additionally requires: a non-empty start URL.
     var canStart: Bool {
-        guard picker.projectURL != nil,
-              !picker.selectedScheme.isEmpty,
-              !simulatorUDID.isEmpty,
-              picker.schemeSupportsIOSSimulator,
-              selectedPersonaID != nil
-        else { return false }
+        guard selectedPersonaID != nil else { return false }
         switch source {
         case .action:
-            // Picked action exists and isn't archived.
             guard let id = selectedActionID,
                   let action = actions.first(where: { $0.id == id }),
                   !action.archived else { return false }
-            return true
         case .chain:
-            // Picked chain exists, isn't archived, has at least one
-            // step, and every step has a backing Action (no broken-link
-            // chain steps from a deleted Action).
             guard let id = selectedChainID,
                   let chain = chains.first(where: { $0.id == id }),
                   !chain.archived,
                   !chain.steps.isEmpty,
                   chain.steps.allSatisfy({ $0.actionID != nil })
             else { return false }
-            return true
+        }
+        // Per-platform target gate.
+        switch platformKind {
+        case .iosSimulator:
+            return picker.projectURL != nil
+                && !picker.selectedScheme.isEmpty
+                && !simulatorUDID.isEmpty
+                && picker.schemeSupportsIOSSimulator
+        case .macosApp:
+            if let path = macAppBundlePath, !path.isEmpty { return true }
+            return picker.projectURL != nil && !picker.selectedScheme.isEmpty
+        case .web:
+            let trimmed = webStartURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty && URL(string: trimmed) != nil
         }
     }
 
@@ -158,21 +182,62 @@ final class GoalInputViewModel {
 
     // MARK: Application hydration
 
-    /// Pre-fill the form from an active `Application`. Doesn't re-probe
-    /// schemes (they're saved on the Application); does probe destinations
-    /// to refresh the iOS-simulator-compat banner.
+    /// Pre-fill the form from an active `Application`. Per-platform:
+    ///
+    ///   - iOS: project URL + scheme, simulator UDID, and probe
+    ///     destinations to refresh the iOS-simulator-compat banner.
+    ///   - macOS: project + scheme (if set, for the build path) and the
+    ///     pre-built `.app` path (if set, for the fast launch path).
+    ///     Skip the destination probe — `xcodebuild -showdestinations`
+    ///     for a macOS-only scheme returns mac destinations and our
+    ///     iOS-compat banner would render misleadingly.
+    ///   - Web: start URL + viewport. No project at all.
     func loadFromActiveApplication(_ app: ApplicationSnapshot) async {
-        picker.projectURL = app.projectURL
-        picker.projectDisplayName = app.name
-        picker.availableSchemes = [app.scheme]
-        picker.selectedScheme = app.scheme
-        if let udid = app.defaultSimulatorUDID, !udid.isEmpty {
-            simulatorUDID = udid
-        }
+        platformKind = app.platformKind
+        // Run defaults are platform-neutral.
         if let m = app.defaultModel { model = m }
         if let m = app.defaultMode { mode = m }
         stepBudget = app.defaultStepBudget
-        await picker.refreshSchemeDestinations()
+
+        switch app.platformKind {
+        case .iosSimulator:
+            picker.projectURL = app.projectURL
+            picker.projectDisplayName = app.name
+            picker.availableSchemes = [app.scheme]
+            picker.selectedScheme = app.scheme
+            if let udid = app.defaultSimulatorUDID, !udid.isEmpty {
+                simulatorUDID = udid
+            }
+            macAppBundlePath = nil
+            webStartURL = ""
+            await picker.refreshSchemeDestinations()
+        case .macosApp:
+            if !app.projectPath.isEmpty {
+                picker.projectURL = app.projectURL
+                picker.projectDisplayName = app.name
+                picker.availableSchemes = [app.scheme]
+                picker.selectedScheme = app.scheme
+            } else {
+                picker.projectURL = nil
+                picker.projectDisplayName = app.name
+                picker.availableSchemes = []
+                picker.selectedScheme = ""
+            }
+            macAppBundlePath = app.macAppBundlePath
+            simulatorUDID = ""
+            webStartURL = ""
+            // Skip the destination probe — irrelevant for the macOS path.
+        case .web:
+            picker.projectURL = nil
+            picker.projectDisplayName = app.name
+            picker.availableSchemes = []
+            picker.selectedScheme = ""
+            simulatorUDID = ""
+            macAppBundlePath = nil
+            webStartURL = app.webStartURL ?? ""
+            webViewportWidthPt = app.webViewportWidthPt ?? 1280
+            webViewportHeightPt = app.webViewportHeightPt ?? 800
+        }
     }
 
     // MARK: Library hydration
@@ -204,11 +269,20 @@ final class GoalInputViewModel {
     /// should gate the Start button on `canStart` so this rarely
     /// returns nil in practice; the nil path covers race conditions
     /// where library snapshots refresh out from under the form.
+    ///
+    /// The `simulator` argument is meaningful for iOS runs only. macOS
+    /// and web pass a synthetic `SimulatorRef` derived from the active
+    /// Application — `RunRequest.simulator` is still a stored field for
+    /// back-compat, but `MacOSPlatformAdapter` / `WebPlatformAdapter`
+    /// ignore its UDID and use their own launch path.
     func buildRequest(simulator: SimulatorRef) -> RunRequest? {
-        guard let projectURL = picker.projectURL,
-              let personaID = selectedPersonaID,
+        guard let personaID = selectedPersonaID,
               let persona = personas.first(where: { $0.id == personaID })
         else { return nil }
+        // iOS requires a real project URL; macOS / web don't.
+        if platformKind == .iosSimulator, picker.projectURL == nil {
+            return nil
+        }
 
         // Decide the payload + denormalized goal/name fields.
         let payload: RunPayload
@@ -256,6 +330,29 @@ final class GoalInputViewModel {
             return "\(primaryName) · \(f.string(from: Date()))"
         }()
 
+        // Build the ProjectRequest. iOS / macOS-build-mode use the picker;
+        // macOS-bundle-mode and web pass a placeholder URL that the
+        // adapter ignores.
+        let projectRequest: ProjectRequest = {
+            if let projectURL = picker.projectURL {
+                return ProjectRequest(
+                    path: projectURL,
+                    scheme: picker.selectedScheme,
+                    displayName: picker.projectDisplayName
+                )
+            } else {
+                // Non-iOS platforms with no Xcode project (web; macOS
+                // pre-built .app). The adapter's launch path doesn't
+                // touch this field. Use a stable placeholder URL so
+                // round-trip Codable stays sane.
+                return ProjectRequest(
+                    path: URL(fileURLWithPath: "/dev/null"),
+                    scheme: "",
+                    displayName: picker.projectDisplayName
+                )
+            }
+        }()
+
         return RunRequest(
             id: UUID(),
             name: resolvedName,
@@ -264,16 +361,17 @@ final class GoalInputViewModel {
             applicationID: nil,           // hydrated by the view layer
             personaID: persona.id,
             payload: payload,
-            project: ProjectRequest(
-                path: projectURL,
-                scheme: picker.selectedScheme,
-                displayName: picker.projectDisplayName
-            ),
+            project: projectRequest,
             simulator: simulator,
             model: model,
             mode: mode,
             stepBudget: stepBudget,
-            tokenBudget: model == .opus47 ? 250_000 : 1_000_000
+            tokenBudget: model == .opus47 ? 250_000 : 1_000_000,
+            platformKindRaw: platformKind.rawValue,
+            macAppBundlePath: macAppBundlePath,
+            webStartURL: platformKind == .web ? webStartURL : nil,
+            webViewportWidthPt: platformKind == .web ? webViewportWidthPt : nil,
+            webViewportHeightPt: platformKind == .web ? webViewportHeightPt : nil
         )
     }
 }
