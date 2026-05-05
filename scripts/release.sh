@@ -114,15 +114,18 @@ log "Preflight OK"
 # ---------- bump MARKETING_VERSION in project.yml ----------
 log "Setting project.yml MARKETING_VERSION to $VERSION"
 # project.yml's `MARKETING_VERSION: "0.1.0"` line — replace inline.
+# Use subn() so we can distinguish "regex didn't match" (real error) from
+# "regex matched but the value is already correct" (no-op, fine).
 python3 - "$REPO_ROOT/project.yml" "$VERSION" <<'PY'
 import re, sys, pathlib
 path = pathlib.Path(sys.argv[1])
 version = sys.argv[2]
 text = path.read_text()
-new = re.sub(r'(MARKETING_VERSION:\s*)"[^"]+"', rf'\1"{version}"', text)
-if new == text:
+new, n = re.subn(r'(MARKETING_VERSION:\s*)"[^"]+"', rf'\1"{version}"', text)
+if n == 0:
     raise SystemExit("MARKETING_VERSION line not found in project.yml")
-path.write_text(new)
+if new != text:
+    path.write_text(new)
 PY
 
 log "Regenerating Harness.xcodeproj"
@@ -186,13 +189,20 @@ log "spctl --assess (should print 'accepted')"
 spctl --assess --type execute --verbose=2 "$APP_PATH" 2>&1 | sed 's/^/    /'
 
 # ---------- commit + tag ----------
-log "Committing version bump + release notes"
+log "Staging version bump + release notes"
 git add "$NOTES_PATH"
-git commit -m "release: v${VERSION}
+# Skip the release commit when there's nothing to stage — happens when
+# the release notes + version bump were committed ahead of running the
+# script (the prep flow). Tagging the existing tip is the right move.
+if git diff --cached --quiet; then
+  log "Nothing to commit (notes + version already on main) — tagging tip"
+else
+  git commit -m "release: v${VERSION}
 
 $(head -1 "$NOTES_PATH" | sed 's/^# //')
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+fi
 
 if [[ "$DRAFT" -eq 1 ]]; then
   warn "draft mode — skipping tag + push of main"
