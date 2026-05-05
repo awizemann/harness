@@ -56,3 +56,16 @@ Harness/Generated/
 *.local.md
 scratch/
 TODO.local.md
+
+# Private working files — kept locally for own use, never published.
+# These were scrubbed from public git history (see CLAUDE.md / "Private working files").
+/CLAUDE.md
+/design-prompt.md
+/docs/PRD.md
+/docs/MANUAL_TEST_PLAN.md
+/docs/DESIGN_BACKLOG.md
+.claude/
+
+# Public-surface worktrees — see CLAUDE.md / "Public surfaces".
+.wiki-worktree/
+.gh-pages-worktree/
