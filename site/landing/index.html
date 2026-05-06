@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Harness — AI-driven user testing for iOS, macOS, and the web</title>
 <meta name="description" content="A native macOS dev tool that drives an iOS Simulator, a macOS app, or a web app with an AI agent. Write a goal in plain language; get a replayable run with friction events.">
-<meta name="theme-color" content="#0E0F12">
+<meta name="theme-color" content="#0E0F12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F4F5" media="(prefers-color-scheme: light)">
 <meta property="og:title" content="Harness — AI-driven user testing for iOS, macOS, and the web">
 <meta property="og:description" content="Write a goal in plain language; an LLM agent reads the screen, drives the UI, and tells you where the experience falls down. iOS Simulator, macOS apps, web apps.">
 <meta property="og:type" content="website">
@@ -16,7 +17,81 @@
 <link rel="apple-touch-icon" href="/harness/apple-touch-icon.png">
 <link rel="manifest" href="/harness/manifest.webmanifest">
 <link rel="canonical" href="https://awizemann.github.io/harness/">
+<link rel="alternate" type="text/plain" title="LLM-friendly summary" href="/harness/llms.txt">
 <link rel="stylesheet" href="/harness/styles.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Does Harness need access to my source code?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. The agent reads screenshots and reasons about visible UI; it never reads your source. For iOS, you provide a buildable Xcode project so Harness can produce a .app to install in the Simulator. For macOS, a pre-built .app is enough. For web, just a URL."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Harness drive a real iPhone, or only the Simulator?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "v0.1 is iOS-Simulator-only. Real-device support over WebDriverAgent and idb is on the roadmap. macOS targets are real (it's your actual Mac). Web targets render in an embedded WKWebView — the same engine Safari uses."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Which AI models does Harness support?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Harness supports vision tool-use models from Anthropic, OpenAI, and Google. Today that's Claude Opus 4.7, Sonnet 4.6, and Haiku 4.5; OpenAI GPT-5 Mini and GPT-4.1 Nano; and Google Gemini 2.5 Flash and Flash Lite. You bring your own API key for whichever provider you pick — keys are stored in the macOS Keychain. The Compose Run form has a per-run provider+model picker so you can trade speed for capability without leaving the app."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Roughly how much does a run cost?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It depends on the goal length, step budget, model, and provider. A typical 20–40 step run on a mid-tier model lands in the few-cents-to-low-dollars range; smaller models (Haiku, Gemini Flash Lite, GPT-4.1 Nano) shave that further. Token use is dominated by screenshot inputs. The step and token budgets cap cost predictably."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I run Harness in CI, headless?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Not yet. v0.1 is a desktop tool with a GUI; a headless mode is on the roadmap. If you want to fail PR builds on UX regressions, watch the issue tracker."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Harness self-update?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Auto-update isn't wired in v0.1. Releases are GitHub releases for now; a Sparkle-based auto-updater is queued."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does my data leave my Mac?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Screenshots and step events are sent to whichever provider you picked — Anthropic, OpenAI, or Google — that's the inference path that drives the agent. Run logs (JSONL plus screenshots) live on disk in ~/Library/Application Support/Harness/runs/. Nothing else phones home — no analytics, no telemetry, no remote logging."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What versions of Xcode and macOS do I need?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "macOS 14 (Sonoma) or later, and Xcode 16 or later — Harness uses Swift 6 strict concurrency. The iOS Simulator ships with Xcode."
+      }
+    }
+  ]
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -28,22 +103,33 @@
       <span>Harness</span>
     </a>
     <nav class="nav" aria-label="Primary">
-      <a href="https://github.com/awizemann/harness">Repo</a>
+      <a href="#run-loop">How it works</a>
+      <a href="#get-started">Get started</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/awizemann/harness">GitHub</a>
       <a href="https://github.com/awizemann/harness/wiki">Wiki</a>
-      <a href="https://github.com/awizemann/harness/blob/main/docs/ROADMAP.md">Roadmap</a>
-      <a href="https://github.com/awizemann/harness/issues">Issues</a>
+      <button type="button" class="theme-toggle" aria-label="Toggle dark mode" data-theme-toggle>
+        <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>
+        </svg>
+        <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+      </button>
     </nav>
   </div>
 </header>
 
 <main id="main">
 
+  <!-- 1. Hero -->
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
         <p class="eyebrow"><span class="dot" aria-hidden="true"></span> v{{VERSION}} · macOS · open source</p>
         <h1>AI-driven user testing for iOS, macOS, and the web.</h1>
-        <p class="lede">Write a goal in plain language. Pick a persona. Harness drives your target — iOS Simulator, macOS app, or a URL in an embedded browser — and an LLM agent reads the screen, clicks, types, scrolls, navigates. It pursues the goal the way a real user would, and flags UX friction along the way.</p>
+        <p class="lede">Write a goal in plain English. Pick a persona. Harness drives your target — iOS Simulator, macOS app, or a URL in an embedded browser — while an LLM agent reads each screen, taps and types its way through, and flags UX friction the way a real person would.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="https://github.com/awizemann/harness/releases/latest">Download v{{VERSION}}</a>
           <a class="btn btn-ghost" href="https://github.com/awizemann/harness">View on GitHub</a>
@@ -51,120 +137,337 @@
         <p class="meta">macOS 14+ · MIT licensed · Last updated {{LASTMOD}}</p>
       </div>
       <div class="hero-art" aria-hidden="true">
-        <img src="/harness/assets/icon.png" width="320" height="320" alt="">
+        <picture class="pic pic-goal">
+          <img src="/harness/assets/screenshots/goal-input.png"
+               data-dark-src="/harness/assets/screenshots/goal-input-dark.png"
+               alt="" width="1440" height="900" decoding="async" fetchpriority="high">
+        </picture>
+        <picture class="pic pic-runsession">
+          <img src="/harness/assets/screenshots/runsession-hero.png"
+               data-dark-src="/harness/assets/screenshots/runsession-hero-dark.png"
+               alt="" width="1440" height="900" decoding="async" fetchpriority="high">
+        </picture>
+        <svg class="hero-arrow" viewBox="0 0 120 60" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 8 C 40 0, 70 30, 110 50"/>
+          <path d="M100 42 L 112 50 L 102 56"/>
+        </svg>
       </div>
     </div>
   </section>
 
-  <section class="band" aria-labelledby="how">
+  <!-- 2. Trust strip -->
+  <aside class="trust" aria-label="At a glance">
+    <ul class="wrap">
+      <li>Native macOS</li>
+      <li>Drives iOS, macOS &amp; Web</li>
+      <li>Replayable runs</li>
+      <li>Friction-typed events</li>
+      <li>MIT licensed</li>
+      <li>Vision-grounded — no a11y IDs needed</li>
+    </ul>
+  </aside>
+
+  <!-- 3. What Harness does (AEO load-bearing paragraph) -->
+  <section class="band what" aria-labelledby="what-title">
     <div class="wrap">
-      <h2 id="how">Not a UI test. A user test.</h2>
-      <p class="sub">No accessibility identifiers. No source-code access. No pre-written plan. The agent reasons from "what's on screen" — the way a person would.</p>
-      <ol class="steps">
-        <li>
-          <h3>Write the goal</h3>
-          <p>"I want to sign up and create my first list." "Delete my account." "Find a vegetarian restaurant near me and save it."</p>
-        </li>
-        <li>
-          <h3>Pick a persona</h3>
-          <p>"First-time user, never seen the app." "Returning power user." "Person in a hurry on a flaky network."</p>
-        </li>
-        <li>
-          <h3>Watch it run</h3>
-          <p>Harness launches your target — iOS sim, macOS app, or web app — and the agent drives. Every screen and action is logged.</p>
-        </li>
-      </ol>
+      <h2 id="what-title">Not a UI test. A user test.</h2>
+      <p>
+        <em>Harness is a native macOS dev tool that drives your iOS Simulator, your macOS app, or a web app the way a real user would.</em>
+        You write a goal in plain English and pick a persona; an LLM agent reads each screen, decides what to do, and pursues the goal — tapping, typing, scrolling, navigating. When something is confusing, ambiguous, or a dead-end, the agent flags it. Every run produces a replayable timeline of screens, actions, and friction events you can scrub through later. No accessibility identifiers, no source-code access, no pre-written plan — the agent reasons from what's on screen.
+      </p>
     </div>
   </section>
 
+  <!-- 4. Three platforms -->
   <section class="band band-alt" aria-labelledby="targets">
     <div class="wrap">
       <h2 id="targets">Drives three kinds of target.</h2>
       <p class="sub">Per-app setting: declare what kind of thing you're testing once, and Harness picks the right driver. Run history, replay, and friction events look the same across all three.</p>
       <div class="cards">
-        <article class="card">
-          <h3>iOS Simulator</h3>
-          <p><code>xcodebuild</code> + <code>simctl</code> + WebDriverAgent. Provide an Xcode project + scheme; Harness builds, boots a simulator, installs, launches, and drives via the simulator's responder chain.</p>
+        <article class="card platform-card">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/target-ios.png"
+                 data-dark-src="/harness/assets/screenshots/target-ios-dark.png"
+                 alt="Harness driving an iOS Simulator — simulator mirror on the left, agent step feed on the right"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+          <div class="platform-body">
+            <h3>iOS Simulator</h3>
+            <p>Provide an Xcode project + scheme. Harness builds, boots a Simulator, installs, launches, and drives via WebDriverAgent — taps, swipes, type, gestures.</p>
+          </div>
         </article>
-        <article class="card">
-          <h3>macOS app</h3>
-          <p><code>NSWorkspace</code> launch (pre-built <code>.app</code> for the fast path, or build from a project). <code>CGEvent</code> for clicks / scroll / keyboard / shortcuts; <code>CGWindowListCreateImage</code> for window capture.</p>
+        <article class="card platform-card">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/target-macos.png"
+                 data-dark-src="/harness/assets/screenshots/target-macos-dark.png"
+                 alt="Harness driving a macOS app — captured window with a click action in the step feed"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+          <div class="platform-body">
+            <h3>macOS app</h3>
+            <p>Launch a pre-built <code>.app</code> or build from source. <code>CGEvent</code> for clicks, scroll, keyboard, shortcuts; <code>CGWindowList</code> for capture.</p>
+          </div>
         </article>
-        <article class="card">
-          <h3>Web app</h3>
-          <p>Embedded <code>WKWebView</code> at any CSS-pixel viewport (1280×800 desktop, 375×812 mobile). JS-synthesised events for input; <code>WKWebView.takeSnapshot</code> for capture. WebKit-only in v0.1.</p>
+        <article class="card platform-card">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/target-web.png"
+                 data-dark-src="/harness/assets/screenshots/target-web-dark.png"
+                 alt="Harness driving a web app — embedded WKWebView with a friction event flagged in the step feed"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+          <div class="platform-body">
+            <h3>Web app</h3>
+            <p>Embedded <code>WKWebView</code> at any CSS-pixel viewport (1280×800 desktop, 375×812 mobile). JS-synthesised events for input. Same engine as Safari.</p>
+          </div>
         </article>
       </div>
     </div>
   </section>
 
-  <section class="band" aria-labelledby="artifacts">
+  <!-- 5. The run loop, illustrated -->
+  <section id="run-loop" aria-label="The run loop">
+
+    <!-- 5a. Goal in, persona on -->
+    <div class="feature">
+      <div class="wrap feature-grid">
+        <div class="feature-copy">
+          <p class="eyebrow">Compose</p>
+          <h2>A goal sentence and a persona — that's the whole input.</h2>
+          <p>Pick the application, choose a persona ("first-time user, never seen the app," "returning power user," "person in a hurry on a flaky network"), type the goal in your own words. Step and token budgets cap how long it can run; the model picker lets you trade speed for capability.</p>
+          <ul class="feature-bullets">
+            <li>Built-in personas plus your own custom ones</li>
+            <li>Reusable Applications: project, scheme, and platform set once</li>
+            <li>Step-mode pauses for approval before every action</li>
+          </ul>
+        </div>
+        <div class="feature-art">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/goal-input.png"
+                 data-dark-src="/harness/assets/screenshots/goal-input-dark.png"
+                 alt="Harness goal-input form — Application picker, Persona dropdown, Goal text area, model and step-budget sliders"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5b. Watch the agent drive -->
+    <div class="feature alt band-alt">
+      <div class="wrap feature-grid">
+        <div class="feature-copy">
+          <p class="eyebrow">Run</p>
+          <h2>Watch every tap, type, and swipe in real time.</h2>
+          <p>The simulator mirror updates several frames per second with a coordinate overlay on the last action. The step feed scrolls alongside, narrating what the agent saw and what it decided. Step-mode lets you approve each action before it fires.</p>
+          <ul class="feature-bullets">
+            <li>Live screenshot mirror with tap-coordinate overlay</li>
+            <li>Step feed: observation, intent, tool call</li>
+            <li>Auto-mode runs end-to-end; step-mode gates each action</li>
+          </ul>
+        </div>
+        <div class="feature-art">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/runsession-hero.png"
+                 data-dark-src="/harness/assets/screenshots/runsession-hero-dark.png"
+                 alt="Harness Run Session — simulator mirror, step feed, and approval card visible mid-run"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5c. Friction, typed and timestamped -->
+    <div class="feature">
+      <div class="wrap feature-grid">
+        <div class="feature-copy">
+          <p class="eyebrow">Diagnose</p>
+          <h2>When the agent gets confused, you know exactly where.</h2>
+          <p>Friction events are tagged by kind — dead end, ambiguous label, unresponsive control, confusing copy — with a one-line description, timestamp, and screenshot. Browse them grouped by leg, or scan them flat in step order.</p>
+          <ul class="feature-bullets">
+            <li>Semantic friction kinds, not free-text noise</li>
+            <li>Each event links back to the exact step that triggered it</li>
+            <li>Group by leg for chains, or by kind for an at-a-glance scan</li>
+          </ul>
+        </div>
+        <div class="feature-art">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/friction-report.png"
+                 data-dark-src="/harness/assets/screenshots/friction-report-dark.png"
+                 alt="Friction report — grouped cards showing dead-end, ambiguous-label, and unresponsive-control friction kinds"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5d. Replay like a flight recorder -->
+    <div class="feature alt band-alt">
+      <div class="wrap feature-grid">
+        <div class="feature-copy">
+          <p class="eyebrow">Review</p>
+          <h2>Every run is a scrubbable timeline.</h2>
+          <p>Drag the timeline scrubber to any moment. Each step shows the screenshot the agent saw, the observation it noted, the tool call it made, and any friction it raised. Use ←/→ to advance one step at a time. Leg boundaries on the scrubber show where action chains transition.</p>
+          <ul class="feature-bullets">
+            <li>Append-only JSONL run log + screenshots, durable on disk</li>
+            <li>Reveal in Finder, export as a zipped bundle</li>
+            <li>Open old runs months later — the format is versioned</li>
+          </ul>
+        </div>
+        <div class="feature-art">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/run-replay.png"
+                 data-dark-src="/harness/assets/screenshots/run-replay-dark.png"
+                 alt="Run Replay — timeline scrubber dragged mid-run, step detail panel showing screenshot, observation, and tool call"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5e. Run history & verdicts -->
+    <div class="feature">
+      <div class="wrap feature-grid">
+        <div class="feature-copy">
+          <p class="eyebrow">Compare</p>
+          <h2>A library of every run, filtered and searchable.</h2>
+          <p>Filter by verdict — success, failure, or blocked — search by goal text, see which app each run ran against. Reveal in Finder for export. Re-run the same goal against a new build to compare friction counts side-by-side.</p>
+          <ul class="feature-bullets">
+            <li>SwiftData-backed; survives app restarts and app upgrades</li>
+            <li>Per-run verdict pill plus a one-paragraph summary in the agent's words</li>
+            <li>Right-click context menu on every row</li>
+          </ul>
+        </div>
+        <div class="feature-art">
+          <picture class="pic">
+            <img src="/harness/assets/screenshots/run-history.png"
+                 data-dark-src="/harness/assets/screenshots/run-history-dark.png"
+                 alt="Run History — filterable list of runs with verdict pills, project icons, timestamps, and search"
+                 width="1440" height="900" loading="lazy" decoding="async">
+          </picture>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- 6. Why vision-grounded matters -->
+  <section class="band" aria-labelledby="why-vision">
     <div class="wrap">
-      <h2 id="artifacts">Three artifacts come out of every run.</h2>
+      <h2 id="why-vision">Why vision-grounded matters.</h2>
+      <p class="sub">Most UI testing tools require accessibility identifiers, source-code access, or a hand-written script. Harness's agent reasons from pixels — which means it can test apps the same way a human cold-opens them, including apps you didn't write.</p>
       <div class="cards">
         <article class="card">
-          <h3>Did the goal complete?</h3>
-          <p>A verdict — success, failure, or blocked — with a one-paragraph summary in the agent's own words.</p>
+          <h3>No a11y IDs needed</h3>
+          <p>The agent reads pixels, not the responder chain. Test apps that ship without accessibility identifiers — including third-party builds, web pages you don't control, and screens where a11y tagging is incomplete.</p>
         </article>
         <article class="card">
-          <h3>What was the path?</h3>
-          <p>A replayable timeline of every screen the agent saw and every action it took. Scrub it like a video.</p>
+          <h3>No source access required</h3>
+          <p>A buildable Xcode project for iOS, a <code>.app</code> for macOS, or a URL for web — that's the input. The agent never reads your code, never knows your bundle IDs, never has internal context. It evaluates your UI from the same starting point your users do.</p>
         </article>
         <article class="card">
-          <h3>Where was the friction?</h3>
-          <p>Timestamped events the agent flagged as confusing, ambiguous, or dead-end — typed by friction kind so you can scan them.</p>
+          <h3>Persona-conditioned reasoning</h3>
+          <p>The same goal under "first-time user" produces a different path than "returning power user." Friction events shift accordingly. Pick a persona that matches the cohort you actually care about.</p>
         </article>
       </div>
+      <p class="cta-inline">More on the loop algorithm: <a href="https://github.com/awizemann/harness/wiki/Agent-Loop">Agent-Loop</a> · <a href="https://github.com/awizemann/harness/wiki/Tool-Schema">Tool-Schema</a> · <a href="https://github.com/awizemann/harness/wiki/Run-Replay-Format">Run-Replay-Format</a> on the wiki.</p>
     </div>
   </section>
 
-  <section class="band" aria-labelledby="how-it-works">
+  <!-- 7. Get started -->
+  <section id="get-started" class="band band-alt" aria-labelledby="get-started-title">
     <div class="wrap">
-      <h2 id="how-it-works">How the agent works</h2>
-      <p class="sub">A loop of <em>see → reason → act</em>, powered by Claude tool use. Each cycle: take a screenshot, give it to the model with the goal and recent history, get back a tool call (tap, swipe, type, scroll, screenshot, mark friction, finish). Append to the run log. Repeat.</p>
-      <ul class="bullets">
-        <li><strong>Vision-grounded.</strong> Coordinates come from the model's read of the screenshot, not from a11y trees or stable selectors.</li>
-        <li><strong>Persona-conditioned.</strong> The same goal under "first-time user" vs. "returning expert" produces different paths and different friction.</li>
-        <li><strong>Replayable.</strong> Every run writes append-only JSONL plus screenshots. Open an old run and step through it like a flight recorder.</li>
-        <li><strong>Cycle-aware.</strong> A built-in detector spots loops and forces the agent to break out or call it.</li>
-      </ul>
-      <p class="cta-inline">Deeper details on <a href="https://github.com/awizemann/harness/wiki/Agent-Loop">Agent-Loop</a>, <a href="https://github.com/awizemann/harness/wiki/Tool-Schema">Tool-Schema</a>, and <a href="https://github.com/awizemann/harness/wiki/Run-Replay-Format">Run-Replay-Format</a> on the wiki.</p>
-    </div>
-  </section>
+      <h2 id="get-started-title">Get started</h2>
+      <p class="sub">Harness is alpha. Build from source today; signed binary releases follow.</p>
 
-  <section class="band band-alt" aria-labelledby="get-started">
-    <div class="wrap">
-      <h2 id="get-started">Get started</h2>
-      <p class="sub">Harness is alpha. Build from source today; binary releases follow.</p>
+      <div class="get-started-grid">
+        <div>
+          <h3 class="h3-tight">Prerequisites</h3>
+          <ul class="bullets">
+            <li>macOS 14 or later, Xcode 16+ (Swift 6 strict concurrency)</li>
+            <li><a href="https://brew.sh">Homebrew</a> + <code>idb-companion</code> + <a href="https://github.com/yonaskolb/XcodeGen">xcodegen</a></li>
+            <li>An <a href="https://console.anthropic.com">Anthropic API key</a> (stored in the macOS Keychain on first run)</li>
+          </ul>
 
-      <h3 class="h3-tight">Prerequisites</h3>
-      <ul class="bullets">
-        <li>macOS 14 or later, Xcode 16+ (Swift 6 strict concurrency)</li>
-        <li><a href="https://brew.sh">Homebrew</a> + <code>idb-companion</code> + <a href="https://github.com/yonaskolb/XcodeGen">xcodegen</a></li>
-        <li>An <a href="https://console.anthropic.com">Anthropic API key</a> (stored in the macOS Keychain on first run)</li>
-      </ul>
-
-      <h3 class="h3-tight">Build</h3>
-      <pre class="code"><code>git clone https://github.com/awizemann/harness.git
+          <h3 class="h3-tight">Build</h3>
+          <pre class="code"><code>git clone https://github.com/awizemann/harness.git
 cd harness
 git submodule update --init --recursive
 brew tap facebook/fb &amp;&amp; brew install idb-companion xcodegen
 xcodegen generate
 open Harness.xcodeproj</code></pre>
 
-      <p class="cta-inline">Full setup, including first-run WDA build details, lives on <a href="https://github.com/awizemann/harness/wiki/Build-and-Run">Build-and-Run</a>.</p>
+          <p class="cta-inline">Full setup, including first-run WDA build details, lives on <a href="https://github.com/awizemann/harness/wiki/Build-and-Run">Build-and-Run</a>.</p>
+        </div>
+        <picture class="pic">
+          <img src="/harness/assets/screenshots/first-run-wizard.png"
+               data-dark-src="/harness/assets/screenshots/first-run-wizard-dark.png"
+               alt="First Run Wizard — Anthropic API key entry with the tooling-check rail showing each dependency green"
+               width="1440" height="900" loading="lazy" decoding="async">
+        </picture>
+      </div>
     </div>
   </section>
 
-  <section class="band" aria-labelledby="contributing">
+  <!-- 8. FAQ -->
+  <section id="faq" class="band" aria-labelledby="faq-title">
     <div class="wrap">
-      <h2 id="contributing">Contributing</h2>
-      <p class="sub">PRs welcome. The <a href="https://github.com/awizemann/harness/blob/main/CONTRIBUTING.md">contributing guide</a> covers setup, the architecture rules, and the public-surfaces sync rule. Each public surface (this site, the wiki, the README) is updated in the same PR as the code change that affects it.</p>
-      <ul class="bullets">
-        <li><strong>Architecture:</strong> MVVM-F, Swift 6 strict concurrency, single subprocess actor.</li>
-        <li><strong>Standards live in</strong> <a href="https://github.com/awizemann/harness/tree/main/standards"><code>standards/</code></a> — read them before adding code.</li>
-        <li><strong>The wiki</strong> at <a href="https://github.com/awizemann/harness/wiki">github.com/awizemann/harness/wiki</a> is the dev reference.</li>
-      </ul>
+      <h2 id="faq-title">FAQ</h2>
+      <p class="sub">Quick answers to the questions developers usually ask before installing.</p>
+      <div class="faq-list">
+        <details>
+          <summary>Does Harness need access to my source code?</summary>
+          <div>
+            <p>No. The agent reads screenshots and reasons about visible UI; it never reads your source. For iOS, you provide a buildable Xcode project so Harness can produce a <code>.app</code> to install in the Simulator. For macOS, a pre-built <code>.app</code> is enough. For web, just a URL.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Does Harness drive a real iPhone, or only the Simulator?</summary>
+          <div>
+            <p>v0.1 is iOS-Simulator-only. Real-device support over WebDriverAgent and idb is on the roadmap. macOS targets are real (it's your actual Mac). Web targets render in an embedded <code>WKWebView</code> — the same engine Safari uses.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Which AI models does Harness support?</summary>
+          <div>
+            <p>Harness supports vision tool-use models from <strong>Anthropic, OpenAI, and Google</strong>. Today that's:</p>
+            <ul class="bullets">
+              <li><strong>Anthropic</strong> — Claude Opus 4.7, Sonnet 4.6, Haiku 4.5</li>
+              <li><strong>OpenAI</strong> — GPT-5 Mini, GPT-4.1 Nano</li>
+              <li><strong>Google</strong> — Gemini 2.5 Flash, Gemini 2.5 Flash Lite</li>
+            </ul>
+            <p>You bring your own API key for whichever provider you pick — keys are stored in the macOS Keychain, one entry per provider. The Compose Run form has a per-run provider + model picker, so you can trade speed for capability without leaving the app.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Roughly how much does a run cost?</summary>
+          <div>
+            <p>It depends on the goal length, step budget, model, and provider. A typical 20–40 step run on a mid-tier model lands in the few-cents-to-low-dollars range; smaller models (Haiku 4.5, Gemini 2.5 Flash Lite, GPT-4.1 Nano) shave that further. Token use is dominated by screenshot inputs. The step and token budgets cap cost predictably.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Can I run Harness in CI, headless?</summary>
+          <div>
+            <p>Not yet. v0.1 is a desktop tool with a GUI; a headless <code>harness run goal.md</code> mode is on the roadmap. If you want to fail PR builds on UX regressions, watch <a href="https://github.com/awizemann/harness/issues">the issue tracker</a>.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Does Harness self-update?</summary>
+          <div>
+            <p>Auto-update isn't wired in v0.1. Releases are <a href="https://github.com/awizemann/harness/releases">GitHub releases</a> for now; a Sparkle-based auto-updater is queued.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Does my data leave my Mac?</summary>
+          <div>
+            <p>Screenshots and step events go to the Anthropic API — that's the inference path that drives the agent. Run logs (JSONL plus screenshots) live on disk in <code>~/Library/Application Support/Harness/runs/</code>. Nothing else phones home — no analytics, no telemetry, no remote logging.</p>
+          </div>
+        </details>
+        <details>
+          <summary>What versions of Xcode and macOS do I need?</summary>
+          <div>
+            <p>macOS 14 (Sonoma) or later, and Xcode 16 or later — Harness uses Swift 6 strict concurrency. The iOS Simulator ships with Xcode.</p>
+          </div>
+        </details>
+      </div>
     </div>
   </section>
 
@@ -172,7 +475,7 @@ open Harness.xcodeproj</code></pre>
 
 <footer class="footer">
   <div class="wrap footer-row">
-    <p>© 2026 Alan Wizemann · <a href="https://github.com/awizemann/harness/blob/main/LICENSE">MIT</a> · <a href="https://github.com/awizemann/harness">Source</a> · <a href="https://github.com/awizemann/harness/wiki">Wiki</a></p>
+    <p>© 2026 Alan Wizemann · <a href="https://github.com/awizemann/harness/blob/main/LICENSE">MIT</a> · <a href="https://github.com/awizemann/harness">Source</a> · <a href="https://github.com/awizemann/harness/wiki">Wiki</a> · <a href="https://github.com/awizemann/harness/blob/main/CONTRIBUTING.md">Contribute</a></p>
     <p class="footer-meta">v<code>{{VERSION}}</code> · {{LASTMOD}}</p>
   </div>
 </footer>

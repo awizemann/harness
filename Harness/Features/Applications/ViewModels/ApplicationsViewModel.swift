@@ -51,11 +51,21 @@ final class ApplicationsViewModel {
     // MARK: Loading
 
     /// Reload the applications list. Call from `.task { ... }`.
+    ///
+    /// The store currently returns rows sorted by `lastUsedAt` descending —
+    /// useful for "recents" surfaces but confusing for a library list where
+    /// users expect to scan alphabetically. Sort by name here, locale-aware
+    /// + case-insensitive, so the displayed order matches the user's mental
+    /// model. `filtered(search:)` preserves the order, so the search results
+    /// stay alphabetised too.
     func reload(includeArchived: Bool = false) async {
         isLoading = true
         defer { isLoading = false }
         do {
-            self.applications = try await store.applications(includeArchived: includeArchived)
+            let raw = try await store.applications(includeArchived: includeArchived)
+            self.applications = raw.sorted { lhs, rhs in
+                lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
             self.loadError = nil
         } catch {
             Self.logger.error("applications load failed: \(error.localizedDescription, privacy: .public)")
