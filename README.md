@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: macOS 14+](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Targets: iOS · macOS · Web](https://img.shields.io/badge/targets-iOS%20%C2%B7%20macOS%20%C2%B7%20Web-3DDC97)
-![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue)
+![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-blue)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
 
 <p align="center">
@@ -39,7 +39,17 @@ Three artifacts come out of every run:
 
 Per-app setting: each Application declares its kind once at create time. The agent's tool schema (clicks vs swipes vs key shortcuts vs navigate) and the system-prompt context block re-shape per platform. Run history, replay, and friction reporting are platform-neutral.
 
-> **Status:** v0.1.0 (alpha). All three platforms are wired end-to-end. macOS needs Screen Recording permission. Web is WebKit-only in v0.1; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** v0.2.0 (alpha). All three platforms wired end-to-end; **multi-provider LLM support** (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5 + OpenAI GPT-5 Mini / GPT-4.1 Nano + Google Gemini 2.5 Flash / Flash Lite); per-provider Keychain storage; configurable per-model token budgets; unlimited-step option. macOS needs Screen Recording permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## What's new in 0.2.0
+
+- **Seven supported models across three providers.** Pick a provider in Settings, then a model. Compose Run can override per-run. Each provider has its own Keychain entry; swap mid-session without restart.
+- **Per-model token budgets.** The legacy "Opus → 250k, else 1M" ternary is gone — every model has a justified default and a hard ceiling, configurable globally in Settings and per-run in Compose Run.
+- **Unlimited steps.** Toggle in Settings, Compose Run, or Application defaults. The token budget + cycle detector remain the safety rails.
+- **Settings persist across launches.** Default provider, model, mode, step + token budgets, and simulator visibility all survive a restart now (they didn't in 0.1).
+- **Real screenshot thumbnails** in the step feed, sized to each platform's aspect ratio.
+- **Loop hardening for cheaper models.** Multi-tool / zero-tool / parse-failure responses now surface a corrective hint to the model on retry instead of failing the run silently.
+- 218 unit tests passing (was 175 in 0.1).
 
 ## First clone
 
