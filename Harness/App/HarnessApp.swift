@@ -192,11 +192,6 @@ final class HarnessAppDelegate: NSObject, NSApplicationDelegate {
     private var observers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("[Harness] applicationDidFinishLaunching ran. NSApp.windows.count=\(NSApp.windows.count)")
-        for (idx, w) in NSApp.windows.enumerated() {
-            print("[Harness]   window[\(idx)]: class=\(type(of: w)) titled=\(w.styleMask.contains(.titled)) resizable=\(w.styleMask.contains(.resizable)) panel=\(w is NSPanel) frame=\(NSStringFromRect(w.frame))")
-        }
-
         // Hook resize / move on every window — filter to "main content
         // window" inside the closure. Avoids the race where the
         // WindowGroup window isn't realised yet at registration time.
@@ -214,9 +209,7 @@ final class HarnessAppDelegate: NSObject, NSApplicationDelegate {
                   window.styleMask.contains(.resizable),
                   !(window is NSPanel)
             else { return }
-            let str = NSStringFromRect(window.frame)
-            UserDefaults.standard.set(str, forKey: Self.frameKey)
-            print("[Harness] persisted frame=\(str) (event=\(note.name.rawValue))")
+            UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.frameKey)
         }
         let resize = NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification,
@@ -252,26 +245,20 @@ final class HarnessAppDelegate: NSObject, NSApplicationDelegate {
     private func applySavedFrame(retriesRemaining: Int, delay: TimeInterval) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
-            let window = NSApp.windows.first(where: Self.looksLikeMainContentWindow)
-            print("[Harness] applySavedFrame tick: foundWindow=\(window != nil) retriesRemaining=\(retriesRemaining)")
-            if let window {
+            if let window = NSApp.windows.first(where: Self.looksLikeMainContentWindow) {
                 if let saved = UserDefaults.standard.string(forKey: Self.frameKey) {
                     let rect = NSRectFromString(saved)
+                    // Defend against a corrupt persisted frame — anything
+                    // smaller than 100×100 would render the app unusable.
+                    // Falls through to the WindowGroup's `.defaultSize`.
                     if rect.width > 100, rect.height > 100 {
-                        print("[Harness] restoring saved frame=\(saved)")
                         window.setFrame(rect, display: true, animate: false)
-                    } else {
-                        print("[Harness] saved frame degenerate; ignoring (\(saved))")
                     }
-                } else {
-                    print("[Harness] no saved frame yet — first launch path")
                 }
                 return
             }
             if retriesRemaining > 0 {
                 self.applySavedFrame(retriesRemaining: retriesRemaining - 1, delay: 0.1)
-            } else {
-                print("[Harness] gave up looking for the main window after retries")
             }
         }
     }
