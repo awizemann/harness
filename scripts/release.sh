@@ -53,7 +53,8 @@ SCHEME="Harness"
 PROJECT="Harness.xcodeproj"
 NOTARY_PROFILE="${HARNESS_NOTARY_PROFILE:-harness-notary}"
 SIGNING_IDENTITY="Developer ID Application"
-DOWNLOAD_URL_BASE="https://github.com/awizemann/harness/releases/download"
+GH_REPO="awizemann/harness"
+DOWNLOAD_URL_BASE="https://github.com/${GH_REPO}/releases/download"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/build"
 ARCHIVE_PATH="$BUILD_DIR/Harness.xcarchive"
@@ -111,6 +112,34 @@ xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" --output-format pl
 
 # gh authed.
 gh auth status >/dev/null 2>&1 || die "'gh' is not authenticated. Run 'gh auth login'."
+
+# 0.2.0 release tripped on this — `gh` always prefers $GITHUB_TOKEN over its
+# keyring, and the env-var token didn't have Releases: Write on this repo. The
+# build + notarize + tag + push had already succeeded by the time we found out,
+# so the recovery was a manual `gh release create`. Warn loudly upfront and
+# verify write access before any of that work happens.
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  warn "GITHUB_TOKEN is set in your environment."
+  warn "  gh CLI will use this token instead of its keyring credentials."
+  warn "  If the env-var token lacks 'repo' (classic) or 'Contents: Write' (fine-grained),"
+  warn "  the release will 403 AFTER the build/notarize cycle."
+  warn "  Recovery: 'unset GITHUB_TOKEN' to fall back to the keyring, or rotate the token."
+fi
+
+# Confirm the active token can actually write to releases on $GH_REPO. The
+# cheapest proxy is the authed user's push permission on the repo — true means
+# the token can create releases; false / missing means it can't.
+log "Checking gh has write access to ${GH_REPO}"
+PUSH_OK="$(gh api "/repos/${GH_REPO}" --jq '.permissions.push' 2>/dev/null || echo "false")"
+if [[ "$PUSH_OK" != "true" ]]; then
+  die "gh's active token has no write access to ${GH_REPO}. Releases would 403 at the end of the build.
+
+Recovery:
+  1. If GITHUB_TOKEN is set in your shell:  unset GITHUB_TOKEN
+  2. (re-)auth gh with 'repo' scope:        gh auth login
+  3. Confirm scopes:                        gh auth status
+  4. Re-run:                                ./scripts/release.sh ${VERSION}"
+fi
 
 log "Preflight OK"
 
