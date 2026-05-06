@@ -10,6 +10,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 enum ActionsTab: String, Hashable, CaseIterable {
     case actions
@@ -372,10 +373,21 @@ struct ActionsView: View {
 
 // MARK: - Rows
 
+/// Shared row background tint — selected wins, hover is the secondary
+/// pull-in tint, idle rows are clear. Mirrors `ApplicationRow` /
+/// `PersonaRow` so the three library lists feel identical.
+private func rowBackground(selected: Bool, hovering: Bool) -> Color {
+    if selected { return Color.harnessAccentSoft }
+    if hovering { return Color.harnessAccent.opacity(0.06) }
+    return .clear
+}
+
 private struct ActionRow: View {
     let action: ActionSnapshot
     let chainCount: Int
     let selected: Bool
+
+    @State private var isHovered: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -387,7 +399,7 @@ private struct ActionRow: View {
                     .foregroundStyle(Color.harnessText)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Spacer()
+                Spacer(minLength: 0)
                 if action.archived {
                     archivedChip
                 } else if chainCount > 0 {
@@ -406,10 +418,21 @@ private struct ActionRow: View {
         .padding(.horizontal, Theme.spacing.m)
         .padding(.vertical, Theme.spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color.harnessAccentSoft : Color.clear)
+        .background(rowBackground(selected: selected, hovering: isHovered))
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
         }
+        .animation(Theme.motion.micro, value: isHovered)
+        .animation(Theme.motion.micro, value: selected)
     }
 
     private var chainCountChip: some View {
@@ -433,6 +456,8 @@ private struct ChainRow: View {
     let brokenStepCount: Int
     let selected: Bool
 
+    @State private var isHovered: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: Theme.spacing.s) {
@@ -443,7 +468,7 @@ private struct ChainRow: View {
                     .foregroundStyle(Color.harnessText)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Spacer()
+                Spacer(minLength: 0)
                 if chain.archived {
                     archivedChip
                 } else if brokenStepCount > 0 {
@@ -461,10 +486,21 @@ private struct ChainRow: View {
         .padding(.horizontal, Theme.spacing.m)
         .padding(.vertical, Theme.spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color.harnessAccentSoft : Color.clear)
+        .background(rowBackground(selected: selected, hovering: isHovered))
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
         }
+        .animation(Theme.motion.micro, value: isHovered)
+        .animation(Theme.motion.micro, value: selected)
     }
 
     private var stepLabel: String {

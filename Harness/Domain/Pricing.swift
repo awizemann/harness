@@ -76,6 +76,23 @@ extension AgentModel {
                 cacheReadPerMTok: 0.05,
                 cacheCreationPerMTok: 0.0
             )
+        case .gemini25Flash:
+            // Google mid-tier multimodal. Implicit caching gives 90% off
+            // on cached input tokens. No explicit cache write fee.
+            return PricingRate(
+                inputPerMTok: 0.30,
+                outputPerMTok: 2.50,
+                cacheReadPerMTok: 0.075,
+                cacheCreationPerMTok: 0.0
+            )
+        case .gemini25FlashLite:
+            // Google's cheapest model with vision + tools.
+            return PricingRate(
+                inputPerMTok: 0.10,
+                outputPerMTok: 0.40,
+                cacheReadPerMTok: 0.025,
+                cacheCreationPerMTok: 0.0
+            )
         }
     }
 }

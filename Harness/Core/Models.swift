@@ -237,20 +237,25 @@ enum ModelProvider: String, Sendable, Hashable, Codable, CaseIterable {
 
 enum AgentModel: String, Sendable, Hashable, Codable, CaseIterable {
     // Anthropic
-    case opus47    = "claude-opus-4-7"
-    case sonnet46  = "claude-sonnet-4-6"
-    case haiku45   = "claude-haiku-4-5"
+    case opus47            = "claude-opus-4-7"
+    case sonnet46          = "claude-sonnet-4-6"
+    case haiku45           = "claude-haiku-4-5"
     // OpenAI
-    case gpt5Mini  = "gpt-5-mini"
-    case gpt41Nano = "gpt-4.1-nano"
+    case gpt5Mini          = "gpt-5-mini"
+    case gpt41Nano         = "gpt-4.1-nano"
+    // Google
+    case gemini25Flash     = "gemini-2.5-flash"
+    case gemini25FlashLite = "gemini-2.5-flash-lite"
 
     var displayName: String {
         switch self {
-        case .opus47:    return "Opus 4.7"
-        case .sonnet46:  return "Sonnet 4.6"
-        case .haiku45:   return "Haiku 4.5"
-        case .gpt5Mini:  return "GPT-5 Mini"
-        case .gpt41Nano: return "GPT-4.1 Nano"
+        case .opus47:            return "Opus 4.7"
+        case .sonnet46:          return "Sonnet 4.6"
+        case .haiku45:           return "Haiku 4.5"
+        case .gpt5Mini:          return "GPT-5 Mini"
+        case .gpt41Nano:         return "GPT-4.1 Nano"
+        case .gemini25Flash:     return "Gemini 2.5 Flash"
+        case .gemini25FlashLite: return "Gemini 2.5 Flash Lite"
         }
     }
 
@@ -258,8 +263,9 @@ enum AgentModel: String, Sendable, Hashable, Codable, CaseIterable {
     /// the factory hands back and which Keychain key the request reads.
     var provider: ModelProvider {
         switch self {
-        case .opus47, .sonnet46, .haiku45: return .anthropic
-        case .gpt5Mini, .gpt41Nano:        return .openai
+        case .opus47, .sonnet46, .haiku45:           return .anthropic
+        case .gpt5Mini, .gpt41Nano:                   return .openai
+        case .gemini25Flash, .gemini25FlashLite:      return .google
         }
     }
 }

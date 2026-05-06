@@ -109,15 +109,4 @@ enum LLMShared {
         return nil
     }
 
-    /// Per-platform `tools` list ready to embed in a request body, in the
-    /// shape the provider expects. Centralizes the canonical → wire-format
-    /// projection so per-client code stays small.
-    static func toolsBody(for provider: ModelProvider, platform: PlatformKind) -> [[String: Any]] {
-        let canonical = ToolSchema.canonical(platform: platform)
-        switch provider {
-        case .anthropic: return ToolSchema.anthropicShape(canonical, cacheLast: true)
-        case .openai:    return ToolSchema.openAIShape(canonical)
-        case .google:    return [] // Phase 2b — Gemini shape lands here
-        }
-    }
 }

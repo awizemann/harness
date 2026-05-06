@@ -27,11 +27,7 @@ enum LLMClientFactory {
         case .openai:
             return OpenAIClient(keychain: keychain)
         case .google:
-            // Phase 2b: GeminiClient lands here. Until then, fall back to
-            // Anthropic so a misconfigured run doesn't crash — the user
-            // sees a missing-API-key error from the Anthropic client and
-            // can switch providers in Settings.
-            return ClaudeClient(keychain: keychain)
+            return GeminiClient(keychain: keychain)
         }
     }
 }

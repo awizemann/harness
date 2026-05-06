@@ -94,6 +94,70 @@ enum ToolSchema {
         }
     }
 
+    /// Google Gemini `generateContent` shape:
+    /// `[{functionDeclarations: [{name, description, parameters}]}]`.
+    ///
+    /// Gemini's strict OpenAPI parser differs from JSON Schema in two
+    /// ways the translator handles:
+    ///   1. `type` values are uppercased (`OBJECT`, `STRING`, `INTEGER`,
+    ///      `NUMBER`, `BOOLEAN`, `ARRAY`).
+    ///   2. `additionalProperties` is rejected outright — strip on the
+    ///      way through.
+    ///
+    /// Recursive: descends into `properties.<each>` and `items` so nested
+    /// schemas (arrays, sub-objects) get the same treatment.
+    static func geminiShape(_ tools: [CanonicalTool]) -> [[String: Any]] {
+        let declarations: [[String: Any]] = tools.map { t in
+            [
+                "name": t.name,
+                "description": t.description,
+                "parameters": geminiSchema(t.jsonSchema)
+            ]
+        }
+        return [["functionDeclarations": declarations]]
+    }
+
+    /// Translate a JSON Schema dictionary to the shape Gemini expects.
+    private static func geminiSchema(_ schema: [String: Any]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        for (key, value) in schema {
+            switch key {
+            case "type":
+                if let s = value as? String {
+                    out["type"] = s.uppercased()
+                } else {
+                    out["type"] = value
+                }
+            case "additionalProperties":
+                // Skip — Gemini's parser rejects.
+                continue
+            case "properties":
+                if let dict = value as? [String: Any] {
+                    var props: [String: Any] = [:]
+                    for (k, v) in dict {
+                        if let inner = v as? [String: Any] {
+                            props[k] = geminiSchema(inner)
+                        } else {
+                            props[k] = v
+                        }
+                    }
+                    out["properties"] = props
+                } else {
+                    out["properties"] = value
+                }
+            case "items":
+                if let inner = value as? [String: Any] {
+                    out["items"] = geminiSchema(inner)
+                } else {
+                    out["items"] = value
+                }
+            default:
+                out[key] = value
+            }
+        }
+        return out
+    }
+
     // MARK: - Backwards-compatible Anthropic per-platform helpers
 
     /// Anthropic shape for the iOS toolset. `cacheControl` adds the prompt-

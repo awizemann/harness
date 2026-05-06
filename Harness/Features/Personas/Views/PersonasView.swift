@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct PersonasView: View {
 
@@ -213,6 +214,8 @@ private struct PersonaRow: View {
     let persona: PersonaSnapshot
     let selected: Bool
 
+    @State private var isHovered: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: Theme.spacing.s) {
@@ -221,7 +224,7 @@ private struct PersonaRow: View {
                 Text(persona.name)
                     .font(HFont.row)
                     .foregroundStyle(Color.harnessText)
-                Spacer()
+                Spacer(minLength: 0)
                 if persona.isBuiltIn {
                     builtInChip
                 } else if persona.archived {
@@ -240,10 +243,30 @@ private struct PersonaRow: View {
         .padding(.horizontal, Theme.spacing.m)
         .padding(.vertical, Theme.spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color.harnessAccentSoft : Color.clear)
+        .background(rowBackground)
+        // Hit-test the row's whole frame edge-to-edge; selected state
+        // wins over hover; matches `ApplicationRow`'s pattern so the
+        // three library lists feel identical to interact with.
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
         }
+        .animation(Theme.motion.micro, value: isHovered)
+        .animation(Theme.motion.micro, value: selected)
+    }
+
+    private var rowBackground: Color {
+        if selected { return Color.harnessAccentSoft }
+        if isHovered { return Color.harnessAccent.opacity(0.06) }
+        return .clear
     }
 
     private var builtInChip: some View {

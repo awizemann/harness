@@ -94,6 +94,83 @@ struct ToolCallEquivalenceTests {
     }
 }
 
+@Suite("AgentLoop — parse-retry hint propagation")
+struct AgentLoopRetryHintTests {
+
+    @Test("Retry passes the prior parse-failure detail back to the model")
+    func retryHintCarriesPriorDetail() async throws {
+        // Mock LLM: first call throws invalidToolCall; second call
+        // returns a markGoalDone so the step succeeds.
+        var calls: Int = 0
+        let detail = "model emitted 2 tool calls (tap, wait); expected exactly one"
+        let llm = MockLLMClient(mode: .lookup({ _ in
+            // Lookup mode returns nil on first call to force the throw
+            // path inside MockLLMClient. We need a different mock for this.
+            // See below — we instead use a custom client.
+            return nil
+        }))
+        _ = (calls, llm, detail)
+        // Use a hand-rolled mock to control the throw/success sequence.
+        let twoStepLLM = TwoCallLLM(firstError: detail)
+        let loop = AgentLoop(llm: twoStepLLM, promptLibrary: StubPromptLibrary())
+
+        let projectURL = URL(fileURLWithPath: "/tmp/x.xcodeproj")
+        let request = RunRequest(
+            goal: "test",
+            persona: "tester",
+            project: ProjectRequest(path: projectURL, scheme: "x", displayName: "x"),
+            simulator: SimulatorRef(udid: "u", name: "n", runtime: "r",
+                                    pointSize: CGSize(width: 100, height: 200), scaleFactor: 1)
+        )
+        let state = AgentLoopState(
+            request: request,
+            stepIndex: 1,
+            history: [],
+            currentScreenshotJPEG: Data([0xFF, 0xD8]),
+            tokensUsedSoFar: .zero
+        )
+        let decision = try await loop.step(state: state)
+        // Decision should be the markGoalDone the second call returned.
+        #expect(decision.toolCall.tool == .markGoalDone)
+        // The second request must have carried the retry hint.
+        let observed = await twoStepLLM.observedRetryHints()
+        #expect(observed.count == 2)
+        #expect(observed[0] == nil, "first attempt should have no hint")
+        #expect(observed[1] == detail, "second attempt's hint should equal the prior detail")
+    }
+}
+
+/// Test-only LLM that throws once with a chosen detail, then returns a
+/// `markGoalDone` response. Captures the `retryHint` field of every
+/// inbound request so the test can assert propagation.
+private actor TwoCallLLM: LLMClient {
+    private(set) var tokensUsedThisRun: TokenUsage = .zero
+    private var hints: [String?] = []
+    private var calls: Int = 0
+    private let firstError: String
+
+    init(firstError: String) {
+        self.firstError = firstError
+    }
+
+    func step(_ request: LLMStepRequest) async throws -> LLMStepResponse {
+        hints.append(request.retryHint)
+        calls += 1
+        if calls == 1 {
+            throw LLMError.invalidToolCall(detail: firstError)
+        }
+        return .makingMarkDone(verdict: .success, summary: "ok")
+    }
+
+    func reset() {
+        tokensUsedThisRun = .zero
+        hints = []
+        calls = 0
+    }
+
+    func observedRetryHints() -> [String?] { hints }
+}
+
 @Suite("AgentLoop — screenshot dHash")
 struct ScreenshotHasherTests {
 
