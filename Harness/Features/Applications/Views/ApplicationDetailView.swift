@@ -9,6 +9,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct ApplicationDetailView: View {
 
@@ -33,39 +34,45 @@ struct ApplicationDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.spacing.l) {
                 headerBar
-                ProjectPanel(
-                    application: application,
-                    onRePickProject: onRePickProject
-                )
-                SimulatorPanel(
-                    application: application,
-                    onChange: { sim in
-                        var updated = application
-                        updated = ApplicationSnapshot(
-                            id: updated.id,
-                            name: updated.name,
-                            createdAt: updated.createdAt,
-                            lastUsedAt: Date(),
-                            archivedAt: updated.archivedAt,
-                            platformKindRaw: updated.platformKindRaw,
-                            projectPath: updated.projectPath,
-                            projectBookmark: updated.projectBookmark,
-                            scheme: updated.scheme,
-                            defaultSimulatorUDID: sim.udid,
-                            defaultSimulatorName: sim.name,
-                            defaultSimulatorRuntime: sim.runtime,
-                            macAppBundlePath: updated.macAppBundlePath,
-                            macAppBundleBookmark: updated.macAppBundleBookmark,
-                            webStartURL: updated.webStartURL,
-                            webViewportWidthPt: updated.webViewportWidthPt,
-                            webViewportHeightPt: updated.webViewportHeightPt,
-                            defaultModelRaw: updated.defaultModelRaw,
-                            defaultModeRaw: updated.defaultModeRaw,
-                            defaultStepBudget: updated.defaultStepBudget
+                // Per-platform "where does this run?" section. iOS keeps
+                // its Project + Default-simulator panels (existing).
+                // macOS shows whichever launch source the user picked
+                // at create time — pre-built bundle panel OR project +
+                // scheme. Web shows URL + viewport. None of the three
+                // shows the iOS simulator picker (was rendering a useless
+                // 'No simulator picked' card for macOS / web Applications).
+                switch application.platformKind {
+                case .iosSimulator:
+                    ProjectPanel(
+                        application: application,
+                        onRePickProject: onRePickProject
+                    )
+                    SimulatorPanel(
+                        application: application,
+                        onChange: { sim in
+                            onUpdateDefaults(application.withSimulator(sim))
+                        }
+                    )
+                case .macosApp:
+                    if (application.macAppBundlePath ?? "").isEmpty {
+                        // xcodebuild-from-project mode — same Project panel
+                        // shape as iOS, sans the simulator step.
+                        ProjectPanel(
+                            application: application,
+                            onRePickProject: onRePickProject
                         )
-                        onUpdateDefaults(updated)
+                    } else {
+                        MacBundlePanel(
+                            application: application,
+                            onUpdateDefaults: onUpdateDefaults
+                        )
                     }
-                )
+                case .web:
+                    WebPanel(
+                        application: application,
+                        onUpdateDefaults: onUpdateDefaults
+                    )
+                }
                 DefaultsPanel(
                     application: application,
                     onUpdateDefaults: onUpdateDefaults
@@ -171,6 +178,91 @@ struct ApplicationDetailView: View {
     }
 }
 
+// MARK: - Snapshot helpers
+
+private extension ApplicationSnapshot {
+    /// Return a copy with a different default simulator. Keeps every
+    /// other field intact so callers don't have to write the long
+    /// memberwise rebuild on every panel.
+    func withSimulator(_ sim: SimulatorRef) -> ApplicationSnapshot {
+        ApplicationSnapshot(
+            id: id,
+            name: name,
+            createdAt: createdAt,
+            lastUsedAt: Date(),
+            archivedAt: archivedAt,
+            platformKindRaw: platformKindRaw,
+            projectPath: projectPath,
+            projectBookmark: projectBookmark,
+            scheme: scheme,
+            defaultSimulatorUDID: sim.udid,
+            defaultSimulatorName: sim.name,
+            defaultSimulatorRuntime: sim.runtime,
+            macAppBundlePath: macAppBundlePath,
+            macAppBundleBookmark: macAppBundleBookmark,
+            webStartURL: webStartURL,
+            webViewportWidthPt: webViewportWidthPt,
+            webViewportHeightPt: webViewportHeightPt,
+            defaultModelRaw: defaultModelRaw,
+            defaultModeRaw: defaultModeRaw,
+            defaultStepBudget: defaultStepBudget
+        )
+    }
+
+    /// Replace the macOS pre-built bundle path. Clears any project
+    /// fields so the Application stays in a single launch-source state.
+    func withMacBundlePath(_ path: String?) -> ApplicationSnapshot {
+        ApplicationSnapshot(
+            id: id,
+            name: name,
+            createdAt: createdAt,
+            lastUsedAt: Date(),
+            archivedAt: archivedAt,
+            platformKindRaw: platformKindRaw,
+            projectPath: "",
+            projectBookmark: nil,
+            scheme: "",
+            defaultSimulatorUDID: nil,
+            defaultSimulatorName: nil,
+            defaultSimulatorRuntime: nil,
+            macAppBundlePath: path,
+            macAppBundleBookmark: nil,
+            webStartURL: webStartURL,
+            webViewportWidthPt: webViewportWidthPt,
+            webViewportHeightPt: webViewportHeightPt,
+            defaultModelRaw: defaultModelRaw,
+            defaultModeRaw: defaultModeRaw,
+            defaultStepBudget: defaultStepBudget
+        )
+    }
+
+    /// Replace the web Application's start URL + viewport.
+    func withWeb(url: String, width: Int, height: Int) -> ApplicationSnapshot {
+        ApplicationSnapshot(
+            id: id,
+            name: name,
+            createdAt: createdAt,
+            lastUsedAt: Date(),
+            archivedAt: archivedAt,
+            platformKindRaw: platformKindRaw,
+            projectPath: "",
+            projectBookmark: nil,
+            scheme: "",
+            defaultSimulatorUDID: nil,
+            defaultSimulatorName: nil,
+            defaultSimulatorRuntime: nil,
+            macAppBundlePath: nil,
+            macAppBundleBookmark: nil,
+            webStartURL: url,
+            webViewportWidthPt: width,
+            webViewportHeightPt: height,
+            defaultModelRaw: defaultModelRaw,
+            defaultModeRaw: defaultModeRaw,
+            defaultStepBudget: defaultStepBudget
+        )
+    }
+}
+
 // MARK: - Panels
 
 private struct ProjectPanel: View {
@@ -246,6 +338,126 @@ private struct SimulatorPanel: View {
             }
             .padding(Theme.spacing.l)
         }
+    }
+}
+
+/// macOS pre-built `.app` panel — shown when the Application's launch
+/// source is the bundle path (i.e. `macAppBundlePath` non-empty).
+/// Mirrors `MacBundlePicker` from the create form: filename + path,
+/// Change… / Clear buttons.
+private struct MacBundlePanel: View {
+    let application: ApplicationSnapshot
+    let onUpdateDefaults: (ApplicationSnapshot) -> Void
+
+    var body: some View {
+        PanelContainer(title: "Launch source · pre-built .app") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                HStack(spacing: Theme.spacing.s) {
+                    Image(systemName: "macwindow")
+                        .foregroundStyle(Color.harnessAccent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text((application.macAppBundlePath ?? "") .isEmpty
+                             ? "—"
+                             : ((application.macAppBundlePath ?? "") as NSString).lastPathComponent)
+                            .font(.body)
+                        Text(application.macAppBundlePath ?? "")
+                            .font(.caption).foregroundStyle(.tertiary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button("Change…") {
+                        if let path = pickAppBundle() {
+                            onUpdateDefaults(application.withMacBundlePath(path))
+                        }
+                    }
+                }
+                Text("Harness launches this bundle via NSWorkspace and skips xcodebuild.")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(Theme.spacing.l)
+        }
+    }
+
+    private func pickAppBundle() -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.title = "Pick a macOS app bundle"
+        panel.prompt = "Pick"
+        return panel.runModal() == .OK ? panel.url?.path : nil
+    }
+}
+
+/// Web Application panel — shown for `.web` Applications. URL +
+/// viewport editor; saves through `onUpdateDefaults` on commit.
+private struct WebPanel: View {
+    let application: ApplicationSnapshot
+    let onUpdateDefaults: (ApplicationSnapshot) -> Void
+
+    @State private var urlDraft: String = ""
+    @State private var widthDraft: Int = 1280
+    @State private var heightDraft: Int = 800
+    @State private var hydrated: Bool = false
+
+    var body: some View {
+        PanelContainer(title: "Web target") {
+            VStack(alignment: .leading, spacing: Theme.spacing.m) {
+                VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                    Text("Start URL").font(.callout.weight(.medium))
+                    TextField("https://example.com/login", text: $urlDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .onSubmit(commitIfValid)
+                    Text("The agent loads this URL on first step. Cookies persist across legs in the same run.")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                HStack(spacing: Theme.spacing.l) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Viewport width (px)").font(.callout.weight(.medium))
+                        TextField("1280", value: $widthDraft, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+                            .onSubmit(commitIfValid)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Viewport height (px)").font(.callout.weight(.medium))
+                        TextField("800", value: $heightDraft, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+                            .onSubmit(commitIfValid)
+                    }
+                    Spacer()
+                    Button("Save") { commitIfValid() }
+                        .buttonStyle(.bordered)
+                        .disabled(!hasUnsavedChanges)
+                }
+            }
+            .padding(Theme.spacing.l)
+        }
+        .onAppear { hydrate() }
+        .onChange(of: application.id) { _, _ in hydrate(force: true) }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard hydrated else { return false }
+        return urlDraft != (application.webStartURL ?? "")
+            || widthDraft != (application.webViewportWidthPt ?? 1280)
+            || heightDraft != (application.webViewportHeightPt ?? 800)
+    }
+
+    private func hydrate(force: Bool = false) {
+        guard !hydrated || force else { return }
+        urlDraft = application.webStartURL ?? ""
+        widthDraft = application.webViewportWidthPt ?? 1280
+        heightDraft = application.webViewportHeightPt ?? 800
+        hydrated = true
+    }
+
+    private func commitIfValid() {
+        let trimmed = urlDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, URL(string: trimmed) != nil else { return }
+        onUpdateDefaults(application.withWeb(url: trimmed, width: widthDraft, height: heightDraft))
     }
 }
 
