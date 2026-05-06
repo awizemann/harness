@@ -8,11 +8,19 @@
 
 import SwiftUI
 import AppKit
+import os
 
 @main
 struct HarnessApp: App {
 
     @State private var container = AppContainer()
+    /// Bridge to AppKit's lifecycle. Hosts the once-per-launch hook
+    /// that wires the main window's frame autosave (see
+    /// `HarnessAppDelegate.applicationDidFinishLaunching`). Required
+    /// because SwiftUI's `.background(NSViewRepresentable)` route was
+    /// applying the autosave name to a hosting view's window rather
+    /// than the user-facing main window.
+    @NSApplicationDelegateAdaptor(HarnessAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
@@ -124,12 +132,6 @@ private struct RootView: View {
         } detail: {
             DetailRouter()
         }
-        // Persist the main window's size + position across launches.
-        // Sets `NSWindow.frameAutosaveName` once on first appear; AppKit
-        // takes it from there — frame is written to user defaults on
-        // resize/move, restored automatically on the next launch. No
-        // UserDefaults plumbing in our code.
-        .background(WindowFrameAutosaver(name: "Harness.MainWindow"))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -160,39 +162,57 @@ private struct RootView: View {
 
 private struct IdentifiableUUID: Identifiable, Hashable { let id: UUID }
 
-/// Hands the main window's frame persistence to AppKit. `setFrameAutosaveName`
-/// is the native API — it saves the frame to UserDefaults on every resize /
-/// move and restores it on the next launch automatically. No code of ours
-/// runs after attach; AppKit owns it. Same mechanism every other Mac app uses.
+/// AppKit-side lifecycle hook. SwiftUI doesn't expose
+/// `applicationDidFinishLaunching` directly; `@NSApplicationDelegateAdaptor`
+/// is the canonical bridge.
 ///
-/// Reset to default with: `defaults delete com.harness.app "NSWindow Frame Harness.MainWindow"`
-private struct WindowFrameAutosaver: NSViewRepresentable {
-    let name: String
+/// Sole responsibility: when the user's main window first becomes
+/// main / key, apply `NSWindow.setFrameAutosaveName(_:)` so AppKit
+/// persists its frame across launches. Once-only — guarded by a flag —
+/// because every sheet (FirstRunWizard, Settings, Replay) also fires
+/// `didBecomeMainNotification` and we don't want to clobber its frame.
+final class HarnessAppDelegate: NSObject, NSApplicationDelegate {
 
-    func makeNSView(context: Context) -> NSView {
-        AutosaverView(name: name)
+    private static let logger = Logger(subsystem: "com.harness.app", category: "HarnessAppDelegate")
+    private static let autosaveName: NSWindow.FrameAutosaveName = "Harness.MainWindow"
+
+    private var didApplyAutosave: Bool = false
+    private var becomeMainObserver: NSObjectProtocol?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Wait for the first window to become main, then mark it. Using
+        // `didBecomeMainNotification` instead of `NSApp.windows.first`
+        // because at this point in launch SwiftUI may not have realised
+        // its WindowGroup yet — `windows` can be empty for a few runloops.
+        becomeMainObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  !self.didApplyAutosave,
+                  let window = note.object as? NSWindow,
+                  Self.looksLikeMainContentWindow(window)
+            else { return }
+            window.setFrameAutosaveName(Self.autosaveName)
+            self.didApplyAutosave = true
+            Self.logger.info("Applied autosave name to main window. Initial frame=\(NSStringFromRect(window.frame), privacy: .public)")
+            // Drop the observer — we're done.
+            if let token = self.becomeMainObserver {
+                NotificationCenter.default.removeObserver(token)
+                self.becomeMainObserver = nil
+            }
+        }
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    private final class AutosaverView: NSView {
-        private let autosaveName: NSWindow.FrameAutosaveName
-
-        init(name: String) {
-            self.autosaveName = NSWindow.FrameAutosaveName(name)
-            super.init(frame: .zero)
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("not used") }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            // Unconditional — AppKit reads any saved frame and applies it
-            // when the name is set. Setting it again on the same window
-            // is harmless.
-            self.window?.setFrameAutosaveName(autosaveName)
-        }
+    /// Heuristic: the user's WindowGroup window is titled, has a normal
+    /// content size, and isn't a sheet / panel / inspector. Sheets are
+    /// `NSPanel` subclasses and don't carry `.titled` style.
+    private static func looksLikeMainContentWindow(_ window: NSWindow) -> Bool {
+        window.styleMask.contains(.titled)
+            && window.styleMask.contains(.resizable)
+            && !window.styleMask.contains(.utilityWindow)
+            && !(window is NSPanel)
     }
 }
 
