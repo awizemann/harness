@@ -3,17 +3,20 @@
 //
 
 import SwiftUI
+import AppKit
 
 /// Row used in `RunHistoryView` sidebar. Two-line goal + metadata footer with verdict pill.
 struct SidebarRow: View {
     let run: PreviewRun
     var selected: Bool = false
 
+    @State private var isHovered: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 VerdictPill(verdict: run.verdict)
-                Spacer()
+                Spacer(minLength: 0)
                 Text(run.elapsed).font(HFont.mono).foregroundStyle(Color.harnessText3)
             }
             Text(run.goal)
@@ -41,10 +44,30 @@ struct SidebarRow: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color.harnessAccentSoft : Color.clear)
+        .background(rowBackground)
+        // Match the Applications / Personas / Actions library lists:
+        // hit-test the entire row's frame, hover tint, pointing-hand
+        // cursor. Selected state still wins visually.
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
         .overlay(alignment: .bottom) { Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5) }
+        .animation(Theme.motion.micro, value: isHovered)
+        .animation(Theme.motion.micro, value: selected)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("\(run.verdict.rawValue), \(run.goal)"))
+    }
+
+    private var rowBackground: Color {
+        if selected { return Color.harnessAccentSoft }
+        if isHovered { return Color.harnessAccent.opacity(0.06) }
+        return .clear
     }
 }
 
