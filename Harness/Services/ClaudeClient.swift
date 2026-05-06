@@ -9,7 +9,7 @@
 //  Per `standards/07-ai-integration.md`:
 //    - System prompt + persona + goal + tool schema marked for caching
 //    - Per-step screenshot + recent history not cached
-//    - Errors mapped to typed `ClaudeError` cases
+//    - Errors mapped to typed `LLMError` cases (shared with other LLM clients)
 //    - Token usage tracked per run
 //
 
@@ -21,7 +21,7 @@ import AppKit
 
 // MARK: - Errors
 
-enum ClaudeError: Error, Sendable, LocalizedError {
+enum LLMError: Error, Sendable, LocalizedError {
     case authenticationFailed
     case rateLimited(retryAfter: Duration)
     case serverError(status: Int)
@@ -36,25 +36,25 @@ enum ClaudeError: Error, Sendable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .authenticationFailed:
-            return "Anthropic API authentication failed. Check the key in Settings."
+            return "LLM API authentication failed. Check the API key for the selected provider in Settings."
         case .rateLimited(let retry):
-            return "Anthropic rate-limited the request. Retry after \(retry)."
+            return "The LLM provider rate-limited the request. Retry after \(retry)."
         case .serverError(let s):
-            return "Anthropic server error \(s). Try again in a moment."
+            return "LLM provider server error \(s). Try again in a moment."
         case .malformedRequest(let d):
-            return "The request to Anthropic was malformed.\n\(d)"
+            return "The request to the LLM was malformed.\n\(d)"
         case .invalidToolCall(let d):
-            return "Anthropic returned a tool call we couldn't parse.\n\(d)"
+            return "The model returned a tool call we couldn't parse.\n\(d)"
         case .timeout:
-            return "Request to Anthropic timed out."
+            return "Request to the LLM timed out."
         case .missingAPIKey:
-            return "No Anthropic API key in Keychain. Add one in Settings."
+            return "No API key in Keychain for the selected provider. Add one in Settings."
         case .decodingFailed(let d):
-            return "Could not decode Anthropic's response.\n\(d)"
+            return "Could not decode the LLM's response.\n\(d)"
         case .noToolCallReturned:
-            return "Anthropic responded without a tool call. The agent loop expects exactly one per turn."
+            return "The model responded without a tool call. The agent loop expects exactly one per turn."
         case .unknownTool(let n):
-            return "Anthropic tried to call an unknown tool: '\(n)'."
+            return "The model tried to call an unknown tool: '\(n)'."
         }
     }
 }
@@ -89,6 +89,18 @@ struct LLMStepRequest: Sendable {
     /// (back-compat default); macOS = the SUT's display name; web = the
     /// browser identifier ("Embedded WebKit").
     let deviceName: String
+    /// Which platform's canonical tool set to advertise to the model.
+    /// Each client uses this to project the per-platform `[CanonicalTool]`
+    /// onto its provider's wire format. Defaults to `.iosSimulator` so
+    /// pre-multi-platform tests / call sites keep working.
+    let platformKind: PlatformKind
+    /// Retry-detail hint surfaced after a parse-failure. When non-nil,
+    /// the client prepends "Your previous response was rejected: <hint>.
+    /// Emit exactly one tool call." to the current-turn user message so
+    /// the next attempt sees the corrective context. Cheaper models
+    /// (GPT-4.1 Nano, Gemini Flash Lite) loop on the same mistake without
+    /// this nudge.
+    let retryHint: String?
 
     init(
         model: AgentModel,
@@ -101,7 +113,9 @@ struct LLMStepRequest: Sendable {
         maxOutputTokens: Int = 1024,
         deterministic: Bool = false,
         platformContext: String = "",
-        deviceName: String = "iPhone Simulator"
+        deviceName: String = "iPhone Simulator",
+        platformKind: PlatformKind = .iosSimulator,
+        retryHint: String? = nil
     ) {
         self.model = model
         self.systemPrompt = systemPrompt
@@ -114,6 +128,8 @@ struct LLMStepRequest: Sendable {
         self.deterministic = deterministic
         self.platformContext = platformContext
         self.deviceName = deviceName
+        self.platformKind = platformKind
+        self.retryHint = retryHint
     }
 }
 
@@ -137,12 +153,50 @@ struct TokenUsage: Sendable, Hashable, Codable {
     let outputTokens: Int
     let cacheReadInputTokens: Int
     let cacheCreationInputTokens: Int
+    /// Reasoning/thinking tokens reported separately by the provider.
+    /// Telemetry-only — these are *already counted* inside `outputTokens`
+    /// for both Anthropic (extended thinking) and OpenAI/Gemini (reasoning
+    /// summaries). Surfaced so the run-detail UI can show "model spent
+    /// X of Y output tokens thinking" without double-counting in cost math.
+    let thinkingTokens: Int
+
+    init(
+        inputTokens: Int,
+        outputTokens: Int,
+        cacheReadInputTokens: Int,
+        cacheCreationInputTokens: Int,
+        thinkingTokens: Int = 0
+    ) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadInputTokens = cacheReadInputTokens
+        self.cacheCreationInputTokens = cacheCreationInputTokens
+        self.thinkingTokens = thinkingTokens
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case inputTokens, outputTokens
+        case cacheReadInputTokens, cacheCreationInputTokens
+        case thinkingTokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.inputTokens = try c.decode(Int.self, forKey: .inputTokens)
+        self.outputTokens = try c.decode(Int.self, forKey: .outputTokens)
+        self.cacheReadInputTokens = try c.decode(Int.self, forKey: .cacheReadInputTokens)
+        self.cacheCreationInputTokens = try c.decode(Int.self, forKey: .cacheCreationInputTokens)
+        // Optional in the Codable shape — historical persisted TokenUsage
+        // (none on disk today, but stay safe) decodes cleanly to 0.
+        self.thinkingTokens = try c.decodeIfPresent(Int.self, forKey: .thinkingTokens) ?? 0
+    }
 
     static let zero = TokenUsage(
         inputTokens: 0,
         outputTokens: 0,
         cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0
+        cacheCreationInputTokens: 0,
+        thinkingTokens: 0
     )
 }
 
@@ -189,7 +243,7 @@ actor ClaudeClient: LLMClient {
         try Task.checkCancellation()
 
         guard let apiKey = try keychain.readAnthropicAPIKey(), !apiKey.isEmpty else {
-            throw ClaudeError.missingAPIKey
+            throw LLMError.missingAPIKey
         }
 
         let url = baseURL.appendingPathComponent("v1/messages")
@@ -209,31 +263,31 @@ actor ClaudeClient: LLMClient {
         } catch is CancellationError {
             throw CancellationError()
         } catch let urlError as URLError where urlError.code == .timedOut {
-            throw ClaudeError.timeout
+            throw LLMError.timeout
         } catch {
             Self.logger.error("Claude request failed: \(error.localizedDescription, privacy: .public)")
-            throw ClaudeError.serverError(status: -1)
+            throw LLMError.serverError(status: -1)
         }
 
         guard let http = response as? HTTPURLResponse else {
-            throw ClaudeError.serverError(status: -1)
+            throw LLMError.serverError(status: -1)
         }
 
         switch http.statusCode {
         case 200..<300:
             break
         case 401, 403:
-            throw ClaudeError.authenticationFailed
+            throw LLMError.authenticationFailed
         case 429:
             let retry = Self.parseRetryAfter(headers: http.allHeaderFields)
-            throw ClaudeError.rateLimited(retryAfter: retry)
+            throw LLMError.rateLimited(retryAfter: retry)
         case 400:
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw ClaudeError.malformedRequest(detail: body)
+            throw LLMError.malformedRequest(detail: body)
         case 500...599:
-            throw ClaudeError.serverError(status: http.statusCode)
+            throw LLMError.serverError(status: http.statusCode)
         default:
-            throw ClaudeError.serverError(status: http.statusCode)
+            throw LLMError.serverError(status: http.statusCode)
         }
 
         let parsed: ParsedResponse
@@ -241,7 +295,7 @@ actor ClaudeClient: LLMClient {
             parsed = try Self.decodeResponse(data)
         } catch {
             Self.logger.error("Decode failed: \(error.localizedDescription, privacy: .public)")
-            throw ClaudeError.decodingFailed(detail: error.localizedDescription)
+            throw LLMError.decodingFailed(detail: error.localizedDescription)
         }
 
         // Update running usage.
@@ -249,11 +303,12 @@ actor ClaudeClient: LLMClient {
             inputTokens: tokensUsedThisRun.inputTokens + parsed.usage.inputTokens,
             outputTokens: tokensUsedThisRun.outputTokens + parsed.usage.outputTokens,
             cacheReadInputTokens: tokensUsedThisRun.cacheReadInputTokens + parsed.usage.cacheReadInputTokens,
-            cacheCreationInputTokens: tokensUsedThisRun.cacheCreationInputTokens + parsed.usage.cacheCreationInputTokens
+            cacheCreationInputTokens: tokensUsedThisRun.cacheCreationInputTokens + parsed.usage.cacheCreationInputTokens,
+            thinkingTokens: tokensUsedThisRun.thinkingTokens + parsed.usage.thinkingTokens
         )
 
         guard let toolUse = parsed.toolUse else {
-            throw ClaudeError.noToolCallReturned
+            throw LLMError.noToolCallReturned
         }
 
         let toolCall = try Self.toolCall(fromToolUse: toolUse)
@@ -314,7 +369,20 @@ actor ClaudeClient: LLMClient {
             ])
         }
 
-        // Current turn: screenshot + a brief instruction to act.
+        // Current turn: screenshot + a brief instruction to act. When the
+        // loop is retrying after a parse failure, prepend the corrective
+        // hint so the model sees what went wrong on the prior attempt.
+        let currentText: String
+        if let hint = request.retryHint, !hint.isEmpty {
+            currentText = """
+            Your previous response was rejected: \(hint)
+            Emit exactly one tool call.
+
+            Current screen attached. Choose your next action by calling exactly one tool.
+            """
+        } else {
+            currentText = "Current screen attached. Choose your next action by calling exactly one tool."
+        }
         let currentContent: [[String: Any]] = [
             [
                 "type": "image",
@@ -326,7 +394,7 @@ actor ClaudeClient: LLMClient {
             ],
             [
                 "type": "text",
-                "text": "Current screen attached. Choose your next action by calling exactly one tool."
+                "text": currentText
             ]
         ]
         messages.append([
@@ -339,7 +407,10 @@ actor ClaudeClient: LLMClient {
             "max_tokens": request.maxOutputTokens,
             "system": systemBlocks,
             "messages": messages,
-            "tools": ToolSchema.toolDefinitions(cacheControl: true)
+            "tools": ToolSchema.anthropicShape(
+                ToolSchema.canonical(platform: request.platformKind),
+                cacheLast: true
+            )
         ]
         if request.deterministic {
             top["temperature"] = 0
@@ -389,7 +460,7 @@ actor ClaudeClient: LLMClient {
 
     private static func decodeResponse(_ data: Data) throws -> ParsedResponse {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ClaudeError.decodingFailed(detail: "root is not an object")
+            throw LLMError.decodingFailed(detail: "root is not an object")
         }
 
         let usage: TokenUsage = {
@@ -398,112 +469,43 @@ actor ClaudeClient: LLMClient {
                 inputTokens: (u["input_tokens"] as? Int) ?? 0,
                 outputTokens: (u["output_tokens"] as? Int) ?? 0,
                 cacheReadInputTokens: (u["cache_read_input_tokens"] as? Int) ?? 0,
-                cacheCreationInputTokens: (u["cache_creation_input_tokens"] as? Int) ?? 0
+                cacheCreationInputTokens: (u["cache_creation_input_tokens"] as? Int) ?? 0,
+                thinkingTokens: 0
             )
         }()
 
-        // Find the first tool_use content block.
-        var toolUse: ToolUseBlock?
+        // Collect every tool_use content block. The agent loop expects
+        // exactly one per turn — if the model emits multiple, throw
+        // `invalidToolCall` so the parse-retry path kicks in with a
+        // corrective hint instead of silently dropping the rest.
+        var blocks: [ToolUseBlock] = []
         if let content = root["content"] as? [[String: Any]] {
             for block in content where (block["type"] as? String) == "tool_use" {
                 let id = (block["id"] as? String) ?? ""
                 let name = (block["name"] as? String) ?? ""
                 let inputObj = block["input"] ?? [:]
                 let inputData = (try? JSONSerialization.data(withJSONObject: inputObj, options: [])) ?? Data("{}".utf8)
-                toolUse = ToolUseBlock(id: id, name: name, input: inputData)
-                break
+                blocks.append(ToolUseBlock(id: id, name: name, input: inputData))
             }
         }
 
-        return ParsedResponse(toolUse: toolUse, usage: usage)
+        if blocks.count > 1 {
+            let names = blocks.map { $0.name }.joined(separator: ", ")
+            throw LLMError.invalidToolCall(
+                detail: "model emitted \(blocks.count) tool calls (\(names)); expected exactly one"
+            )
+        }
+
+        return ParsedResponse(toolUse: blocks.first, usage: usage)
     }
 
     // MARK: tool_use → ToolCall
 
+    /// Project a Claude `tool_use` block onto the typed `ToolCall` the
+    /// loop expects. Per-tool decoding lives in `LLMShared` so OpenAI /
+    /// Gemini clients can share the same map.
     private static func toolCall(fromToolUse use: ToolUseBlock) throws -> ToolCall {
-        guard let kind = ToolKind(rawValue: use.name) else {
-            throw ClaudeError.unknownTool(use.name)
-        }
-
-        // Decode the `input` blob and extract the reasoning fields shared
-        // across most tools.
-        guard let input = (try? JSONSerialization.jsonObject(with: use.input)) as? [String: Any] else {
-            throw ClaudeError.invalidToolCall(detail: "input is not an object")
-        }
-
-        let observation = (input["observation"] as? String) ?? ""
-        let intent = (input["intent"] as? String) ?? ""
-
-        let payload: ToolInput
-        switch kind {
-        case .tap:
-            payload = .tap(x: intValue(input["x"]) ?? 0, y: intValue(input["y"]) ?? 0)
-        case .doubleTap:
-            payload = .doubleTap(x: intValue(input["x"]) ?? 0, y: intValue(input["y"]) ?? 0)
-        case .swipe:
-            payload = .swipe(
-                x1: intValue(input["x1"]) ?? 0,
-                y1: intValue(input["y1"]) ?? 0,
-                x2: intValue(input["x2"]) ?? 0,
-                y2: intValue(input["y2"]) ?? 0,
-                durationMs: intValue(input["duration_ms"]) ?? 200
-            )
-        case .type:
-            payload = .type(text: (input["text"] as? String) ?? "")
-        case .pressButton:
-            let raw = (input["button"] as? String) ?? "home"
-            payload = .pressButton(button: SimulatorButton(rawValue: raw) ?? .home)
-        case .wait:
-            payload = .wait(ms: intValue(input["ms"]) ?? 500)
-        case .readScreen:
-            payload = .readScreen
-        case .noteFriction:
-            let kindRaw = (input["kind"] as? String) ?? FrictionKind.unexpectedState.rawValue
-            let frictionKind = FrictionKind(rawValue: kindRaw) ?? .unexpectedState
-            payload = .noteFriction(kind: frictionKind, detail: (input["detail"] as? String) ?? "")
-        case .markGoalDone:
-            let verdictRaw = (input["verdict"] as? String) ?? Verdict.blocked.rawValue
-            let verdict = Verdict(rawValue: verdictRaw) ?? .blocked
-            payload = .markGoalDone(
-                verdict: verdict,
-                summary: (input["summary"] as? String) ?? "",
-                frictionCount: intValue(input["friction_count"]) ?? 0,
-                wouldRealUserSucceed: (input["would_real_user_succeed"] as? Bool) ?? false
-            )
-        // Phase 2 — macOS extensions:
-        case .rightClick:
-            payload = .rightClick(x: intValue(input["x"]) ?? 0, y: intValue(input["y"]) ?? 0)
-        case .keyShortcut:
-            let keys = (input["keys"] as? [String]) ?? []
-            payload = .keyShortcut(keys: keys)
-        case .scroll:
-            payload = .scroll(
-                x: intValue(input["x"]) ?? 0,
-                y: intValue(input["y"]) ?? 0,
-                dx: intValue(input["dx"]) ?? 0,
-                dy: intValue(input["dy"]) ?? 0
-            )
-        // Phase 3 — web extensions:
-        case .navigate:
-            payload = .navigate(url: (input["url"] as? String) ?? "")
-        case .back:
-            payload = .back
-        case .forward:
-            payload = .forward
-        case .refresh:
-            payload = .refresh
-        }
-
-        return ToolCall(tool: kind, input: payload, observation: observation, intent: intent)
-    }
-
-    /// Anthropic occasionally returns numbers as strings if the model JSON-encodes
-    /// them inconsistently. Coerce defensively.
-    private static func intValue(_ any: Any?) -> Int? {
-        if let i = any as? Int { return i }
-        if let d = any as? Double { return Int(d) }
-        if let s = any as? String, let i = Int(s) { return i }
-        return nil
+        try LLMShared.toolCall(name: use.name, inputData: use.input)
     }
 
     // MARK: Headers

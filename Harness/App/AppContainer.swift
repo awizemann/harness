@@ -24,7 +24,6 @@ final class AppContainer {
     let wdaClient: any WDAClienting
     let simulatorDriver: any SimulatorDriving
     let simulatorWindowController: any SimulatorWindowControlling
-    let claudeClient: any LLMClient
     let runHistory: any RunHistoryStoring
     let promptLibrary: any PromptLoading
 
@@ -58,7 +57,6 @@ final class AppContainer {
             wdaClient: wdaClient
         )
         self.simulatorWindowController = SimulatorWindowController()
-        self.claudeClient = ClaudeClient(keychain: keychain)
         self.promptLibrary = PromptLibrary()
 
         // History store — open the on-disk store. RunHistoryStore's init
@@ -83,15 +81,23 @@ final class AppContainer {
         self.appCoordinator = AppCoordinator()
     }
 
-    /// Build a `RunCoordinator` for one run. New `AgentLoop` per run so its
-    /// cycle-detector window resets.
-    func makeRunCoordinator() -> RunCoordinator {
-        let agent = AgentLoop(llm: claudeClient, promptLibrary: promptLibrary)
+    /// Build a `RunCoordinator` for one run. New `AgentLoop` and
+    /// per-provider `LLMClient` per run so the cycle-detector window
+    /// resets and token-usage accounting starts at zero.
+    ///
+    /// Provider dispatch happens here: the request's `model.provider`
+    /// picks the right client (Anthropic / OpenAI / Google) via
+    /// `LLMClientFactory`. Pre-multi-provider call sites that pass no
+    /// request fall back to the user's `defaultProvider` from Settings.
+    func makeRunCoordinator(for request: RunRequest? = nil) -> RunCoordinator {
+        let provider = request?.model.provider ?? appState.defaultProvider
+        let llm = LLMClientFactory.client(for: provider, keychain: keychain)
+        let agent = AgentLoop(llm: llm, promptLibrary: promptLibrary)
         return RunCoordinator(
             builder: xcodeBuilder,
             driver: simulatorDriver,
             agent: agent,
-            llm: claudeClient,
+            llm: llm,
             history: runHistory,
             windowController: simulatorWindowController,
             hideSimulator: !appState.keepSimulatorVisible

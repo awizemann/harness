@@ -201,6 +201,11 @@ actor AgentLoop: AgentLooping {
         while attempt <= Self.parseFailureRetryCap {
             try Task.checkCancellation()
             do {
+                // On retries, ferry the previous attempt's parse error
+                // back to the model. Cheaper models (GPT-4.1 Nano,
+                // Gemini Flash Lite, sometimes Haiku) loop on the same
+                // mistake until the cap unless told what was wrong.
+                let retryHint: String? = attempt > 0 ? lastError : nil
                 let response = try await llm.step(LLMStepRequest(
                     model: state.request.model,
                     systemPrompt: systemPrompt,
@@ -212,21 +217,32 @@ actor AgentLoop: AgentLooping {
                     maxOutputTokens: 1024,
                     deterministic: false,
                     platformContext: state.platformContext,
-                    deviceName: state.deviceName
+                    deviceName: state.deviceName,
+                    platformKind: state.request.platformKind,
+                    retryHint: retryHint
                 ))
                 return AgentDecision(
                     toolCall: response.toolCall,
                     inlineFriction: [],
                     usage: response.usage
                 )
-            } catch ClaudeError.invalidToolCall(let detail) {
+            } catch LLMError.invalidToolCall(let detail) {
                 lastError = detail
                 attempt += 1
                 Self.logger.warning("Parse-failure retry \(attempt, privacy: .public)/\(Self.parseFailureRetryCap, privacy: .public): \(detail, privacy: .public)")
                 continue
-            } catch ClaudeError.unknownTool(let name) {
+            } catch LLMError.unknownTool(let name) {
                 lastError = "unknown tool '\(name)'"
                 attempt += 1
+                Self.logger.warning("Unknown-tool retry \(attempt, privacy: .public)/\(Self.parseFailureRetryCap, privacy: .public): \(name, privacy: .public)")
+                continue
+            } catch LLMError.noToolCallReturned {
+                // Cheaper models sometimes punt to plain text instead of
+                // calling a tool. Treat as a parseable failure: retry
+                // with a corrective hint rather than failing the run.
+                lastError = "your previous response contained no tool call; you must always call exactly one tool"
+                attempt += 1
+                Self.logger.warning("No-tool retry \(attempt, privacy: .public)/\(Self.parseFailureRetryCap, privacy: .public)")
                 continue
             }
         }

@@ -44,6 +44,20 @@ struct PricingTests {
         #expect(abs(cost.total - 18.00) < 1e-6)
     }
 
+    @Test("Haiku 4.5: 1M input + 1M output tokens lands at the published rate")
+    func haikuBaselineMillion() {
+        let usage = TokenUsage(
+            inputTokens: 1_000_000,
+            outputTokens: 1_000_000,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0
+        )
+        let cost = Pricing.cost(model: .haiku45, usage: usage)
+        #expect(abs(cost.inputUSD - 1.00) < 1e-6)
+        #expect(abs(cost.outputUSD - 5.00) < 1e-6)
+        #expect(abs(cost.total - 6.00) < 1e-6)
+    }
+
     @Test("Cache reads price at 10% of the input rate (90% off)")
     func cacheReadDiscountOpus() {
         let usage = TokenUsage(

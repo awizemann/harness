@@ -38,13 +38,13 @@ actor MockLLMClient: LLMClient {
         switch mode {
         case .sequence(let arr):
             guard index < arr.count else {
-                throw ClaudeError.serverError(status: 599)
+                throw LLMError.serverError(status: 599)
             }
             response = arr[index]
             index += 1
         case .lookup(let fn):
             guard let r = fn(request) else {
-                throw ClaudeError.serverError(status: 599)
+                throw LLMError.serverError(status: 599)
             }
             response = r
         }

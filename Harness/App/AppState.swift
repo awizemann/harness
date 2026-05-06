@@ -19,8 +19,24 @@ final class AppState {
 
     // MARK: Auth
 
-    /// Whether an Anthropic API key is present in the Keychain.
-    var apiKeyPresent: Bool = false
+    /// Per-provider Keychain presence. Drives the per-provider API-key
+    /// status indicator in Settings and the preflight gate on Compose Run.
+    /// Keyed by `ModelProvider`; missing entries decode to `false`.
+    var apiKeyPresenceByProvider: [ModelProvider: Bool] = [:]
+
+    /// Convenience: whether *any* provider has a key. The legacy
+    /// `apiKeyPresent` callers checked Anthropic specifically — keep that
+    /// semantic, but the preflight gate now checks the active provider via
+    /// `apiKeyPresent(for:)`.
+    var apiKeyPresent: Bool {
+        get { apiKeyPresenceByProvider[.anthropic] ?? false }
+        set { apiKeyPresenceByProvider[.anthropic] = newValue }
+    }
+
+    /// Whether the API key for `provider` is present in the Keychain.
+    func apiKeyPresent(for provider: ModelProvider) -> Bool {
+        apiKeyPresenceByProvider[provider] ?? false
+    }
 
     // MARK: Tooling health
 
@@ -38,6 +54,10 @@ final class AppState {
     var xcodebuildAvailable: Bool { toolPaths?.xcodebuild != nil }
 
     // MARK: Defaults
+
+    /// Default provider the Settings + Compose Run pickers preselect.
+    /// Drives the model picker's filter (only models from this provider show).
+    var defaultProvider: ModelProvider = .anthropic
 
     /// Default model the goal-input form preselects.
     var defaultModel: AgentModel = .opus47
@@ -86,15 +106,20 @@ final class AppState {
 
     // MARK: Refresh
 
-    /// Probe the Keychain for the API key. Cheap; safe to call on app launch.
+    /// Probe the Keychain for every provider's API key. Cheap; safe to
+    /// call on app launch.
     func refreshAPIKeyPresence() async {
-        do {
-            let key = try keychain.readAnthropicAPIKey()
-            self.apiKeyPresent = (key?.isEmpty == false)
-        } catch {
-            Self.logger.warning("API key read failed: \(error.localizedDescription, privacy: .public)")
-            self.apiKeyPresent = false
+        var next: [ModelProvider: Bool] = [:]
+        for provider in ModelProvider.allCases {
+            do {
+                let key = try keychain.readKey(for: provider)
+                next[provider] = (key?.isEmpty == false)
+            } catch {
+                Self.logger.warning("API key read failed for \(provider.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                next[provider] = false
+            }
         }
+        self.apiKeyPresenceByProvider = next
     }
 
     /// Resolve external CLI paths.
@@ -128,9 +153,20 @@ final class AppState {
         }
     }
 
-    /// Save the API key to the Keychain and update presence.
+    /// Save the Anthropic API key (legacy single-provider call site).
     func saveAPIKey(_ key: String) async throws {
-        try keychain.writeAnthropicAPIKey(key)
+        try await saveAPIKey(key, for: .anthropic)
+    }
+
+    /// Save an API key for the given provider and update presence.
+    func saveAPIKey(_ key: String, for provider: ModelProvider) async throws {
+        try keychain.writeKey(key, for: provider)
+        await refreshAPIKeyPresence()
+    }
+
+    /// Delete the API key for `provider` and update presence.
+    func deleteAPIKey(for provider: ModelProvider) async throws {
+        try keychain.deleteKey(for: provider)
         await refreshAPIKeyPresence()
     }
 

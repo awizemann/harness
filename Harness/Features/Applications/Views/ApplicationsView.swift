@@ -295,6 +295,8 @@ private struct ApplicationRow: View {
     let selected: Bool
     let isActive: Bool
 
+    @State private var isHovered: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: Theme.spacing.s) {
@@ -306,8 +308,8 @@ private struct ApplicationRow: View {
                 Text(application.name)
                     .font(HFont.row)
                     .foregroundStyle(Color.harnessText)
+                Spacer(minLength: 0)
                 if isActive {
-                    Spacer()
                     Text("ACTIVE")
                         .font(HFont.micro)
                         .foregroundStyle(Color.harnessSuccess)
@@ -315,12 +317,9 @@ private struct ApplicationRow: View {
                         .padding(.vertical, 1)
                         .background(Capsule().fill(Color.harnessSuccess.opacity(0.16)))
                 } else if application.archived {
-                    Spacer()
                     Text("ARCHIVED")
                         .font(HFont.micro)
                         .foregroundStyle(Color.harnessWarning)
-                } else {
-                    Spacer()
                 }
             }
             Text(application.scheme.isEmpty ? application.projectPath : "\(application.scheme) · \(application.projectURL.lastPathComponent)")
@@ -332,10 +331,37 @@ private struct ApplicationRow: View {
         .padding(.horizontal, Theme.spacing.m)
         .padding(.vertical, Theme.spacing.s)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selected ? Color.harnessAccentSoft : Color.clear)
+        .background(rowBackground)
+        // Hit-test the entire row's frame, not just non-empty subregions.
+        // Without this, clicks in the gap between the name and the right-
+        // edge chip don't fire — `Spacer()` doesn't carry a hit shape on
+        // its own.
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+            // Standard pointer hint so the user reads the row as
+            // clickable in the moment they're about to click it.
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
         }
+        .animation(Theme.motion.micro, value: isHovered)
+        .animation(Theme.motion.micro, value: selected)
+    }
+
+    /// Selected wins; hover is the secondary tint; idle rows are clear.
+    /// Hover tint is a low-alpha pull-in of the accent so it reads as
+    /// "this is what selecting feels like" without competing with the
+    /// real selected state.
+    private var rowBackground: Color {
+        if selected { return Color.harnessAccentSoft }
+        if isHovered { return Color.harnessAccent.opacity(0.06) }
+        return .clear
     }
 }
 

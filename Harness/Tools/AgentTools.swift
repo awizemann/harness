@@ -11,39 +11,109 @@
 //  CI checks it). macOS / web schemas are documented inline in the wiki
 //  page's per-platform sections.
 //
-//  Implementation note: definitions are computed inline (not stored as
-//  static `[String: Any]` properties) because Swift 6 strict concurrency
-//  forbids non-Sendable static state. The cost is negligible — the array
-//  is built once per Claude call.
+//  Multi-provider support: the schema is now built in two layers:
+//
+//    1. `canonical(platform:)` returns provider-neutral `[CanonicalTool]`.
+//       Every tool the agent can call appears exactly once across the
+//       entire codebase.
+//
+//    2. Per-provider shape translators (`anthropicShape`, `openAIShape`,
+//       `geminiShape`) project that canonical list into the wire-format
+//       dictionary each provider's API expects. Adding a provider means
+//       adding one translator function — never duplicating tool definitions.
+//
+//  The pre-existing `iOSToolDefinitions(cacheControl:)` etc. callers
+//  continue to work; they're now thin wrappers around
+//  `anthropicShape(canonical(platform: ...))`.
 //
 
 import Foundation
 
+// MARK: - Canonical tool definition
+
+/// Provider-neutral tool definition. Holds the name, the model-facing
+/// description, and the JSON Schema body that goes inside `input_schema`
+/// (Anthropic) / `function.parameters` (OpenAI) / `parameters` (Gemini).
+struct CanonicalTool {
+    let name: String
+    let description: String
+    /// JSON Schema object — `{type: "object", properties: {...}, required: [...]}`.
+    let jsonSchema: [String: Any]
+}
+
 enum ToolSchema {
 
-    // MARK: - iOS (the original schema — unchanged shape, agent path)
+    // MARK: - Canonical (provider-neutral) per-platform tool sets
 
-    /// Canonical JSON dictionaries for the iOS tool set. `cacheControl` adds
-    /// the Anthropic prompt-caching marker on the last definition.
-    static func iOSToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
-        var defs: [[String: Any]] = [
-            tap(),
-            doubleTap(),
-            swipe(),
-            type(),
-            pressButton(),
-            wait(),
-            readScreen(),
-            noteFriction(),
-            markGoalDone()
-        ]
-        if cacheControl, !defs.isEmpty {
+    /// Per-platform canonical tool set. Each platform advertises only the
+    /// tools its driver can execute; provider-specific projections come
+    /// from the shape translators below.
+    static func canonical(platform: PlatformKind) -> [CanonicalTool] {
+        switch platform {
+        case .iosSimulator: return iOSCanonical()
+        case .macosApp:     return macOSCanonical()
+        case .web:          return webCanonical()
+        }
+    }
+
+    // MARK: - Provider shape translators
+
+    /// Anthropic Messages API shape: `[{name, description, input_schema, [cache_control]?}]`.
+    /// `cacheLast == true` adds an `ephemeral` cache marker on the final
+    /// definition so the tool list is part of the prompt cache.
+    static func anthropicShape(_ tools: [CanonicalTool], cacheLast: Bool) -> [[String: Any]] {
+        var defs: [[String: Any]] = tools.map { t in
+            [
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.jsonSchema
+            ]
+        }
+        if cacheLast, !defs.isEmpty {
             var last = defs[defs.count - 1]
             last["cache_control"] = ["type": "ephemeral"]
             defs[defs.count - 1] = last
         }
         return defs
     }
+
+    /// OpenAI Chat Completions / Responses API shape:
+    /// `[{type:"function", function:{name, description, parameters}}]`.
+    /// No cache markers — OpenAI prompt caching is automatic at ≥1024
+    /// tokens and accepts no per-call directives.
+    static func openAIShape(_ tools: [CanonicalTool]) -> [[String: Any]] {
+        tools.map { t in
+            [
+                "type": "function",
+                "function": [
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.jsonSchema
+                ]
+            ]
+        }
+    }
+
+    // MARK: - Backwards-compatible Anthropic per-platform helpers
+
+    /// Anthropic shape for the iOS toolset. `cacheControl` adds the prompt-
+    /// caching marker on the last definition. Existing callers
+    /// (`ClaudeClient.buildRequestBody`, the `AgentToolsSchemaTests` suite)
+    /// continue to use this; new code should call
+    /// `anthropicShape(canonical(platform: .iosSimulator), cacheLast:)`.
+    static func iOSToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
+        anthropicShape(canonical(platform: .iosSimulator), cacheLast: cacheControl)
+    }
+
+    static func macOSToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
+        anthropicShape(canonical(platform: .macosApp), cacheLast: cacheControl)
+    }
+
+    static func webToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
+        anthropicShape(canonical(platform: .web), cacheLast: cacheControl)
+    }
+
+    // MARK: - Per-platform tool name lists
 
     static let iOSToolNames: [String] = [
         ToolKind.tap.rawValue,
@@ -57,36 +127,6 @@ enum ToolSchema {
         ToolKind.markGoalDone.rawValue
     ]
 
-    // MARK: - macOS (Phase 2)
-    //
-    // Drops `swipe` / `press_button` (no hardware buttons on macOS, no
-    // touch swipe gestures), adds `right_click`, `key_shortcut`, `scroll`.
-    // `tap` is renamed-in-spirit to "click left mouse button" but we keep
-    // the same tool name so the agent's vocabulary stays small across
-    // platforms — the description tells the model what the click means
-    // for this platform.
-
-    static func macOSToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
-        var defs: [[String: Any]] = [
-            tapMac(),
-            doubleTapMac(),
-            rightClick(),
-            scroll(),
-            type(),
-            keyShortcut(),
-            wait(),
-            readScreen(),
-            noteFriction(),
-            markGoalDone()
-        ]
-        if cacheControl, !defs.isEmpty {
-            var last = defs[defs.count - 1]
-            last["cache_control"] = ["type": "ephemeral"]
-            defs[defs.count - 1] = last
-        }
-        return defs
-    }
-
     static let macOSToolNames: [String] = [
         ToolKind.tap.rawValue,
         ToolKind.doubleTap.rawValue,
@@ -99,33 +139,6 @@ enum ToolSchema {
         ToolKind.noteFriction.rawValue,
         ToolKind.markGoalDone.rawValue
     ]
-
-    // MARK: - Web (Phase 3) — placeholder schema; Phase 3 wires the driver.
-
-    static func webToolDefinitions(cacheControl: Bool) -> [[String: Any]] {
-        var defs: [[String: Any]] = [
-            tapWeb(),
-            doubleTapMac(),
-            rightClick(),
-            scroll(),
-            type(),
-            keyShortcut(),
-            navigate(),
-            back(),
-            forward(),
-            refresh(),
-            wait(),
-            readScreen(),
-            noteFriction(),
-            markGoalDone()
-        ]
-        if cacheControl, !defs.isEmpty {
-            var last = defs[defs.count - 1]
-            last["cache_control"] = ["type": "ephemeral"]
-            defs[defs.count - 1] = last
-        }
-        return defs
-    }
 
     static let webToolNames: [String] = [
         ToolKind.tap.rawValue,
@@ -144,13 +157,68 @@ enum ToolSchema {
         ToolKind.markGoalDone.rawValue
     ]
 
-    // MARK: - Per-tool definitions
+    // MARK: - Per-platform canonical builders
 
-    private static func tap() -> [String: Any] {
+    private static func iOSCanonical() -> [CanonicalTool] {
         [
-            "name": "tap",
-            "description": "Tap a single point on the screen. Coordinates in screen points, top-left origin.",
-            "input_schema": [
+            tap(description: "Tap a single point on the screen. Coordinates in screen points, top-left origin."),
+            doubleTap(description: "Tap twice quickly at one point."),
+            swipe(),
+            type(),
+            pressButton(),
+            wait(),
+            readScreen(),
+            noteFriction(),
+            markGoalDone()
+        ]
+    }
+
+    private static func macOSCanonical() -> [CanonicalTool] {
+        // Click left mouse button at one point. Coordinates in window
+        // points (top-left origin within the captured window).
+        [
+            tap(description: "Click the left mouse button at one point. Coordinates in window points (top-left origin within the captured window)."),
+            doubleTap(description: "Double-click the left mouse button at one point. (Same name as iOS double-tap; click on macOS / web.)"),
+            rightClick(),
+            scroll(),
+            type(),
+            keyShortcut(),
+            wait(),
+            readScreen(),
+            noteFriction(),
+            markGoalDone()
+        ]
+    }
+
+    private static func webCanonical() -> [CanonicalTool] {
+        [
+            tap(description: "Click at one point. Coordinates in CSS pixels (top-left origin within the rendered viewport)."),
+            doubleTap(description: "Double-click the left mouse button at one point. (Same name as iOS double-tap; click on macOS / web.)"),
+            rightClick(),
+            scroll(),
+            type(),
+            keyShortcut(),
+            navigate(),
+            back(),
+            forward(),
+            refresh(),
+            wait(),
+            readScreen(),
+            noteFriction(),
+            markGoalDone()
+        ]
+    }
+
+    // MARK: - Per-tool canonical definitions
+    //
+    // Each helper returns a `CanonicalTool`. The shape translators above
+    // project these into provider-native dictionaries.
+
+    private static func tap(description: String) -> CanonicalTool {
+        CanonicalTool(
+            name: "tap",
+            description: description,
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "x": ["type": "integer", "description": "x coordinate in points"],
@@ -160,14 +228,14 @@ enum ToolSchema {
                 ],
                 "required": ["x", "y", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func tapMac() -> [String: Any] {
-        [
-            "name": "tap",
-            "description": "Click the left mouse button at one point. Coordinates in window points (top-left origin within the captured window).",
-            "input_schema": [
+    private static func doubleTap(description: String) -> CanonicalTool {
+        CanonicalTool(
+            name: "double_tap",
+            description: description,
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "x": ["type": "integer"],
@@ -177,65 +245,14 @@ enum ToolSchema {
                 ],
                 "required": ["x", "y", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func tapWeb() -> [String: Any] {
-        [
-            "name": "tap",
-            "description": "Click at one point. Coordinates in CSS pixels (top-left origin within the rendered viewport).",
-            "input_schema": [
-                "type": "object",
-                "properties": [
-                    "x": ["type": "integer"],
-                    "y": ["type": "integer"],
-                    "observation": ["type": "string"],
-                    "intent": ["type": "string"]
-                ],
-                "required": ["x", "y", "observation", "intent"]
-            ]
-        ]
-    }
-
-    private static func doubleTap() -> [String: Any] {
-        [
-            "name": "double_tap",
-            "description": "Tap twice quickly at one point.",
-            "input_schema": [
-                "type": "object",
-                "properties": [
-                    "x": ["type": "integer"],
-                    "y": ["type": "integer"],
-                    "observation": ["type": "string"],
-                    "intent": ["type": "string"]
-                ],
-                "required": ["x", "y", "observation", "intent"]
-            ]
-        ]
-    }
-
-    private static func doubleTapMac() -> [String: Any] {
-        [
-            "name": "double_tap",
-            "description": "Double-click the left mouse button at one point. (Same name as iOS double-tap; click on macOS / web.)",
-            "input_schema": [
-                "type": "object",
-                "properties": [
-                    "x": ["type": "integer"],
-                    "y": ["type": "integer"],
-                    "observation": ["type": "string"],
-                    "intent": ["type": "string"]
-                ],
-                "required": ["x", "y", "observation", "intent"]
-            ]
-        ]
-    }
-
-    private static func swipe() -> [String: Any] {
-        [
-            "name": "swipe",
-            "description": "Swipe from one point to another over a duration.",
-            "input_schema": [
+    private static func swipe() -> CanonicalTool {
+        CanonicalTool(
+            name: "swipe",
+            description: "Swipe from one point to another over a duration.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "x1": ["type": "integer"],
@@ -248,14 +265,14 @@ enum ToolSchema {
                 ],
                 "required": ["x1", "y1", "x2", "y2", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func type() -> [String: Any] {
-        [
-            "name": "type",
-            "description": "Type a string of characters into the currently-focused field.",
-            "input_schema": [
+    private static func type() -> CanonicalTool {
+        CanonicalTool(
+            name: "type",
+            description: "Type a string of characters into the currently-focused field.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "text": ["type": "string"],
@@ -264,14 +281,14 @@ enum ToolSchema {
                 ],
                 "required": ["text", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func pressButton() -> [String: Any] {
-        [
-            "name": "press_button",
-            "description": "Press a hardware-style button on the simulator.",
-            "input_schema": [
+    private static func pressButton() -> CanonicalTool {
+        CanonicalTool(
+            name: "press_button",
+            description: "Press a hardware-style button on the simulator.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "button": ["type": "string", "enum": ["home", "lock", "side", "siri"]],
@@ -280,14 +297,14 @@ enum ToolSchema {
                 ],
                 "required": ["button", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func wait() -> [String: Any] {
-        [
-            "name": "wait",
-            "description": "Pause for some milliseconds. The loop captures a fresh screenshot afterward.",
-            "input_schema": [
+    private static func wait() -> CanonicalTool {
+        CanonicalTool(
+            name: "wait",
+            description: "Pause for some milliseconds. The loop captures a fresh screenshot afterward.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "ms": ["type": "integer"],
@@ -296,14 +313,14 @@ enum ToolSchema {
                 ],
                 "required": ["ms", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func readScreen() -> [String: Any] {
-        [
-            "name": "read_screen",
-            "description": "No-op. Forces a fresh screenshot capture next iteration without any UI action.",
-            "input_schema": [
+    private static func readScreen() -> CanonicalTool {
+        CanonicalTool(
+            name: "read_screen",
+            description: "No-op. Forces a fresh screenshot capture next iteration without any UI action.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "observation": ["type": "string"],
@@ -311,14 +328,14 @@ enum ToolSchema {
                 ],
                 "required": ["observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func noteFriction() -> [String: Any] {
-        [
-            "name": "note_friction",
-            "description": "Flag a UX problem. Emit alongside or instead of an action. Multiple per step OK.",
-            "input_schema": [
+    private static func noteFriction() -> CanonicalTool {
+        CanonicalTool(
+            name: "note_friction",
+            description: "Flag a UX problem. Emit alongside or instead of an action. Multiple per step OK.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "kind": [
@@ -329,14 +346,14 @@ enum ToolSchema {
                 ],
                 "required": ["kind", "detail"]
             ]
-        ]
+        )
     }
 
-    private static func markGoalDone() -> [String: Any] {
-        [
-            "name": "mark_goal_done",
-            "description": "Terminate the run. Emit when you've succeeded, failed, or would give up as a real user.",
-            "input_schema": [
+    private static func markGoalDone() -> CanonicalTool {
+        CanonicalTool(
+            name: "mark_goal_done",
+            description: "Terminate the run. Emit when you've succeeded, failed, or would give up as a real user.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "verdict": ["type": "string", "enum": ["success", "failure", "blocked"]],
@@ -346,16 +363,16 @@ enum ToolSchema {
                 ],
                 "required": ["verdict", "summary", "friction_count", "would_real_user_succeed"]
             ]
-        ]
+        )
     }
 
     // MARK: - macOS / web extensions
 
-    private static func rightClick() -> [String: Any] {
-        [
-            "name": "right_click",
-            "description": "Right-click (secondary click) at one point — opens context menus on macOS / web.",
-            "input_schema": [
+    private static func rightClick() -> CanonicalTool {
+        CanonicalTool(
+            name: "right_click",
+            description: "Right-click (secondary click) at one point — opens context menus on macOS / web.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "x": ["type": "integer"],
@@ -365,14 +382,14 @@ enum ToolSchema {
                 ],
                 "required": ["x", "y", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func scroll() -> [String: Any] {
-        [
-            "name": "scroll",
-            "description": "Scroll at a point. Positive dy = scroll DOWN (content moves up); positive dx = scroll RIGHT. Magnitude is in PIXELS — half a viewport is typically 300–400. The driver finds the nearest scrollable container under (x, y) and scrolls it.",
-            "input_schema": [
+    private static func scroll() -> CanonicalTool {
+        CanonicalTool(
+            name: "scroll",
+            description: "Scroll at a point. Positive dy = scroll DOWN (content moves up); positive dx = scroll RIGHT. Magnitude is in PIXELS — half a viewport is typically 300–400. The driver finds the nearest scrollable container under (x, y) and scrolls it.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "x": ["type": "integer", "description": "x coordinate of the cursor for the scroll event"],
@@ -384,14 +401,14 @@ enum ToolSchema {
                 ],
                 "required": ["x", "y", "dx", "dy", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func keyShortcut() -> [String: Any] {
-        [
-            "name": "key_shortcut",
-            "description": "Press a keyboard shortcut. Pass modifiers + the final key in order, e.g. ['cmd','shift','n']. Modifier names: 'cmd', 'shift', 'option', 'control', 'fn'.",
-            "input_schema": [
+    private static func keyShortcut() -> CanonicalTool {
+        CanonicalTool(
+            name: "key_shortcut",
+            description: "Press a keyboard shortcut. Pass modifiers + the final key in order, e.g. ['cmd','shift','n']. Modifier names: 'cmd', 'shift', 'option', 'control', 'fn'.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "keys": [
@@ -404,14 +421,14 @@ enum ToolSchema {
                 ],
                 "required": ["keys", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func navigate() -> [String: Any] {
-        [
-            "name": "navigate",
-            "description": "Load a URL in the embedded browser.",
-            "input_schema": [
+    private static func navigate() -> CanonicalTool {
+        CanonicalTool(
+            name: "navigate",
+            description: "Load a URL in the embedded browser.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "url": ["type": "string"],
@@ -420,14 +437,14 @@ enum ToolSchema {
                 ],
                 "required": ["url", "observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func back() -> [String: Any] {
-        [
-            "name": "back",
-            "description": "Browser back button.",
-            "input_schema": [
+    private static func back() -> CanonicalTool {
+        CanonicalTool(
+            name: "back",
+            description: "Browser back button.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "observation": ["type": "string"],
@@ -435,14 +452,14 @@ enum ToolSchema {
                 ],
                 "required": ["observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func forward() -> [String: Any] {
-        [
-            "name": "forward",
-            "description": "Browser forward button.",
-            "input_schema": [
+    private static func forward() -> CanonicalTool {
+        CanonicalTool(
+            name: "forward",
+            description: "Browser forward button.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "observation": ["type": "string"],
@@ -450,14 +467,14 @@ enum ToolSchema {
                 ],
                 "required": ["observation", "intent"]
             ]
-        ]
+        )
     }
 
-    private static func refresh() -> [String: Any] {
-        [
-            "name": "refresh",
-            "description": "Reload the current page.",
-            "input_schema": [
+    private static func refresh() -> CanonicalTool {
+        CanonicalTool(
+            name: "refresh",
+            description: "Reload the current page.",
+            jsonSchema: [
                 "type": "object",
                 "properties": [
                     "observation": ["type": "string"],
@@ -465,7 +482,7 @@ enum ToolSchema {
                 ],
                 "required": ["observation", "intent"]
             ]
-        ]
+        )
     }
 }
 

@@ -262,12 +262,26 @@ struct GoalInputView: View {
             if advancedExpanded {
                 VStack(spacing: 0) {
                     AdvancedRow(
+                        label: "Provider",
+                        sublabel: "Pick the LLM vendor; the model list narrows.",
+                        showsInherits: !vm.overrideDefaults
+                    ) {
+                        SegmentedToggle(
+                            options: ModelProvider.allCases.map { .init($0, $0.displayName) },
+                            selection: providerBinding(vm: vm)
+                        )
+                    }
+                    Divider().background(Color.harnessLineSoft)
+
+                    AdvancedRow(
                         label: "Model",
                         sublabel: "Override the workspace default.",
                         showsInherits: !vm.overrideDefaults
                     ) {
                         SegmentedToggle(
-                            options: AgentModel.allCases.map { .init($0, $0.displayName) },
+                            options: AgentModel.allCases
+                                .filter { $0.provider == vm.model.provider }
+                                .map { .init($0, $0.displayName) },
                             selection: $bvm.model
                         )
                         .onChange(of: vm.model) { _, _ in vm.overrideDefaults = true }
@@ -329,7 +343,7 @@ struct GoalInputView: View {
                 }
             }
             .buttonStyle(AccentButtonStyle())
-            .disabled(!vm.canStart || !state.apiKeyPresent)
+            .disabled(!vm.canStart || !state.apiKeyPresent(for: vm.model.provider))
             .keyboardShortcut(.return, modifiers: .command)
         }
         .padding(.horizontal, Theme.spacing.l)
@@ -342,6 +356,22 @@ struct GoalInputView: View {
     }
 
     // MARK: Helpers
+
+    /// Read/write binding over `vm.model.provider`. Setting the provider
+    /// snaps `vm.model` to that provider's first model so the model
+    /// SegmentedToggle below stays in a valid state.
+    private func providerBinding(vm: GoalInputViewModel) -> Binding<ModelProvider> {
+        Binding<ModelProvider>(
+            get: { vm.model.provider },
+            set: { newProvider in
+                guard newProvider != vm.model.provider else { return }
+                if let first = AgentModel.allCases.first(where: { $0.provider == newProvider }) {
+                    vm.model = first
+                    vm.overrideDefaults = true
+                }
+            }
+        )
+    }
 
     /// Live preview of the auto-generated name when the user leaves the
     /// runName field blank. Mirrors the build-time fallback in the VM.
@@ -364,11 +394,14 @@ struct GoalInputView: View {
         var apiKey: Bool
         var simulator: Bool
         var tooling: Bool
+        /// User-facing provider name (e.g. "Anthropic", "OpenAI") so
+        /// the missing-key prompt can name the right service.
+        var providerName: String
         var allOK: Bool { apiKey && simulator && tooling }
 
         var label: String {
             if allOK { return "preflight ok" }
-            if !apiKey { return "API key missing" }
+            if !apiKey { return "\(providerName) key missing" }
             if !tooling { return "xcodebuild missing" }
             if !simulator { return "no simulator" }
             return "preflight"
@@ -377,7 +410,7 @@ struct GoalInputView: View {
         var fullCopy: String {
             if allOK { return "Build is fresh · Simulator booted · API key valid" }
             var problems: [String] = []
-            if !apiKey { problems.append("Add Anthropic API key in Settings") }
+            if !apiKey { problems.append("Add \(providerName) API key in Settings") }
             if !tooling { problems.append("xcodebuild not found") }
             if !simulator { problems.append("no simulator selected") }
             return problems.joined(separator: " · ")
@@ -387,18 +420,23 @@ struct GoalInputView: View {
     private func preflightStatus(vm: GoalInputViewModel) -> Preflight {
         // Per-platform preflight: iOS still cares about a booted
         // simulator + xcodebuild; macOS / web only need the API key.
+        // The API-key check is per-provider — a run that picked GPT-5
+        // Mini wants the OpenAI key, not Anthropic.
+        let apiKeyOK = state.apiKeyPresent(for: vm.model.provider)
         switch vm.platformKind {
         case .iosSimulator:
             return Preflight(
-                apiKey: state.apiKeyPresent,
+                apiKey: apiKeyOK,
                 simulator: state.simulators.contains(where: { $0.udid == vm.simulatorUDID }),
-                tooling: state.xcodebuildAvailable
+                tooling: state.xcodebuildAvailable,
+                providerName: vm.model.provider.displayName
             )
         case .macosApp, .web:
             return Preflight(
-                apiKey: state.apiKeyPresent,
+                apiKey: apiKeyOK,
                 simulator: true,         // not applicable — render OK
-                tooling: true            // ditto
+                tooling: true,           // ditto
+                providerName: vm.model.provider.displayName
             )
         }
     }

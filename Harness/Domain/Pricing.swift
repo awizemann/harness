@@ -50,6 +50,32 @@ extension AgentModel {
                 cacheReadPerMTok: 0.30,
                 cacheCreationPerMTok: 3.75
             )
+        case .haiku45:
+            // Haiku 4.x — fast tier.
+            return PricingRate(
+                inputPerMTok: 1.00,
+                outputPerMTok: 5.00,
+                cacheReadPerMTok: 0.10,
+                cacheCreationPerMTok: 1.25
+            )
+        case .gpt5Mini:
+            // OpenAI mid-tier: vision + tool use, 50%-off automatic
+            // prompt cache (cacheRead at 0.5× input rate). No explicit
+            // cache write, so cacheCreation = 0.
+            return PricingRate(
+                inputPerMTok: 0.25,
+                outputPerMTok: 2.00,
+                cacheReadPerMTok: 0.125,
+                cacheCreationPerMTok: 0.0
+            )
+        case .gpt41Nano:
+            // OpenAI cheapest with vision. Same 50% cache discount.
+            return PricingRate(
+                inputPerMTok: 0.10,
+                outputPerMTok: 0.40,
+                cacheReadPerMTok: 0.05,
+                cacheCreationPerMTok: 0.0
+            )
         }
     }
 }

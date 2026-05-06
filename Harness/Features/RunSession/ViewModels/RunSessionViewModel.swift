@@ -161,7 +161,7 @@ final class RunSessionViewModel {
         self.currentLegName = Self.initialLegName(for: request)
         self.totalTokenUsage = .zero
 
-        let coordinator = container.makeRunCoordinator()
+        let coordinator = container.makeRunCoordinator(for: request)
         let approvals = AsyncStream<UserApproval> { continuation in
             self.approvalContinuation = continuation
         }

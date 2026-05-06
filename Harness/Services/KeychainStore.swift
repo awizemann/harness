@@ -123,32 +123,76 @@ enum KeychainError: Error, Sendable, LocalizedError {
     }
 }
 
-// MARK: - Convenience for the Anthropic API key
+// MARK: - Per-provider API key conveniences
 
 extension KeychainStoring {
-    /// Stable identifier for the Anthropic API key entry.
-    static var anthropicService: String { "com.harness.anthropic" }
-    static var anthropicAccount: String { "default" }
+    /// Per-provider Keychain service identifier. Each LLM provider gets
+    /// its own entry so the user can keep simultaneous keys (Anthropic +
+    /// OpenAI + Google) and Harness picks the right one per run via
+    /// `LLMClientFactory`.
+    static func keychainService(for provider: ModelProvider) -> String {
+        switch provider {
+        case .anthropic: return "com.harness.anthropic"
+        case .openai:    return "com.harness.openai"
+        case .google:    return "com.harness.google"
+        }
+    }
 
-    /// Fetch the Anthropic API key as a UTF-8 string. Returns nil if absent.
-    func readAnthropicAPIKey() throws -> String? {
-        guard let data = try read(service: Self.anthropicService, account: Self.anthropicAccount) else {
+    /// Stable account name for every provider entry. Single account per
+    /// provider — we don't surface multi-account workflows.
+    static var keychainAccount: String { "default" }
+
+    /// Fetch the API key for `provider` as a UTF-8 string. Nil if absent.
+    func readKey(for provider: ModelProvider) throws -> String? {
+        guard let data = try read(
+            service: Self.keychainService(for: provider),
+            account: Self.keychainAccount
+        ) else {
             return nil
         }
         return String(data: data, encoding: .utf8)
     }
 
-    /// Write the Anthropic API key. Trims whitespace; rejects empty strings.
-    func writeAnthropicAPIKey(_ key: String) throws {
+    /// Write the API key for `provider`. Trims whitespace; rejects empty.
+    func writeKey(_ key: String, for provider: ModelProvider) throws {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let data = trimmed.data(using: .utf8) else {
             throw KeychainError.unhandled(status: errSecParam)
         }
-        try write(data, service: Self.anthropicService, account: Self.anthropicAccount)
+        try write(data,
+                  service: Self.keychainService(for: provider),
+                  account: Self.keychainAccount)
     }
 
+    /// Delete the API key for `provider`. Idempotent — no-op if absent.
+    func deleteKey(for provider: ModelProvider) throws {
+        try delete(
+            service: Self.keychainService(for: provider),
+            account: Self.keychainAccount
+        )
+    }
+
+    // MARK: - Back-compat shims for Anthropic-only callers
+
+    /// Stable identifier for the Anthropic API key entry. Kept for
+    /// pre-multi-provider call sites; new code uses
+    /// `keychainService(for: .anthropic)`.
+    static var anthropicService: String { keychainService(for: .anthropic) }
+    static var anthropicAccount: String { keychainAccount }
+
+    /// Fetch the Anthropic API key. Equivalent to `readKey(for: .anthropic)`.
+    func readAnthropicAPIKey() throws -> String? {
+        try readKey(for: .anthropic)
+    }
+
+    /// Write the Anthropic API key. Equivalent to `writeKey(_:, for: .anthropic)`.
+    func writeAnthropicAPIKey(_ key: String) throws {
+        try writeKey(key, for: .anthropic)
+    }
+
+    /// Delete the Anthropic API key. Equivalent to `deleteKey(for: .anthropic)`.
     func deleteAnthropicAPIKey() throws {
-        try delete(service: Self.anthropicService, account: Self.anthropicAccount)
+        try deleteKey(for: .anthropic)
     }
 }

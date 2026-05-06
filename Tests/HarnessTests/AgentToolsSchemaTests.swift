@@ -161,3 +161,180 @@ struct AgentToolsSchemaTests {
         #expect(withoutCache.last?["cache_control"] == nil)
     }
 }
+
+// MARK: - Multi-provider shape translators
+
+@Suite("ToolSchema — provider shape translators")
+struct ToolSchemaShapesTests {
+
+    @Test("Anthropic shape preserves canonical names + cache marker on last only")
+    func anthropicShapeBasic() {
+        let canonical = ToolSchema.canonical(platform: .iosSimulator)
+        let shaped = ToolSchema.anthropicShape(canonical, cacheLast: true)
+        #expect(shaped.count == canonical.count)
+        for (i, def) in shaped.enumerated() {
+            #expect((def["name"] as? String) == canonical[i].name)
+            #expect((def["description"] as? String) == canonical[i].description)
+            #expect(def["input_schema"] != nil)
+            // Cache marker only on the last entry.
+            let hasCache = (def["cache_control"] as? [String: String]) != nil
+            #expect(hasCache == (i == shaped.count - 1))
+        }
+    }
+
+    @Test("Anthropic shape with cacheLast=false drops every cache marker")
+    func anthropicShapeNoCacheMarkers() {
+        let shaped = ToolSchema.anthropicShape(
+            ToolSchema.canonical(platform: .iosSimulator),
+            cacheLast: false
+        )
+        for def in shaped {
+            #expect(def["cache_control"] == nil)
+        }
+    }
+
+    @Test("OpenAI shape wraps each tool in {type:function, function:{...}}")
+    func openAIShapeWraps() {
+        let canonical = ToolSchema.canonical(platform: .iosSimulator)
+        let shaped = ToolSchema.openAIShape(canonical)
+        #expect(shaped.count == canonical.count)
+        for (i, def) in shaped.enumerated() {
+            #expect((def["type"] as? String) == "function")
+            let function = def["function"] as? [String: Any]
+            #expect(function != nil)
+            #expect((function?["name"] as? String) == canonical[i].name)
+            #expect((function?["description"] as? String) == canonical[i].description)
+            #expect(function?["parameters"] != nil)
+        }
+    }
+
+    @Test("OpenAI shape never emits cache_control (Anthropic-specific)")
+    func openAIShapeNoCacheMarkers() {
+        let shaped = ToolSchema.openAIShape(
+            ToolSchema.canonical(platform: .iosSimulator)
+        )
+        for def in shaped {
+            #expect(def["cache_control"] == nil)
+            // Also verify the inner `function` object has no cache markers.
+            let function = def["function"] as? [String: Any]
+            #expect(function?["cache_control"] == nil)
+        }
+    }
+
+    @Test("Anthropic and OpenAI shapes carry the same tool name set")
+    func bothShapesAgreeOnNames() {
+        let canonical = ToolSchema.canonical(platform: .iosSimulator)
+        let anthropic = ToolSchema.anthropicShape(canonical, cacheLast: false)
+        let openai = ToolSchema.openAIShape(canonical)
+
+        let anthropicNames = Set(anthropic.compactMap { $0["name"] as? String })
+        let openaiNames = Set(openai.compactMap {
+            ($0["function"] as? [String: Any])?["name"] as? String
+        })
+        #expect(anthropicNames == openaiNames)
+    }
+
+    @Test("Per-platform canonical sets advertise platform-specific tools")
+    func canonicalPerPlatform() {
+        let ios = Set(ToolSchema.canonical(platform: .iosSimulator).map(\.name))
+        let mac = Set(ToolSchema.canonical(platform: .macosApp).map(\.name))
+        let web = Set(ToolSchema.canonical(platform: .web).map(\.name))
+
+        // iOS-only gestures.
+        #expect(ios.contains("swipe"))
+        #expect(ios.contains("press_button"))
+        #expect(!mac.contains("swipe"))
+        #expect(!mac.contains("press_button"))
+
+        // macOS adds right-click + scroll + key shortcut.
+        #expect(mac.contains("right_click"))
+        #expect(mac.contains("scroll"))
+        #expect(mac.contains("key_shortcut"))
+
+        // Web adds navigation tools.
+        #expect(web.contains("navigate"))
+        #expect(web.contains("back"))
+        #expect(web.contains("forward"))
+        #expect(web.contains("refresh"))
+        #expect(!ios.contains("navigate"))
+    }
+}
+
+// MARK: - LLMShared tool-call decoding
+
+@Suite("LLMShared — toolCall decode")
+struct LLMSharedToolCallTests {
+
+    @Test("Tap input decodes coordinates + observation/intent")
+    func tapDecode() throws {
+        let json = #"{"x":120,"y":240,"observation":"see button","intent":"sign in"}"#
+        let call = try LLMShared.toolCall(name: "tap", inputData: Data(json.utf8))
+        #expect(call.tool == .tap)
+        #expect(call.observation == "see button")
+        #expect(call.intent == "sign in")
+        if case let .tap(x, y) = call.input {
+            #expect(x == 120)
+            #expect(y == 240)
+        } else {
+            Issue.record("expected .tap input variant")
+        }
+    }
+
+    @Test("Unknown tool name throws unknownTool")
+    func unknownToolThrows() {
+        let json = #"{"observation":"x","intent":"y"}"#
+        #expect(throws: LLMError.self) {
+            _ = try LLMShared.toolCall(name: "frobnicate", inputData: Data(json.utf8))
+        }
+    }
+
+    @Test("Non-object input throws invalidToolCall")
+    func nonObjectInputThrows() {
+        let json = "[1,2,3]"
+        #expect(throws: LLMError.self) {
+            _ = try LLMShared.toolCall(name: "tap", inputData: Data(json.utf8))
+        }
+    }
+
+    @Test("String-encoded coordinates coerce to Int")
+    func stringCoordsCoerce() throws {
+        // Some providers (and historically Claude) occasionally emit
+        // numbers as strings in tool inputs. The decoder coerces.
+        let json = #"{"x":"100","y":"200","observation":"","intent":""}"#
+        let call = try LLMShared.toolCall(name: "tap", inputData: Data(json.utf8))
+        if case let .tap(x, y) = call.input {
+            #expect(x == 100)
+            #expect(y == 200)
+        } else {
+            Issue.record("expected .tap input variant")
+        }
+    }
+
+    @Test("note_friction decodes kind + detail")
+    func noteFrictionDecode() throws {
+        let json = #"{"kind":"dead_end","detail":"button does nothing"}"#
+        let call = try LLMShared.toolCall(name: "note_friction", inputData: Data(json.utf8))
+        if case let .noteFriction(kind, detail) = call.input {
+            #expect(kind == .deadEnd)
+            #expect(detail == "button does nothing")
+        } else {
+            Issue.record("expected .noteFriction input variant")
+        }
+    }
+
+    @Test("mark_goal_done decodes verdict + summary + flag")
+    func markGoalDoneDecode() throws {
+        let json = #"""
+        {"verdict":"success","summary":"signed in","friction_count":2,"would_real_user_succeed":true,"observation":"","intent":""}
+        """#
+        let call = try LLMShared.toolCall(name: "mark_goal_done", inputData: Data(json.utf8))
+        if case let .markGoalDone(verdict, summary, count, wrus) = call.input {
+            #expect(verdict == .success)
+            #expect(summary == "signed in")
+            #expect(count == 2)
+            #expect(wrus == true)
+        } else {
+            Issue.record("expected .markGoalDone input variant")
+        }
+    }
+}
