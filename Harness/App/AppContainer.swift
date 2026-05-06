@@ -38,11 +38,11 @@ final class AppContainer {
         self.xcodeBuilder = XcodeBuilder(processRunner: runner, toolLocator: toolLocator)
 
         // WebDriverAgent stack — replaces idb in Phase 5.
-        // Discovery: HarnessPaths.wdaSourceURL is baked into Info.plist via
-        // INFOPLIST_KEY_HarnessRepoRoot=$(SRCROOT). For the (rare) case where
-        // it's not set — running a binary built outside xcodegen — fall back
-        // to a path relative to the launched bundle, which is enough for
-        // dev-mode runs from Xcode where the .app sits inside DerivedData.
+        // `HarnessPaths.wdaSourceURL` resolves the bundled folder reference
+        // (release zip) first, then the repo's `vendor/WebDriverAgent` for
+        // dev-mode runs from Xcode. The final fallback below covers the
+        // pathological case where neither resolves — shouldn't fire in
+        // practice, but keeps the dependency-graph init non-optional.
         let wdaSource = HarnessPaths.wdaSourceURL
             ?? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("vendor/WebDriverAgent")
         self.wdaBuilder = WDABuilder(processRunner: runner, toolLocator: toolLocator, sourceURL: wdaSource)

@@ -52,17 +52,32 @@ enum HarnessPaths {
 
     /// Repo root, baked at build time via the `Generate
     /// HarnessGeneratedRepoRoot.swift` pre-build script (see `project.yml`).
-    /// The generated file ships under `DERIVED_FILE_DIR` so it's not checked
-    /// into source.
+    /// Returns nil when the baked path doesn't exist on disk — that
+    /// happens in shipped builds, where `$SRCROOT` resolves to the
+    /// developer's machine and isn't present on the user's. Callers
+    /// should fall back to a bundled resource path.
     static var repoRoot: URL? {
         let path = HarnessGeneratedRepoRoot.path
         guard !path.isEmpty else { return nil }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    /// `<repo>/vendor/WebDriverAgent/`. Resolved from `repoRoot`.
+    /// WebDriverAgent source directory used by `WDABuilder`. Resolution order:
+    /// 1. `Bundle.main.resourceURL/WebDriverAgent` — the folder reference
+    ///    `project.yml` copies into the .app at build time. Present in
+    ///    every shipped build, including the release zip.
+    /// 2. `<repoRoot>/vendor/WebDriverAgent` — only resolves when running
+    ///    from a developer's working tree (Xcode + xcodegen).
+    /// Returning nil means neither location is available, which only
+    /// happens for an unusually broken install.
     static var wdaSourceURL: URL? {
-        repoRoot?.appendingPathComponent("vendor/WebDriverAgent", isDirectory: true)
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("WebDriverAgent", isDirectory: true),
+           FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
+        }
+        return repoRoot?.appendingPathComponent("vendor/WebDriverAgent", isDirectory: true)
     }
 
     // MARK: Per-run paths

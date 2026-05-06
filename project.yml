@@ -10,10 +10,11 @@ options:
   fileTypes:
     md:
       buildPhase: none
-  # Seed the generated repo-root stub before xcodegen scans `sources:`. The
-  # actual value is overwritten on every build by the `Generate
-  # HarnessGeneratedRepoRoot.swift` pre-build script — this just guarantees the
-  # file exists so the source list picks it up.
+  # Seed the generated stubs before xcodegen scans `sources:`. The actual
+  # values are overwritten on every build by the matching pre-build scripts
+  # (`Generate HarnessGeneratedRepoRoot.swift`, `Generate
+  # HarnessGeneratedWDASnapshot.swift`) — this just guarantees the files
+  # exist so the source list picks them up.
   preGenCommand: |
     mkdir -p Harness/Generated
     if [ ! -f Harness/Generated/HarnessGeneratedRepoRoot.swift ]; then
@@ -23,6 +24,14 @@ options:
         '    static let path = ""' \
         '}' \
         > Harness/Generated/HarnessGeneratedRepoRoot.swift
+    fi
+    if [ ! -f Harness/Generated/HarnessGeneratedWDASnapshot.swift ]; then
+      printf '%s\n' \
+        '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+        'enum HarnessGeneratedWDASnapshot {' \
+        '    static let sha = ""' \
+        '}' \
+        > Harness/Generated/HarnessGeneratedWDASnapshot.swift
     fi
 settings:
   base:
@@ -59,6 +68,15 @@ targets:
       - path: docs/PROMPTS
         type: folder
         buildPhase: resources
+      # WebDriverAgent submodule — bundled verbatim into the .app's
+      # Resources/ so first-run WDA builds work for users who installed
+      # from a release zip (where the SRCROOT path baked into
+      # `HarnessGeneratedRepoRoot.swift` doesn't exist on disk).
+      # Resolution order in `HarnessPaths.wdaSourceURL`: bundle first,
+      # then SRCROOT for dev-mode runs from Xcode.
+      - path: vendor/WebDriverAgent
+        type: folder
+        buildPhase: resources
     settings:
       base:
         ENABLE_HARDENED_RUNTIME: YES
@@ -68,8 +86,8 @@ targets:
         INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
         INFOPLIST_KEY_CFBundleName: Harness
         INFOPLIST_KEY_CFBundleDisplayName: Harness
-        MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.2.1"
+        CURRENT_PROJECT_VERSION: "2"
     preBuildScripts:
       # Bake $SRCROOT into the generated Swift stub so the running app can find
       # `vendor/WebDriverAgent` for first-run WDA builds. Read at runtime via
@@ -86,6 +104,27 @@ targets:
             '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
             'enum HarnessGeneratedRepoRoot {' \
             "    static let path = \"$SRCROOT\"" \
+            '}')
+          if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
+            printf '%s\n' "$NEW" > "$DEST"
+          fi
+      # Bake the WebDriverAgent submodule's HEAD SHA into the binary so
+      # `WDABuilder` can decide whether its on-disk build cache is still
+      # valid in release mode — where the bundled `Resources/WebDriverAgent`
+      # has no usable `.git` and `git rev-parse HEAD` against it fails.
+      # In dev mode the runtime `git rev-parse` against the SRCROOT submodule
+      # still wins, so the cache invalidates on every `git pull` of the submodule.
+      - name: Generate HarnessGeneratedWDASnapshot.swift
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          DEST="$SRCROOT/Harness/Generated/HarnessGeneratedWDASnapshot.swift"
+          mkdir -p "$(dirname "$DEST")"
+          SHA="$(/usr/bin/git -C "$SRCROOT/vendor/WebDriverAgent" rev-parse HEAD 2>/dev/null || echo "")"
+          NEW=$(printf '%s\n' \
+            '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+            'enum HarnessGeneratedWDASnapshot {' \
+            "    static let sha = \"$SHA\"" \
             '}')
           if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
             printf '%s\n' "$NEW" > "$DEST"

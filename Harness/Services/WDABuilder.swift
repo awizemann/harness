@@ -222,14 +222,28 @@ actor WDABuilder: WDABuilding {
     /// Read the HEAD SHA of the WDA submodule. Submodules use a `.git` *file*
     /// pointing to `<super>/.git/modules/<path>`, so reading `<source>/.git/HEAD`
     /// directly is fragile — `git rev-parse HEAD` resolves both layouts.
+    ///
+    /// In shipped builds the bundled `Resources/WebDriverAgent` has no
+    /// resolvable `.git` (the submodule pointer dangles), so `git rev-parse`
+    /// fails. Fall back to `HarnessGeneratedWDASnapshot.sha`, baked at app
+    /// build time from the developer's submodule HEAD. That keeps the on-disk
+    /// build cache valid across launches and only invalidates when Harness
+    /// itself ships a new WDA snapshot.
     private func readWDASHA() async throws -> String {
-        let result = try await processRunner.run(ProcessSpec(
-            executable: URL(fileURLWithPath: "/usr/bin/git"),
-            arguments: ["rev-parse", "HEAD"],
-            workingDirectory: sourceURL,
-            timeout: .seconds(5)
-        ))
-        return result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let result = try await processRunner.run(ProcessSpec(
+                executable: URL(fileURLWithPath: "/usr/bin/git"),
+                arguments: ["rev-parse", "HEAD"],
+                workingDirectory: sourceURL,
+                timeout: .seconds(5)
+            ))
+            let live = result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !live.isEmpty { return live }
+        } catch {
+            // git not on PATH, source dir not a git tree, etc. — fall through
+            // to the baked snapshot.
+        }
+        return HarnessGeneratedWDASnapshot.sha
     }
 
     private static func readSHA(at url: URL) -> String? {
