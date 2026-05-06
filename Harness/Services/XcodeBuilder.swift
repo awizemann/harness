@@ -405,6 +405,14 @@ extension XcodeBuilder {
         var supportsIOSSimulator: Bool {
             platform == "iOS Simulator"
         }
+
+        /// True when this destination matches a macOS build target. The
+        /// macOS `xcodebuild -showdestinations` row emits `platform = macOS`
+        /// for normal Mac apps and `platform = macOS` (with `arch=Mac Catalyst`
+        /// or similar) for catalyst variants — we treat both as macOS.
+        var supportsMacOS: Bool {
+            platform == "macOS"
+        }
     }
 
     /// Run `xcodebuild -showdestinations -scheme <X>` and parse the destinations.

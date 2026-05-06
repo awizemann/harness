@@ -18,6 +18,27 @@ import Foundation
 import Observation
 import os
 
+/// Where a macOS Application's launch artefact comes from. The user
+/// picks one of these in the create form's "Launch source" segment;
+/// the snapshot preserves only the chosen branch's fields and clears
+/// the other so the runtime adapter sees a single, unambiguous launch
+/// path. Pre-built bundles are the default — most macOS targets are
+/// apps the user already has built somewhere.
+enum MacLaunchSource: String, CaseIterable, Hashable, Sendable {
+    /// Launch a pre-built `.app` directly via NSWorkspace. No build step.
+    case prebuiltBundle
+    /// Build the app with `xcodebuild` from a project + scheme, then
+    /// launch the resulting `.app`.
+    case xcodeProject
+
+    var label: String {
+        switch self {
+        case .prebuiltBundle: "Pre-built .app"
+        case .xcodeProject:   "Xcode project"
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class ApplicationCreateViewModel {
@@ -30,10 +51,13 @@ final class ApplicationCreateViewModel {
     /// section vs Mac-bundle section) based on this.
     var platformKind: PlatformKind = .iosSimulator
     var simulatorUDID: String?
-    /// Phase 2 — macOS pre-built `.app` path. When set, the run launches
-    /// this bundle via NSWorkspace and skips xcodebuild entirely. When
-    /// nil, the form expects a normal Project + scheme (xcodebuild
-    /// macOS build).
+    /// Which macOS launch source the user is configuring. Only meaningful
+    /// when `platformKind == .macosApp`. Defaults to `.prebuiltBundle` —
+    /// the create form's segment is bound to this and re-shapes its
+    /// sub-form when flipped.
+    var macLaunchSource: MacLaunchSource = .prebuiltBundle
+    /// macOS pre-built `.app` path. Only stored when
+    /// `macLaunchSource == .prebuiltBundle`; cleared otherwise.
     var macAppBundlePath: String?
     /// Phase 3 — web form fields.
     var webStartURL: String = ""
@@ -60,9 +84,23 @@ final class ApplicationCreateViewModel {
                 && (simulatorUDID?.isEmpty == false)
                 && picker.schemeSupportsIOSSimulator
         case .macosApp:
-            // Either pre-built .app path OR project + scheme.
-            if let path = macAppBundlePath, !path.isEmpty { return true }
-            return picker.projectURL != nil && !picker.selectedScheme.isEmpty
+            // The launch-source segment is the discriminator — exactly
+            // one branch's fields need to be valid, never both.
+            switch macLaunchSource {
+            case .prebuiltBundle:
+                return !(macAppBundlePath ?? "").isEmpty
+            case .xcodeProject:
+                guard picker.projectURL != nil,
+                      !picker.selectedScheme.isEmpty else { return false }
+                // Block save when the chosen scheme has no macOS destination —
+                // xcodebuild would refuse the build at run time anyway. The
+                // banner (in the view) communicates this; canSave enforces it.
+                if let dests = picker.schemeDestinations,
+                   !dests.contains(where: { $0.supportsMacOS }) {
+                    return false
+                }
+                return true
+            }
         case .web:
             // Phase 3 — only require a non-empty URL that parses.
             let trimmed = webStartURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -130,29 +168,55 @@ final class ApplicationCreateViewModel {
             )
 
         case .macosApp:
-            // Two valid configs: pre-built .app path OR project + scheme.
-            // Mirror both into the snapshot so RunCoordinator's adapter
-            // can choose the right launch path.
-            let projectURL = picker.projectURL
-            return ApplicationSnapshot(
-                id: UUID(),
-                name: trimmedName,
-                createdAt: Date(),
-                lastUsedAt: Date(),
-                archivedAt: nil,
-                platformKindRaw: PlatformKind.macosApp.rawValue,
-                projectPath: projectURL?.path ?? "",
-                projectBookmark: nil,
-                scheme: picker.selectedScheme,
-                defaultSimulatorUDID: nil,
-                defaultSimulatorName: nil,
-                defaultSimulatorRuntime: nil,
-                macAppBundlePath: macAppBundlePath,
-                macAppBundleBookmark: nil,
-                defaultModelRaw: defaultModel.rawValue,
-                defaultModeRaw: defaultMode.rawValue,
-                defaultStepBudget: defaultStepBudget
-            )
+            // Persist exactly one launch path. The other branch's fields
+            // are cleared so MacOSPlatformAdapter sees an unambiguous
+            // signal at run time (and so the detail/edit view can't
+            // accidentally surface stale data from the unchosen mode).
+            switch macLaunchSource {
+            case .prebuiltBundle:
+                guard let path = macAppBundlePath, !path.isEmpty else { return nil }
+                return ApplicationSnapshot(
+                    id: UUID(),
+                    name: trimmedName,
+                    createdAt: Date(),
+                    lastUsedAt: Date(),
+                    archivedAt: nil,
+                    platformKindRaw: PlatformKind.macosApp.rawValue,
+                    projectPath: "",
+                    projectBookmark: nil,
+                    scheme: "",
+                    defaultSimulatorUDID: nil,
+                    defaultSimulatorName: nil,
+                    defaultSimulatorRuntime: nil,
+                    macAppBundlePath: path,
+                    macAppBundleBookmark: nil,
+                    defaultModelRaw: defaultModel.rawValue,
+                    defaultModeRaw: defaultMode.rawValue,
+                    defaultStepBudget: defaultStepBudget
+                )
+            case .xcodeProject:
+                guard let projectURL = picker.projectURL,
+                      !picker.selectedScheme.isEmpty else { return nil }
+                return ApplicationSnapshot(
+                    id: UUID(),
+                    name: trimmedName,
+                    createdAt: Date(),
+                    lastUsedAt: Date(),
+                    archivedAt: nil,
+                    platformKindRaw: PlatformKind.macosApp.rawValue,
+                    projectPath: projectURL.path,
+                    projectBookmark: nil,
+                    scheme: picker.selectedScheme,
+                    defaultSimulatorUDID: nil,
+                    defaultSimulatorName: nil,
+                    defaultSimulatorRuntime: nil,
+                    macAppBundlePath: nil,
+                    macAppBundleBookmark: nil,
+                    defaultModelRaw: defaultModel.rawValue,
+                    defaultModeRaw: defaultMode.rawValue,
+                    defaultStepBudget: defaultStepBudget
+                )
+            }
 
         case .web:
             let trimmed = webStartURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -183,6 +247,11 @@ final class ApplicationCreateViewModel {
     func reset() {
         name = ""
         simulatorUDID = nil
+        macLaunchSource = .prebuiltBundle
+        macAppBundlePath = nil
+        webStartURL = ""
+        webViewportWidth = 1280
+        webViewportHeight = 800
         defaultModel = .opus47
         defaultMode = .stepByStep
         defaultStepBudget = 40

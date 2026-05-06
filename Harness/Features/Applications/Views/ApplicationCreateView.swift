@@ -62,8 +62,7 @@ struct ApplicationCreateView: View {
                         ProjectSection(vm: vm)
                         SimulatorSection(vm: vm)
                     } else if vm.platformKind == .macosApp {
-                        MacAppSection(vm: vm)
-                        ProjectSection(vm: vm)   // optional for macOS — project+scheme is the build mode
+                        MacLaunchSourceSection(vm: vm)
                     } else if vm.platformKind == .web {
                         WebSection(vm: vm)
                     }
@@ -165,44 +164,90 @@ private struct PlatformSection: View {
     }
 }
 
-/// macOS-only sub-form: pick a pre-built `.app` bundle. Shown alongside
-/// `ProjectSection` so the user can configure either path (project+scheme
-/// for build-from-source OR pre-built bundle for the fast path). The
-/// adapter prefers the bundle path when both are populated.
-private struct MacAppSection: View {
+/// macOS-only "Launch source" section. Single panel with a segmented
+/// control choosing between **Pre-built `.app`** and **Xcode project**.
+/// The chosen sub-form is shown; the other is hidden — `canSave`
+/// validates only the chosen branch, and `makeSnapshot` persists only
+/// that branch's fields. Replaces the earlier two-stacked-panels layout
+/// (MacAppSection + ProjectSection) which read as "fill in both."
+private struct MacLaunchSourceSection: View {
     @Bindable var vm: ApplicationCreateViewModel
 
     var body: some View {
-        PanelContainer(title: "macOS app bundle") {
-            VStack(alignment: .leading, spacing: Theme.spacing.s) {
-                HStack(spacing: Theme.spacing.s) {
-                    if let path = vm.macAppBundlePath, !path.isEmpty {
-                        Image(systemName: "macwindow")
-                            .foregroundStyle(Color.harnessAccent)
-                        Text((path as NSString).lastPathComponent)
-                            .font(.callout.weight(.medium))
-                        Text(path)
-                            .font(HFont.micro)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    } else {
-                        Text("Optional — pick a pre-built .app to skip xcodebuild.")
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button(vm.macAppBundlePath != nil ? "Change…" : "Pick…") {
-                        pickAppBundle()
-                    }
-                    if vm.macAppBundlePath != nil {
-                        Button("Clear") { vm.macAppBundlePath = nil }
-                            .buttonStyle(.borderless)
+        PanelContainer(title: "Launch source") {
+            VStack(alignment: .leading, spacing: Theme.spacing.m) {
+                Picker("", selection: $vm.macLaunchSource) {
+                    ForEach(MacLaunchSource.allCases, id: \.self) { src in
+                        Text(src.label).tag(src)
                     }
                 }
-                Text("If left empty, Harness builds the macOS scheme from the project below.")
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                Text(helpText)
                     .font(.caption).foregroundStyle(.tertiary)
+
+                // Sub-form for the chosen source. The other branch's
+                // fields stay untouched in the view-model so the user
+                // can flip back without losing input — only `makeSnapshot`
+                // clears them on save.
+                Group {
+                    switch vm.macLaunchSource {
+                    case .prebuiltBundle:
+                        MacBundlePicker(vm: vm)
+                    case .xcodeProject:
+                        ProjectInner(vm: vm, picker: vm.picker, platform: .macosApp)
+                    }
+                }
+                .padding(.top, Theme.spacing.xs)
             }
             .padding(Theme.spacing.l)
+        }
+    }
+
+    private var helpText: String {
+        switch vm.macLaunchSource {
+        case .prebuiltBundle:
+            return "Pick a pre-built .app and Harness launches it via NSWorkspace — no build step. Fastest path."
+        case .xcodeProject:
+            return "Provide an Xcode project + scheme; Harness builds it for macOS first, then drives the resulting .app."
+        }
+    }
+}
+
+/// Sub-form for the pre-built `.app` launch source. Pure file picker —
+/// no compatibility banner, no scheme picker. Lifted out of the old
+/// `MacAppSection` so the new `MacLaunchSourceSection` can compose it.
+private struct MacBundlePicker: View {
+    @Bindable var vm: ApplicationCreateViewModel
+
+    var body: some View {
+        HStack(spacing: Theme.spacing.s) {
+            if let path = vm.macAppBundlePath, !path.isEmpty {
+                Image(systemName: "macwindow")
+                    .foregroundStyle(Color.harnessAccent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text((path as NSString).lastPathComponent)
+                        .font(.callout.weight(.medium))
+                    Text(path)
+                        .font(HFont.micro)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            } else {
+                Image(systemName: "macwindow")
+                    .foregroundStyle(.secondary)
+                Text("No bundle picked yet")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(vm.macAppBundlePath != nil ? "Change…" : "Pick…") {
+                pickAppBundle()
+            }
+            if vm.macAppBundlePath != nil {
+                Button("Clear") { vm.macAppBundlePath = nil }
+                    .buttonStyle(.borderless)
+            }
         }
     }
 
@@ -307,15 +352,27 @@ private struct ProjectSection: View {
         // Bind to picker via @Bindable.
         let _ = vm.picker
         PanelContainer(title: "Project") {
-            ProjectInner(vm: vm, picker: vm.picker)
+            // ProjectSection is the iOS form's project picker today.
+            // The macOS form embeds `ProjectInner` directly in the
+            // launch-source section, passing `.macosApp` for the
+            // banner context — see `MacLaunchSourceSection`.
+            ProjectInner(vm: vm, picker: vm.picker, platform: .iosSimulator)
                 .padding(Theme.spacing.l)
         }
     }
 }
 
+/// Project + scheme picker. Used by both the iOS form (top-level
+/// `ProjectSection`) and the macOS form's "Xcode project" launch
+/// source. The `platform` parameter drives the compatibility banner
+/// — iOS reads from `picker.schemeCompatibilitySummary` for
+/// back-compat; macOS computes its own copy from the raw destinations
+/// array so the iOS-flavoured "Harness needs an iOS Simulator target"
+/// language never leaks through.
 private struct ProjectInner: View {
     @Bindable var vm: ApplicationCreateViewModel
     @Bindable var picker: ProjectPicker
+    let platform: PlatformKind
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.s) {
@@ -360,22 +417,60 @@ private struct ProjectInner: View {
                 if let err = picker.schemeError {
                     Text(err).font(.caption).foregroundStyle(Color.harnessWarning)
                 }
-                if let summary = picker.schemeCompatibilitySummary {
-                    HStack(spacing: Theme.spacing.s) {
-                        Image(systemName: picker.schemeSupportsIOSSimulator
-                              ? "checkmark.circle.fill"
-                              : "exclamationmark.triangle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(picker.schemeSupportsIOSSimulator
-                                             ? Color.harnessSuccess : Color.harnessWarning)
-                        Text(summary)
-                            .font(.caption)
-                            .foregroundStyle(picker.schemeSupportsIOSSimulator
-                                             ? .secondary : .primary)
-                    }
+                SchemeCompatibilityBanner(picker: picker, platform: platform)
                     .padding(.leading, 88)
-                }
             }
+        }
+    }
+}
+
+/// Per-platform banner that summarises whether the picked scheme has a
+/// destination matching the active platform. iOS uses the picker's
+/// existing `schemeCompatibilitySummary` + `schemeSupportsIOSSimulator`
+/// (back-compat — same copy as before). macOS reads the raw
+/// `schemeDestinations` array directly and emits its own copy. Web
+/// renders nothing — web Applications don't take a project.
+private struct SchemeCompatibilityBanner: View {
+    @Bindable var picker: ProjectPicker
+    let platform: PlatformKind
+
+    var body: some View {
+        switch platform {
+        case .iosSimulator:
+            if let summary = picker.schemeCompatibilitySummary {
+                bannerRow(
+                    ok: picker.schemeSupportsIOSSimulator,
+                    text: summary
+                )
+            } else {
+                EmptyView()
+            }
+        case .macosApp:
+            if let dests = picker.schemeDestinations {
+                let hasMac = dests.contains(where: { $0.supportsMacOS })
+                bannerRow(
+                    ok: hasMac,
+                    text: hasMac
+                        ? "Scheme has a macOS destination — Harness will build for macOS."
+                        : "Scheme has no macOS destination. Pick a different scheme or use a pre-built .app instead."
+                )
+            } else {
+                EmptyView()
+            }
+        case .web:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func bannerRow(ok: Bool, text: String) -> some View {
+        HStack(spacing: Theme.spacing.s) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(ok ? Color.harnessSuccess : Color.harnessWarning)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(ok ? .secondary : .primary)
         }
     }
 }
