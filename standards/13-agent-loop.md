@@ -56,9 +56,9 @@ Why dHash and not exact equality: the simulator status bar overrides remove most
 
 ## 3. Step budget
 
-Default 40 steps. Range 5–200. Hard ceiling 200.
+Default 40 steps. Range 5–200. Hard ceiling 200. **`stepBudget == 0` (`RunRequest.unlimitedStepBudget`) means unlimited** — the loop and `RunCoordinator` skip the short-circuit, and the run runs until `mark_goal_done`, the token budget exhausts, or the cycle detector trips. The token budget remains the cost cap and the cycle detector still bails on a stuck agent, so unlimited steps does not mean unlimited risk.
 
-When exceeded, the loop short-circuits with `mark_goal_done(blocked, "step budget exhausted at step 41")`. This is logged as a friction event of kind `unexpected_state`.
+When the budget is finite and exceeded, the loop short-circuits with `mark_goal_done(blocked, "step budget exhausted at step 41")`. This is logged as a friction event of kind `unexpected_state`.
 
 Budget is per-leg in chain runs (each leg gets a fresh allowance, equal to the run's `stepBudget`). For single-action and ad-hoc runs the per-leg budget is the per-run budget — there's only one leg. Token budget is always per-run total.
 

@@ -40,8 +40,8 @@ struct StepFeedCell: View {
                         FrictionTag(kind: f.kind)
                     }
                     Spacer(minLength: 0)
-                    if step.thumbnail != nil {
-                        thumbView
+                    if let thumb = step.thumbnail {
+                        thumbView(image: thumb)
                     }
                 }
                 if let f = step.friction {
@@ -85,11 +85,40 @@ struct StepFeedCell: View {
         }
     }
 
-    private var thumbView: some View {
-        RoundedRectangle(cornerRadius: 4)
-            .fill(LinearGradient(colors: [Color(.sRGB, white: 0.98, opacity: 1), Color(.sRGB, white: 0.92, opacity: 1)], startPoint: .top, endPoint: .bottom))
-            .frame(width: 32, height: 56)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.harnessLineStrong, lineWidth: 0.5))
+    /// Render the captured step screenshot scaled into a small thumbnail.
+    /// The frame is sized to the image's aspect ratio (capped at 88pt
+    /// wide × 56pt tall) so iOS portrait, macOS, and web landscape
+    /// screenshots all render proportionally instead of being squished
+    /// into a fixed phone-shaped slot.
+    private func thumbView(image: NSImage) -> some View {
+        let aspect: CGFloat = {
+            let s = image.size
+            guard s.width > 0, s.height > 0 else { return 9.0 / 16.0 }
+            return s.width / s.height
+        }()
+        let maxH: CGFloat = 56
+        let maxW: CGFloat = 88
+        let w: CGFloat
+        let h: CGFloat
+        if aspect >= 1 {
+            // Landscape: pin to max width, derive height.
+            w = min(maxW, maxH * aspect)
+            h = max(1, w / aspect)
+        } else {
+            // Portrait: pin to max height, derive width.
+            h = maxH
+            w = max(1, h * aspect)
+        }
+        return Image(nsImage: image)
+            .resizable()
+            .interpolation(.medium)
+            .aspectRatio(contentMode: .fill)
+            .frame(width: w, height: h)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.harnessLineStrong, lineWidth: 0.5)
+            )
     }
 }
 

@@ -29,6 +29,9 @@ struct GoalInputView: View {
     @State private var activeApplication: ApplicationSnapshot?
     @State private var hydratedAppID: UUID?
     @State private var advancedExpanded: Bool = false
+    /// Last finite step budget, restored when the user toggles
+    /// "Unlimited" off again on the Advanced row.
+    @State private var lastFiniteStepBudget: Int = 40
 
     var body: some View {
         Group {
@@ -248,7 +251,10 @@ struct GoalInputView: View {
                         .foregroundStyle(Color.harnessText)
                     Spacer()
                     Pill(text: vm.model.displayName, kind: .neutral)
-                    Pill(text: "\(vm.stepBudget) steps", kind: .neutral)
+                    Pill(text: vm.stepBudget == RunRequest.unlimitedStepBudget
+                         ? "Unlimited steps"
+                         : "\(vm.stepBudget) steps",
+                         kind: .neutral)
                 }
                 .padding(.horizontal, Theme.spacing.m)
                 .frame(height: 36)
@@ -290,16 +296,54 @@ struct GoalInputView: View {
 
                     AdvancedRow(
                         label: "Step budget",
-                        sublabel: "Hard cap before the agent reports failure. 5–200.",
+                        sublabel: "Hard cap before the agent reports failure. Unlimited leaves only the token budget gating the run.",
                         showsInherits: !vm.overrideDefaults
                     ) {
                         HStack(spacing: 10) {
-                            Stepper("", value: $bvm.stepBudget, in: 5...200, step: 5)
-                                .labelsHidden()
+                            Toggle("Unlimited", isOn: unlimitedStepsBinding(vm: vm))
+                                .toggleStyle(.checkbox)
                                 .onChange(of: vm.stepBudget) { _, _ in vm.overrideDefaults = true }
-                            Text("\(vm.stepBudget) steps")
-                                .font(HFont.mono)
-                                .foregroundStyle(Color.harnessText2)
+                            if vm.stepBudget != RunRequest.unlimitedStepBudget {
+                                Stepper("", value: $bvm.stepBudget, in: 5...200, step: 5)
+                                    .labelsHidden()
+                                    .onChange(of: vm.stepBudget) { _, _ in vm.overrideDefaults = true }
+                                Text("\(vm.stepBudget) steps")
+                                    .font(HFont.mono)
+                                    .foregroundStyle(Color.harnessText2)
+                            } else {
+                                Text("∞")
+                                    .font(HFont.mono)
+                                    .foregroundStyle(Color.harnessText2)
+                            }
+                        }
+                    }
+                    Divider().background(Color.harnessLineSoft)
+
+                    AdvancedRow(
+                        label: "Token budget",
+                        sublabel: "Per-run input-token cap. Defaults to the model's recommended budget. Clamps to the model's hard ceiling.",
+                        showsInherits: !vm.overrideDefaults
+                    ) {
+                        HStack(spacing: 10) {
+                            Toggle("Use model default",
+                                   isOn: useTokenDefaultBinding(vm: vm))
+                                .toggleStyle(.checkbox)
+                                .onChange(of: vm.tokenBudgetOverride) { _, _ in vm.overrideDefaults = true }
+                            if vm.tokenBudgetOverride != nil {
+                                Stepper("",
+                                        value: tokenBudgetStepperBinding(vm: vm),
+                                        in: 100_000...vm.model.maxTokenBudget,
+                                        step: 100_000)
+                                    .labelsHidden()
+                                    .onChange(of: vm.tokenBudgetOverride) { _, _ in vm.overrideDefaults = true }
+                                Text(formatTokens(vm.tokenBudgetOverride ?? vm.model.defaultTokenBudget))
+                                    .font(HFont.mono)
+                                    .foregroundStyle(Color.harnessText2)
+                            } else {
+                                Text("\(formatTokens(vm.model.defaultTokenBudget)) (\(vm.model.displayName))")
+                                    .font(HFont.mono)
+                                    .foregroundStyle(Color.harnessText3)
+                            }
                         }
                     }
                 }
@@ -356,6 +400,58 @@ struct GoalInputView: View {
     }
 
     // MARK: Helpers
+
+    /// Bool binding that flips `vm.tokenBudgetOverride` between nil
+    /// (use the model's recommended default) and an explicit value.
+    /// Seeds 1M on opt-in.
+    private func useTokenDefaultBinding(vm: GoalInputViewModel) -> Binding<Bool> {
+        Binding<Bool>(
+            get: { vm.tokenBudgetOverride == nil },
+            set: { newValue in
+                if newValue {
+                    vm.tokenBudgetOverride = nil
+                } else {
+                    if vm.tokenBudgetOverride == nil {
+                        vm.tokenBudgetOverride = vm.model.defaultTokenBudget
+                    }
+                }
+            }
+        )
+    }
+
+    /// Stepper-friendly Int binding over the Optional `tokenBudgetOverride`.
+    /// Coerces nil → model default while writing.
+    private func tokenBudgetStepperBinding(vm: GoalInputViewModel) -> Binding<Int> {
+        Binding<Int>(
+            get: { vm.tokenBudgetOverride ?? vm.model.defaultTokenBudget },
+            set: { vm.tokenBudgetOverride = $0 }
+        )
+    }
+
+    /// "1.0M" / "250k" — matches the run-detail UI's convention.
+    private func formatTokens(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 {
+            return String(format: "%.1fM", Double(tokens) / 1_000_000.0)
+        }
+        return "\(tokens / 1_000)k"
+    }
+
+    /// Bool binding that flips `vm.stepBudget` between
+    /// `RunRequest.unlimitedStepBudget` and the last finite value the
+    /// user picked.
+    private func unlimitedStepsBinding(vm: GoalInputViewModel) -> Binding<Bool> {
+        Binding<Bool>(
+            get: { vm.stepBudget == RunRequest.unlimitedStepBudget },
+            set: { newValue in
+                if newValue {
+                    if vm.stepBudget > 0 { lastFiniteStepBudget = vm.stepBudget }
+                    vm.stepBudget = RunRequest.unlimitedStepBudget
+                } else {
+                    vm.stepBudget = max(5, lastFiniteStepBudget)
+                }
+            }
+        )
+    }
 
     /// Read/write binding over `vm.model.provider`. Setting the provider
     /// snaps `vm.model` to that provider's first model so the model
@@ -520,6 +616,11 @@ struct GoalInputView: View {
         let snapshot = try? await container.runHistory.application(id: id)
         activeApplication = snapshot
         if let snapshot, hydratedAppID != snapshot.id {
+            // Seed run defaults from global Settings first so the form
+            // reflects the user's most recent picks; the Application's
+            // own defaults (set on the Application Detail page) then
+            // override on top inside `loadFromActiveApplication`.
+            vm.seedFromAppState(state)
             await vm.loadFromActiveApplication(snapshot)
             hydratedAppID = snapshot.id
             // Reset overrideDefaults since the active application changed.

@@ -559,10 +559,13 @@ actor RunCoordinator {
         loop: while true {
             try Task.checkCancellation()
 
-            if stepInLeg > request.stepBudget {
+            if request.hasStepBudget && stepInLeg > request.stepBudget {
                 // Per-leg step budget exhausted → leg ends blocked. The
                 // chain executor decides whether to continue or skip
-                // remaining legs based on this leg's verdict.
+                // remaining legs based on this leg's verdict. Skipped
+                // entirely when the user picked "Unlimited" — only the
+                // token budget + cycle detector + mark_goal_done end
+                // the leg in that case.
                 verdict = .blocked
                 summary = "step budget exhausted at step \(stepIndex - 1)"
                 let f = FrictionEvent(step: stepIndex - 1, kind: .agentBlocked, detail: summary)

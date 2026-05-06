@@ -219,7 +219,12 @@ private struct LeftRail: View {
         let costTotal = vm.totalCost.total
         return Grid(horizontalSpacing: 0.5, verticalSpacing: 0.5) {
             GridRow {
-                statCell("STEP", value: "\(vm.feed.count)/\(req.stepBudget)")
+                statCell(
+                    "STEP",
+                    value: req.hasStepBudget
+                        ? "\(vm.feed.count)/\(req.stepBudget)"
+                        : "\(vm.feed.count)/∞"
+                )
                 statCell("ELAPSED", value: elapsedLabel)
             }
             GridRow {

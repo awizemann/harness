@@ -515,6 +515,9 @@ private struct SimulatorSection: View {
 private struct DefaultsSection: View {
     @Environment(AppState.self) private var state
     @Bindable var vm: ApplicationCreateViewModel
+    /// Last finite step budget, restored when the user toggles
+    /// "Unlimited" off again.
+    @State private var lastFiniteStepBudget: Int = 40
 
     /// Providers whose model section should appear in the picker. Any
     /// provider with a key in Keychain shows up; the currently-selected
@@ -529,6 +532,20 @@ private struct DefaultsSection: View {
         return ModelProvider.allCases.filter {
             configured.contains($0) || $0 == vm.defaultModel.provider
         }
+    }
+
+    private var unlimitedBinding: Binding<Bool> {
+        Binding<Bool>(
+            get: { vm.defaultStepBudget == RunRequest.unlimitedStepBudget },
+            set: { newValue in
+                if newValue {
+                    if vm.defaultStepBudget > 0 { lastFiniteStepBudget = vm.defaultStepBudget }
+                    vm.defaultStepBudget = RunRequest.unlimitedStepBudget
+                } else {
+                    vm.defaultStepBudget = max(5, lastFiniteStepBudget)
+                }
+            }
+        )
     }
 
     var body: some View {
@@ -563,11 +580,19 @@ private struct DefaultsSection: View {
                 }
                 HStack {
                     Text("Step budget").frame(width: 110, alignment: .leading)
-                    Stepper(value: $vm.defaultStepBudget, in: 5...200) {
-                        Text("\(vm.defaultStepBudget) steps")
-                            .font(.system(.body, design: .monospaced))
+                    Toggle("Unlimited", isOn: unlimitedBinding)
+                        .toggleStyle(.checkbox)
+                    if vm.defaultStepBudget != RunRequest.unlimitedStepBudget {
+                        Stepper(value: $vm.defaultStepBudget, in: 5...200) {
+                            Text("\(vm.defaultStepBudget) steps")
+                                .font(.system(.body, design: .monospaced))
+                        }
+                        .frame(width: 200, alignment: .leading)
+                    } else {
+                        Text("∞ — only the token budget caps this run")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .frame(width: 200, alignment: .leading)
                 }
                 Text("These override your global defaults when this Application is active.")
                     .font(.caption).foregroundStyle(.tertiary)

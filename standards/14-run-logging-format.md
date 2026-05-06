@@ -54,8 +54,8 @@ First row in the file. Carries the run setup.
   "persona": "first-time user, never seen this app",
   "model": "claude-opus-4-7",
   "mode": "stepByStep",                       // or "autonomous"
-  "stepBudget": 40,
-  "tokenBudget": 250000,
+  "stepBudget": 40,                           // 0 = unlimited; the run is gated only by the token budget + cycle detector
+  "tokenBudget": 250000,                      // resolved at run-build time: per-run override → AppState override → per-model default, clamped to AgentModel.maxTokenBudget
   "project": {
     "path": "/Users/alanwizemann/Development/TodoSample",
     "scheme": "TodoSample",

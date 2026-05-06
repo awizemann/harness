@@ -76,6 +76,11 @@ final class GoalInputViewModel {
     var mode: RunMode = .stepByStep
     var model: AgentModel = .opus47
     var stepBudget: Int = 40
+    /// Per-run token-budget override. `nil` = inherit from
+    /// `AppState.defaultTokenBudget` if set, else `model.defaultTokenBudget`.
+    /// Compose Run's Advanced row writes here when the user dials it
+    /// off the default.
+    var tokenBudgetOverride: Int?
 
     // MARK: Library snapshots (loaded async from RunHistoryStore)
 
@@ -178,6 +183,38 @@ final class GoalInputViewModel {
 
     func load(projectURL: URL) async {
         await picker.load(projectURL: projectURL)
+    }
+
+    // MARK: AppState hydration
+
+    /// Pre-fill the run defaults (model / mode / step budget) from the
+    /// global Settings values on `AppState`. Call this once before
+    /// `loadFromActiveApplication(_:)` so the form starts at the user's
+    /// chosen Settings defaults; the Application's per-app overrides
+    /// (set in the Application Detail page) then apply on top.
+    ///
+    /// Without this seed the form would always render whatever
+    /// initialiser values `model` / `mode` / `stepBudget` happened to
+    /// declare (`.opus47`, `.stepByStep`, `40`) — a Settings change
+    /// would never surface in the Compose Run form.
+    func seedFromAppState(_ state: AppState) {
+        model = state.defaultModel
+        mode = state.defaultMode
+        stepBudget = state.defaultStepBudget
+        // Carry the AppState token-budget override through to the form.
+        // Compose Run's Advanced row presents this as the inherited
+        // value — the user can dial it off in the Stepper.
+        tokenBudgetOverride = state.defaultTokenBudget
+    }
+
+    /// Effective token budget for the run. Resolves the per-run
+    /// override (which already absorbed the AppState value via
+    /// `seedFromAppState`) → per-model default, then clamps to the
+    /// model's hard ceiling so changing model mid-form can't push
+    /// the budget past `maxTokenBudget`.
+    var resolvedTokenBudget: Int {
+        let raw = tokenBudgetOverride ?? model.defaultTokenBudget
+        return min(raw, model.maxTokenBudget)
     }
 
     // MARK: Application hydration
@@ -366,7 +403,7 @@ final class GoalInputViewModel {
             model: model,
             mode: mode,
             stepBudget: stepBudget,
-            tokenBudget: model == .opus47 ? 250_000 : 1_000_000,
+            tokenBudget: resolvedTokenBudget,
             platformKindRaw: platformKind.rawValue,
             macAppBundlePath: macAppBundlePath,
             webStartURL: platformKind == .web ? webStartURL : nil,

@@ -65,6 +65,14 @@ final class AppState {
     /// Default step budget for new runs.
     var defaultStepBudget: Int = 40
 
+    /// Optional global override for the per-run input-token budget.
+    /// `nil` (the default) means each run inherits the per-model
+    /// default from `AgentModel.defaultTokenBudget`. Setting a value
+    /// applies it to every run regardless of model — useful when the
+    /// user wants a tighter cost cap or more headroom across the
+    /// board. Compose Run can still override this per-run.
+    var defaultTokenBudget: Int?
+
     /// Default mode for new runs.
     var defaultMode: RunMode = .stepByStep
 
@@ -210,9 +218,11 @@ final class AppState {
     // MARK: Settings persistence
 
     /// Read `settings.json` if present and restore persisted defaults.
-    /// Currently ferries `selectedApplicationID`; future fields slot in here.
-    /// Disk I/O happens on a detached task — never on the actor — to honor
-    /// the "no synchronous file I/O on `@MainActor`" rule.
+    /// All fields except `selectedApplicationID` are optional in the
+    /// Codable shape so files written before they were added decode
+    /// cleanly. Disk I/O happens on a detached task — never on the
+    /// actor — to honor the "no synchronous file I/O on `@MainActor`"
+    /// rule.
     func restorePersistedSettings() async {
         let url = HarnessPaths.settingsFile
         let payload: PersistedSettings? = await Task.detached(priority: .userInitiated) {
@@ -227,12 +237,39 @@ final class AppState {
         }.value
         guard let payload else { return }
         self.selectedApplicationID = payload.selectedApplicationID
+        if let raw = payload.defaultModelRaw, let m = AgentModel(rawValue: raw) {
+            self.defaultModel = m
+        }
+        if let raw = payload.defaultProviderRaw, let p = ModelProvider(rawValue: raw) {
+            self.defaultProvider = p
+        }
+        if let raw = payload.defaultModeRaw, let m = RunMode(rawValue: raw) {
+            self.defaultMode = m
+        }
+        if let s = payload.defaultStepBudget {
+            self.defaultStepBudget = s
+        }
+        // Token budget override is genuinely optional — preserve nil if
+        // absent in the file so the per-model default kicks in.
+        self.defaultTokenBudget = payload.defaultTokenBudget
+        if let v = payload.keepSimulatorVisible {
+            self.keepSimulatorVisible = v
+        }
     }
 
-    /// Persist the current `selectedApplicationID` (and any future fields)
-    /// to `settings.json`. Idempotent; safe to call from `didSet` observers.
+    /// Persist current settings to `settings.json`. Idempotent; safe to
+    /// call from a SwiftUI `.onChange` handler — it serializes off the
+    /// main actor and writes atomically.
     func persistSettings() async {
-        let payload = PersistedSettings(selectedApplicationID: selectedApplicationID)
+        let payload = PersistedSettings(
+            selectedApplicationID: selectedApplicationID,
+            defaultModelRaw: defaultModel.rawValue,
+            defaultProviderRaw: defaultProvider.rawValue,
+            defaultModeRaw: defaultMode.rawValue,
+            defaultStepBudget: defaultStepBudget,
+            defaultTokenBudget: defaultTokenBudget,
+            keepSimulatorVisible: keepSimulatorVisible
+        )
         let url = HarnessPaths.settingsFile
         await Task.detached(priority: .utility) {
             do {
@@ -250,12 +287,39 @@ final class AppState {
 
 // MARK: - Persistence payload
 
-/// Shape on disk in `settings.json`. Versionless for now — extend by adding
-/// optional fields. Optional decoding lets older files load on a newer build.
-private struct PersistedSettings: Codable, Sendable {
+/// Shape on disk in `settings.json`. Versionless — every field beyond
+/// `selectedApplicationID` is optional so a `settings.json` written by
+/// an older Harness build still decodes (the missing fields fall back
+/// to their @Observable property initializers in `AppState`). When
+/// adding fields, keep them optional and back-fill from a sensible
+/// default in `restorePersistedSettings()`.
+struct PersistedSettings: Codable, Sendable {
     let selectedApplicationID: UUID?
+    let defaultModelRaw: String?
+    let defaultProviderRaw: String?
+    let defaultModeRaw: String?
+    let defaultStepBudget: Int?
+    /// Optional global token-budget override. `nil` = inherit per-model
+    /// default at run-build time. Distinguished from "0" because zero
+    /// would mean "no tokens allowed", which is meaningless.
+    let defaultTokenBudget: Int?
+    let keepSimulatorVisible: Bool?
 
-    init(selectedApplicationID: UUID?) {
+    init(
+        selectedApplicationID: UUID?,
+        defaultModelRaw: String? = nil,
+        defaultProviderRaw: String? = nil,
+        defaultModeRaw: String? = nil,
+        defaultStepBudget: Int? = nil,
+        defaultTokenBudget: Int? = nil,
+        keepSimulatorVisible: Bool? = nil
+    ) {
         self.selectedApplicationID = selectedApplicationID
+        self.defaultModelRaw = defaultModelRaw
+        self.defaultProviderRaw = defaultProviderRaw
+        self.defaultModeRaw = defaultModeRaw
+        self.defaultStepBudget = defaultStepBudget
+        self.defaultTokenBudget = defaultTokenBudget
+        self.keepSimulatorVisible = keepSimulatorVisible
     }
 }

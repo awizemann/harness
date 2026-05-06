@@ -133,6 +133,60 @@ struct RunRequest: Sendable, Hashable, Codable {
 /// New code should use `RunRequest` directly.
 typealias GoalRequest = RunRequest
 
+extension RunRequest {
+    /// Sentinel value on `stepBudget` meaning "no step cap — only the
+    /// token budget gates the run." Picked as `0` rather than `Int.max`
+    /// so on-disk JSONL stays human-readable. The Stepper UI minimum is
+    /// 5, so a user can never land on this value except via the explicit
+    /// "Unlimited" toggle in Settings / Compose Run / Application
+    /// defaults.
+    static let unlimitedStepBudget: Int = 0
+
+    /// True when the run has a finite step budget. AgentLoop and
+    /// RunCoordinator gate their step-budget short-circuit on this so a
+    /// run with `stepBudget == .unlimitedStepBudget` runs until
+    /// `mark_goal_done`, the token budget exhausts, or the cycle
+    /// detector trips.
+    var hasStepBudget: Bool { stepBudget > 0 }
+}
+
+extension AgentModel {
+    /// Default per-run input-token cap. Picked per-model so every model
+    /// has a reasonable headroom proportional to its dollar cost — Opus
+    /// is the only model where 250k tokens is genuinely expensive ($3.75
+    /// at the published rate); cheaper tiers can afford more tokens of
+    /// runway before the budget rail trips.
+    ///
+    /// Replaces the legacy `model == .opus47 ? 250_000 : 1_000_000`
+    /// ternary that lumped GPT-4.1 Nano (~$0.04/M cached) in with
+    /// Sonnet 4.6 ($0.30/M cached) at the same 1M cap.
+    var defaultTokenBudget: Int {
+        switch self {
+        case .opus47:            return 250_000      // ≤ ~$3.75 raw
+        case .sonnet46:          return 1_000_000    // ≤ ~$3 raw
+        case .haiku45:           return 2_000_000    // ≤ ~$2 raw, ~$0.20 cached
+        case .gpt5Mini:          return 2_000_000    // ≤ ~$0.50 raw
+        case .gpt41Nano:         return 2_000_000    // ≤ ~$0.20 raw
+        case .gemini25Flash:     return 2_000_000    // ≤ ~$0.60 raw
+        case .gemini25FlashLite: return 2_000_000    // ≤ ~$0.20 raw
+        }
+    }
+
+    /// Hard ceiling for a per-run token budget. The Stepper UI clamps to
+    /// this. Lets the user dial up cheap models substantially while
+    /// keeping Opus from accidentally running away.
+    var maxTokenBudget: Int {
+        switch self {
+        case .opus47:            return 1_000_000    // ~$15 raw absolute max
+        case .sonnet46:          return 3_000_000    // ~$9 raw absolute max
+        case .haiku45,
+             .gpt5Mini, .gpt41Nano,
+             .gemini25Flash, .gemini25FlashLite:
+            return 10_000_000                         // ≤ ~$3 raw on the most expensive of these
+        }
+    }
+}
+
 /// Discriminator for what the agent should drive: one Action's prompt
 /// (single leg) or an ordered list of legs (chain). The `.ad_hoc`
 /// fallback covers tests and any pre-Phase-E call site that doesn't yet

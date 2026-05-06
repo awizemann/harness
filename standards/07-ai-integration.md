@@ -88,15 +88,31 @@ The default persona ("a curious first-time user who reads labels but doesn't hav
 
 ## 7. Cost budgeting
 
-Each run carries a token budget:
+Each run carries an input-token budget. Resolution at run-build time:
 
-- **Default Opus budget**: 250k input tokens (covers ~30 steps comfortably).
-- **Default Sonnet budget**: 1M input tokens.
-- **Hard ceiling**: 2M input tokens regardless of model — protects against runaway loops.
+1. Per-run override (`GoalInputViewModel.tokenBudgetOverride`, set in Compose Run's Advanced row), if non-nil.
+2. Else the global Settings override (`AppState.defaultTokenBudget`), if non-nil.
+3. Else the per-model default (`AgentModel.defaultTokenBudget`).
+
+The resolved value is then clamped to `AgentModel.maxTokenBudget` so a generous override on a cheap model can't carry over when the user switches to Opus mid-form.
+
+**Per-model defaults** (`AgentModel.defaultTokenBudget`) — picked so each model's raw cost-cap is in the same order of magnitude:
+
+| Model | Default | Max | Raw $ at default |
+|---|---:|---:|---:|
+| Opus 4.7 | 250k | 1M | ~$3.75 |
+| Sonnet 4.6 | 1M | 3M | ~$3 |
+| Haiku 4.5 | 2M | 10M | ~$2 |
+| GPT-5 Mini | 2M | 10M | ~$0.50 |
+| GPT-4.1 Nano | 2M | 10M | ~$0.20 |
+| Gemini 2.5 Flash | 2M | 10M | ~$0.60 |
+| Gemini 2.5 Flash Lite | 2M | 10M | ~$0.20 |
+
+(Prompt caching reduces effective spend substantially — see §3.)
 
 When the budget is exhausted, `AgentLoop` short-circuits with `mark_goal_done(verdict: .blocked, summary: "token budget exhausted at step N")`. This is logged as a friction event of kind `unexpected_state` so the user sees what happened.
 
-`ClaudeClient` exposes `tokensUsedThisRun` to the view-model; the live UI shows a budget progress bar.
+`ClaudeClient` (and the OpenAI / Gemini clients) expose `tokensUsedThisRun` to the view-model; the live UI shows a budget progress bar.
 
 ---
 

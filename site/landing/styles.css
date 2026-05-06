@@ -152,7 +152,7 @@ code {
 .hero { padding: 4.5rem 0 3rem; }
 .hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
   gap: 3.5rem;
   align-items: center;
 }
@@ -200,15 +200,9 @@ h1 {
 .meta { color: var(--text-3); font-size: 0.88rem; margin: 0; }
 .meta code { background: transparent; border: none; padding: 0; color: var(--accent); }
 
-/* Hero composition — two screenshots overlapping with mint connector */
-.hero-art {
-  position: relative;
-  aspect-ratio: 5 / 4;
-  width: 100%;
-  min-height: 320px;
-}
+/* Hero artwork — single screenshot, full bleed */
 .hero-art .pic {
-  position: absolute;
+  display: block;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
@@ -216,27 +210,6 @@ h1 {
   background: var(--panel);
 }
 .hero-art .pic img { width: 100%; height: auto; display: block; }
-.hero-art .pic-goal {
-  top: 0; left: 0;
-  width: 56%;
-  z-index: 2;
-}
-.hero-art .pic-runsession {
-  bottom: 0; right: 0;
-  width: 72%;
-  z-index: 1;
-}
-.hero-art .hero-arrow {
-  position: absolute;
-  top: 38%;
-  left: 42%;
-  width: 22%;
-  height: auto;
-  z-index: 3;
-  color: var(--accent);
-  filter: drop-shadow(0 4px 12px var(--accent-soft));
-  pointer-events: none;
-}
 
 /* Bands */
 .band { padding: 4rem 0; border-top: 1px solid var(--border-2); }
@@ -467,7 +440,6 @@ h1 {
   }
   .feature.alt .feature-copy { order: 1; }
   .feature.alt .feature-art  { order: 2; }
-  .hero-art { aspect-ratio: 5 / 4; max-width: 560px; margin: 0 auto; }
 }
 
 @media (max-width: 720px) {
@@ -475,12 +447,6 @@ h1 {
   .feature { padding: 3rem 0; }
   .nav { gap: 0.9rem; }
   .nav a { font-size: 0.9rem; }
-}
-
-@media (max-width: 520px) {
-  .hero-art .hero-arrow { display: none; }
-  .hero-art .pic-goal { width: 70%; }
-  .hero-art .pic-runsession { width: 80%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -163,8 +163,11 @@ actor AgentLoop: AgentLooping {
         try Task.checkCancellation()
 
         // Budget short-circuits — the orchestrator should also bail on these,
-        // but defending here keeps the loop self-contained.
-        if state.stepIndex > state.request.stepBudget {
+        // but defending here keeps the loop self-contained. `hasStepBudget`
+        // is false when the user picked "Unlimited" — the run runs until
+        // `mark_goal_done`, the token budget exhausts, or the cycle
+        // detector trips.
+        if state.request.hasStepBudget && state.stepIndex > state.request.stepBudget {
             throw AgentLoopError.stepBudgetExhausted(budget: state.request.stepBudget)
         }
         let usedInput = state.tokensUsedSoFar.inputTokens

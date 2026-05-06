@@ -257,6 +257,61 @@ struct RunCoordinatorReplayTests {
         #expect(outcome?.summary.contains("step budget") == true)
     }
 
+    @Test("Unlimited step budget (0) skips the short-circuit")
+    func unlimitedStepBudgetSkipsShortCircuit() async throws {
+        // Distinct screenshots so the cycle detector won't fire. Run
+        // well past the historical 40-step default to confirm the
+        // unlimited-budget path doesn't gate on step count.
+        var pngs: [Data] = []
+        for i in 0..<60 {
+            let r = UInt8(i % 255)
+            let g = UInt8((i + 17) % 255)
+            let b = UInt8((i + 113) % 255)
+            pngs.append(FakeSimulatorDriver.solidColorPNG(red: r, green: g, blue: b))
+        }
+        let driver = FakeSimulatorDriver(pngs: pngs)
+        let builder = FakeXcodeBuilder()
+        // 49 taps + a markGoalDone — comfortably above the legacy 40 cap.
+        // Space taps by 20pt per step so the cycle detector's 8pt
+        // coordinate threshold doesn't classify successive taps as
+        // equivalent (solid-color PNGs all dHash to 0, so the only
+        // remaining defense against false-positive cycles is keeping
+        // tool inputs visibly different).
+        var scripted: [LLMStepResponse] = []
+        for i in 0..<49 {
+            scripted.append(LLMStepResponse.makingTap(x: 10 + i * 20, y: 10 + i * 20))
+        }
+        scripted.append(LLMStepResponse.makingMarkDone(verdict: .success, summary: "done"))
+        let llm = MockLLMClient(mode: .sequence(scripted))
+        let agent = AgentLoop(llm: llm, promptLibrary: StubPromptLibrary())
+        let history = try RunHistoryStore.inMemory()
+        let coordinator = RunCoordinator(
+            builder: builder, driver: driver, agent: agent, llm: llm, history: history
+        )
+
+        var request = Self.makeRequest(mode: .autonomous)
+        request = GoalRequest(
+            id: request.id,
+            goal: request.goal,
+            persona: request.persona,
+            project: request.project,
+            simulator: request.simulator,
+            model: request.model,
+            mode: request.mode,
+            stepBudget: RunRequest.unlimitedStepBudget,
+            tokenBudget: request.tokenBudget
+        )
+        defer { try? FileManager.default.removeItem(at: HarnessPaths.runDir(for: request.id)) }
+
+        var outcome: RunOutcome?
+        for try await event in coordinator.run(request) {
+            if case .runCompleted(let o) = event { outcome = o }
+        }
+        #expect(outcome?.verdict == .success)
+        #expect(outcome?.stepCount == 50)
+        #expect(outcome?.summary == "done")
+    }
+
     // MARK: Test-only fake — succeeds at lifecycle methods but fails screenshots.
 
     private actor ThrowingScreenshotDriver: SimulatorDriving {
