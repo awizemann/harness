@@ -513,7 +513,24 @@ private struct SimulatorSection: View {
 }
 
 private struct DefaultsSection: View {
+    @Environment(AppState.self) private var state
     @Bindable var vm: ApplicationCreateViewModel
+
+    /// Providers whose model section should appear in the picker. Any
+    /// provider with a key in Keychain shows up; the currently-selected
+    /// model's provider also stays visible so the user always sees their
+    /// active choice. If the user hasn't configured *any* provider yet,
+    /// fall back to showing all so an Application can still get a
+    /// default — they'll wire keys up before the first run.
+    private var providersToShow: [ModelProvider] {
+        let configured = ModelProvider.allCases.filter { state.apiKeyPresent(for: $0) }
+        if configured.isEmpty { return ModelProvider.allCases }
+        if configured.contains(vm.defaultModel.provider) { return configured }
+        return ModelProvider.allCases.filter {
+            configured.contains($0) || $0 == vm.defaultModel.provider
+        }
+    }
+
     var body: some View {
         PanelContainer(title: "Run defaults") {
             VStack(alignment: .leading, spacing: Theme.spacing.m) {
@@ -531,11 +548,16 @@ private struct DefaultsSection: View {
                     VStack(alignment: .leading, spacing: Theme.spacing.xs) {
                         Text("Model").font(.subheadline.weight(.medium))
                         Picker("", selection: $vm.defaultModel) {
-                            Text("Opus 4.7").tag(AgentModel.opus47)
-                            Text("Sonnet 4.6").tag(AgentModel.sonnet46)
+                            ForEach(providersToShow, id: \.self) { provider in
+                                Section(provider.displayName) {
+                                    ForEach(AgentModel.allCases.filter { $0.provider == provider }, id: \.self) { m in
+                                        Text(m.displayName).tag(m)
+                                    }
+                                }
+                            }
                         }
                         .labelsHidden()
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.menu)
                         .frame(width: 220)
                     }
                 }

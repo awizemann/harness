@@ -160,19 +160,12 @@ private struct RootView: View {
 
 private struct IdentifiableUUID: Identifiable, Hashable { let id: UUID }
 
-/// Reaches into the SwiftUI view's hosting `NSWindow` and sets a
-/// `frameAutosaveName` so the user's window size + position survive
-/// app relaunches. AppKit owns the persistence — it writes to
-/// `NSWindow Frame <name>` in `UserDefaults.standard` on every
-/// resize / move, and reads it back when the window is created.
+/// Hands the main window's frame persistence to AppKit. `setFrameAutosaveName`
+/// is the native API — it saves the frame to UserDefaults on every resize /
+/// move and restores it on the next launch automatically. No code of ours
+/// runs after attach; AppKit owns it. Same mechanism every other Mac app uses.
 ///
-/// `.defaultSize(...)` on the WindowGroup is still the first-launch
-/// fallback. After the user resizes once, the autosave value wins.
-///
-/// Implementation is a zero-pixel NSViewRepresentable parked behind
-/// the root view; once the view is in a window, `viewDidMoveToWindow`
-/// finds it and sets the name. Idempotent — re-attaching to the same
-/// window is a no-op.
+/// Reset to default with: `defaults delete com.harness.app "NSWindow Frame Harness.MainWindow"`
 private struct WindowFrameAutosaver: NSViewRepresentable {
     let name: String
 
@@ -180,17 +173,10 @@ private struct WindowFrameAutosaver: NSViewRepresentable {
         AutosaverView(name: name)
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        // Re-applying the name is harmless; the autosaver re-runs in
-        // case the view's window changed (rare for the main scene, but
-        // covered).
-        if let view = nsView as? AutosaverView {
-            view.applyIfNeeded()
-        }
-    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class AutosaverView: NSView {
-        let autosaveName: NSWindow.FrameAutosaveName
+        private let autosaveName: NSWindow.FrameAutosaveName
 
         init(name: String) {
             self.autosaveName = NSWindow.FrameAutosaveName(name)
@@ -202,17 +188,10 @@ private struct WindowFrameAutosaver: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            applyIfNeeded()
-        }
-
-        func applyIfNeeded() {
-            guard let window = self.window,
-                  window.frameAutosaveName != autosaveName else { return }
-            // Setting the name causes AppKit to immediately read any
-            // saved frame back into the window. Returns false if the
-            // name is already taken by another window — fine for us;
-            // there's only one main window.
-            _ = window.setFrameAutosaveName(autosaveName)
+            // Unconditional — AppKit reads any saved frame and applies it
+            // when the name is set. Setting it again on the same window
+            // is harmless.
+            self.window?.setFrameAutosaveName(autosaveName)
         }
     }
 }

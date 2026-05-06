@@ -462,6 +462,7 @@ private struct WebPanel: View {
 }
 
 private struct DefaultsPanel: View {
+    @Environment(AppState.self) private var state
     let application: ApplicationSnapshot
     let onUpdateDefaults: (ApplicationSnapshot) -> Void
 
@@ -469,6 +470,18 @@ private struct DefaultsPanel: View {
     @State private var mode: RunMode = .stepByStep
     @State private var stepBudget: Int = 40
     @State private var hydrated: Bool = false
+
+    /// Providers whose model section should appear in the picker. See
+    /// the matching computed in `ApplicationCreateView.DefaultsSection`
+    /// for the rationale.
+    private var providersToShow: [ModelProvider] {
+        let configured = ModelProvider.allCases.filter { state.apiKeyPresent(for: $0) }
+        if configured.isEmpty { return ModelProvider.allCases }
+        if configured.contains(model.provider) { return configured }
+        return ModelProvider.allCases.filter {
+            configured.contains($0) || $0 == model.provider
+        }
+    }
 
     var body: some View {
         PanelContainer(title: "Run defaults") {
@@ -487,11 +500,16 @@ private struct DefaultsPanel: View {
                     VStack(alignment: .leading, spacing: Theme.spacing.xs) {
                         Text("Model").font(.subheadline.weight(.medium))
                         Picker("", selection: $model) {
-                            Text("Opus 4.7").tag(AgentModel.opus47)
-                            Text("Sonnet 4.6").tag(AgentModel.sonnet46)
+                            ForEach(providersToShow, id: \.self) { provider in
+                                Section(provider.displayName) {
+                                    ForEach(AgentModel.allCases.filter { $0.provider == provider }, id: \.self) { m in
+                                        Text(m.displayName).tag(m)
+                                    }
+                                }
+                            }
                         }
                         .labelsHidden()
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.menu)
                         .frame(width: 220)
                     }
                 }
