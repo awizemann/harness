@@ -48,18 +48,30 @@ struct FrictionReportCard: View {
     // MARK: Sections
 
     private var screenshot: some View {
+        // Bounded thumbnail box. Previously the cell was 240pt wide with
+        // a forced 9:19.5 aspect ratio (~520pt tall) — fine for iPhone
+        // portraits, terrible for everything else. macOS windows and web
+        // viewports got rendered into a giant letterboxed frame, making
+        // a single friction row taller than the visible scroll area.
+        //
+        // 180×120 is wide enough to read the screenshot's structure at a
+        // glance and short enough that several friction rows fit on
+        // screen. `scaledToFit` letterboxes / pillarboxes inside the
+        // box rather than forcing the row to grow.
         ZStack {
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 12)
                 .fill(Color.harnessBg2)
             if let image = NSImage(contentsOf: entry.screenshotURL) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(4)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
-                VStack(spacing: 6) {
+                VStack(spacing: 4) {
                     Image(systemName: "photo")
-                        .font(.system(size: 22))
+                        .font(.system(size: 18))
                         .foregroundStyle(Color.harnessText4)
                     Text("Screenshot missing")
                         .font(HFont.micro)
@@ -67,10 +79,9 @@ struct FrictionReportCard: View {
                 }
             }
         }
-        .frame(width: 240)
-        .aspectRatio(9.0 / 19.5, contentMode: .fit)
+        .frame(width: 180, height: 120)
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.harnessLineStrong, lineWidth: 0.5)
         )
     }
