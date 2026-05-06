@@ -82,11 +82,14 @@ cd "$REPO_ROOT"
 
 # Git must be clean and on main. Allow the release dir to exist (RELEASE_NOTES.md
 # pre-written) — git status abbreviates a fully-untracked dir to its trailing
-# slash, so we whitelist both forms.
+# slash, so we whitelist all three observable forms:
+#   "?? releases/v<VER>"             (no trailing slash — rare, manual git add path)
+#   "?? releases/v<VER>/"            (porcelain abbreviation when the dir is fully untracked)
+#   "?? releases/v<VER>/RELEASE_NOTES.md"  (the file is the only thing untracked)
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$BRANCH" == "main" ]] || die "must be on 'main' (currently '$BRANCH')"
 
-DIRTY="$(git status --porcelain | grep -vE "^\?\? releases/v${VERSION}(/RELEASE_NOTES\.md)?$" || true)"
+DIRTY="$(git status --porcelain | grep -vE "^\?\? releases/v${VERSION}(/(RELEASE_NOTES\.md)?)?$" || true)"
 [[ -z "$DIRTY" ]] || die "git working tree must be clean (excluding releases/v${VERSION}/RELEASE_NOTES.md). Run 'git status'."
 
 # Release notes must exist.
