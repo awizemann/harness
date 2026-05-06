@@ -1,10 +1,12 @@
 # Harness
 
-> A native macOS developer tool that drives an iOS Simulator with an AI agent so you can run real-user-style tests against an in-development iOS app — not scripted UI tests.
+> A native macOS developer tool that drives an iOS Simulator, a macOS app, or a web app with an AI agent so you can run real-user-style tests — not scripted UI tests.
 
-You write a goal in plain language and a persona. Harness builds your iOS project, boots the simulator, and an LLM agent reads screenshots, taps/swipes/types, and pursues the goal — narrating what it sees, flagging UX friction, and stopping when it succeeds, fails, or would give up.
+You write a goal in plain language and a persona. Harness launches your target — iOS Simulator (built from your Xcode project), macOS app (pre-built `.app` or built from source), or web app (URL in an embedded WKWebView) — and an LLM agent reads screenshots, taps/types/scrolls, and pursues the goal, narrating what it sees, flagging UX friction, and stopping when it succeeds, fails, or would give up.
 
 Three artifacts come out of every run: a verdict (success/failure/blocked), a replayable timeline, and a list of timestamped friction events.
+
+Models are pluggable: Anthropic (Claude Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5 Mini, GPT-4.1 Nano), and Google (Gemini 2.5 Flash, Flash Lite). You bring your own API key for whichever provider you pick; keys live in the macOS Keychain.
 
 ## Project resources
 
