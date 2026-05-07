@@ -604,8 +604,16 @@ actor WebDriver: UXDriving {
     /// Draw numbered badges over every mark's bounding rect on a copy
     /// of `image`. The output is what we save to disk and send to the
     /// model — agents and human reviewers both see the same scaffolding.
-    /// Mark coordinates are in CSS pixels (= NSImage points), so the
-    /// drawing math is 1:1.
+    ///
+    /// **Coordinate-system note.** Mark rects come from
+    /// `getBoundingClientRect()` — CSS pixels with **top-left origin**
+    /// (y increases downward). `NSImage.lockFocus()` exposes a
+    /// `CGContext` whose default coordinate system is **bottom-left
+    /// origin** (y increases upward). Drawing CSS rects directly into
+    /// that context puts every mark at `imageHeight - cssY` instead of
+    /// `cssY` — i.e. flipped to the bottom of the image. We translate
+    /// each rect into NSImage coordinates explicitly here so marks land
+    /// on the elements they label.
     nonisolated private static func drawMarks(
         on image: NSImage,
         marks: [InteractiveMark],
@@ -616,7 +624,8 @@ actor WebDriver: UXDriving {
         let result = NSImage(size: size)
         result.lockFocus()
         defer { result.unlockFocus() }
-        // Base layer: the original snapshot.
+        // Base layer: the original snapshot. NSImage.draw handles its
+        // own orientation, so this lands the page right-side-up.
         image.draw(at: .zero, from: NSRect(origin: .zero, size: size), operation: .copy, fraction: 1.0)
         guard let ctx = NSGraphicsContext.current?.cgContext else { return result }
         // The accent + supporting colors come from HarnessDesign so the
@@ -626,12 +635,22 @@ actor WebDriver: UXDriving {
         let badgeFG = NSColor.white
         let outline = accent.withAlphaComponent(0.85).cgColor
         for mark in marks {
-            let r = mark.rect
-            // Outline the element.
+            let css = mark.rect
+            // Translate CSS (y-down) to NSImage (y-up). The element's
+            // CSS top-edge is at NSImage y = `size.height - css.minY`;
+            // CGRect's origin is its bottom-left, so the rect's NSImage
+            // y is `size.height - css.maxY`.
+            let outlineRect = CGRect(
+                x: css.minX,
+                y: size.height - css.maxY,
+                width: css.width,
+                height: css.height
+            )
             ctx.setStrokeColor(outline)
             ctx.setLineWidth(2.0)
-            ctx.stroke(r)
-            // Number badge in the top-left of the rect.
+            ctx.stroke(outlineRect)
+
+            // Number badge anchored at the CSS-top-left of the element.
             let labelText = "\(mark.id)"
             let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
             let attrs: [NSAttributedString.Key: Any] = [
@@ -642,27 +661,28 @@ actor WebDriver: UXDriving {
             let pad: CGFloat = 4
             let badgeW = max(20, textSize.width + 2 * pad)
             let badgeH: CGFloat = 18
-            // Anchor inside the rect's top-left so the badge stays
-            // visually attached to the element it labels.
+            // CSS-top → NSImage y = `size.height - css.minY`. Since the
+            // badge is drawn from its bottom-left, subtract `badgeH`
+            // so the badge's TOP edge lands at the CSS-top of the rect.
             let badgeRect = CGRect(
-                x: r.minX,
-                y: r.minY,
+                x: css.minX,
+                y: size.height - css.minY - badgeH,
                 width: badgeW,
                 height: badgeH
             )
             ctx.setFillColor(badgeBG)
             ctx.fill(badgeRect)
-            // Draw the number.
+            // The CGContext is unflipped here, so `NSString.draw(at:)`
+            // treats the point as the text's lower-left in y-up space.
+            // Centring the text inside the badge then means a small
+            // upward offset from the badge's bottom.
             let textPoint = CGPoint(
                 x: badgeRect.minX + pad,
                 y: badgeRect.minY + (badgeH - textSize.height) / 2
             )
             (labelText as NSString).draw(at: textPoint, withAttributes: attrs)
         }
-        // Sanity-clamp the marks to the viewport so a stray off-screen
-        // rect doesn't paint over the page edge — the JS probe filters
-        // already, but defensively re-check.
-        _ = viewport
+        _ = viewport  // reserved for future viewport-clamp checks
         return result
     }
 
