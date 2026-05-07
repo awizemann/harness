@@ -110,7 +110,10 @@ actor MacAppDriver: UXDriving {
             guard let credential else { return }
             let text = field == .username ? credential.username : credential.password
             try await postType(text)
-        case .swipe, .pressButton, .navigate, .back, .forward, .refresh:
+        case .swipe, .pressButton, .navigate, .back, .forward, .refresh, .tapMark:
+            // `tap_mark` ships on web only today; macOS gets it via a
+            // follow-up that wires the AX tree as the probe — see wiki
+            // Roadmap "Set-of-Mark targeting on iOS + macOS".
             throw UXDriverError.unsupportedTool(name: call.tool.rawValue, platform: .macosApp)
         }
     }

@@ -32,6 +32,13 @@ actor WebDriver: UXDriving {
     /// V5 — pre-staged credential for this run, or nil. Same lifecycle as
     /// the iOS / macOS drivers'.
     private let credential: CredentialBinding?
+    /// V6 — Set-of-Mark cache. The most recent screenshot's interactive
+    /// elements, numbered 1..N. Refreshed on every `screenshot(into:)`
+    /// call. `tap_mark(id)` looks up the entry whose id matches; if the
+    /// id isn't in the cache (page changed since the screenshot, agent
+    /// emitted a stale id, etc.) the dispatch throws and the loop's
+    /// retry path surfaces the error to the model.
+    private var lastMarks: [InteractiveMark] = []
 
     init(controller: WebViewWindowController, startURL: URL?, viewport: CGSize, credential: CredentialBinding? = nil) {
         self.controller = controller
@@ -55,15 +62,26 @@ actor WebDriver: UXDriving {
     }
 
     func screenshot(into url: URL) async throws -> ScreenshotMetadata {
-        let image = try await captureSnapshot()
-        guard let tiff = image.tiffRepresentation,
+        // Probe BEFORE the snapshot so the marks reflect the same DOM
+        // state the snapshot captures. Empty list on probe failure —
+        // the agent can still call `tap(x, y)` with no scaffolding.
+        let marks = (try? await probeInteractiveElements()) ?? []
+        self.lastMarks = marks
+
+        let raw = try await captureSnapshot()
+        // Draw numbered badges over each mark's bounding rect on a copy
+        // of the snapshot. The agent and the replay both see the same
+        // marked-up image — so a human reviewing the run can match the
+        // agent's `tap_mark(id)` calls back to visible scaffolding.
+        let marked = Self.drawMarks(on: raw, marks: marks, viewport: viewport)
+        guard let tiff = marked.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else {
             throw WebDriverError.captureFailed
         }
         try png.write(to: url, options: .atomic)
         return ScreenshotMetadata(
-            pixelSize: image.size,
+            pixelSize: marked.size,
             pointSize: viewport
         )
     }
@@ -79,6 +97,8 @@ actor WebDriver: UXDriving {
         switch call.input {
         case .tap(let x, let y):
             try await dispatchClick(x: x, y: y, button: 0, count: 1)
+        case .tapMark(let id):
+            try await dispatchMarkClick(id: id)
         case .doubleTap(let x, let y):
             try await dispatchClick(x: x, y: y, button: 0, count: 2)
         case .rightClick(let x, let y):
@@ -154,6 +174,24 @@ actor WebDriver: UXDriving {
     }
 
     private func dispatchClick(x: Int, y: Int, button: Int, count: Int) async throws {
+        // Click events fire on the topmost element at (x, y); focus
+        // resolves separately because real-browser click→focus behaviour
+        // depends on what the click target IS:
+        //
+        //   - <input>/<textarea>/<select>/[contenteditable]/[tabindex] →
+        //     focuses directly.
+        //   - <label> with `for=...` or containing an input → focuses
+        //     the associated input.
+        //   - Any other wrapper (<div>, <span>, an absolutely-positioned
+        //     placeholder overlay) → finds the nearest focusable input
+        //     descendant, then ancestor.
+        //
+        // Our synthetic `MouseEvent` doesn't trigger the browser's
+        // built-in focus routing, so we resolve the "best focus target"
+        // ourselves and call `.focus()` explicitly. Without this, eBay's
+        // sign-in form (and any modern React form with an input wrapped
+        // in a styled <div>) silently never focuses, and the next
+        // `type` / `fill_credential` writes to the wrong element.
         let js = """
         (() => {
           const x = \(x), y = \(y);
@@ -165,7 +203,39 @@ actor WebDriver: UXDriving {
             el.dispatchEvent(new MouseEvent('mouseup', opts));
             el.dispatchEvent(new MouseEvent(\(button == 2 ? "'contextmenu'" : "'click'"), opts));
           }
-          if (el.focus) try { el.focus(); } catch (e) {}
+          // Focus routing — only for left-click (button 0).
+          if (\(button) === 0) {
+            const FOCUSABLE = 'input, textarea, select, [contenteditable=""], [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
+            let target = null;
+            // 1. Direct match — clicked the input itself.
+            if (el.matches && el.matches(FOCUSABLE)) {
+              target = el;
+            }
+            // 2. <label> click — follow `for` or contained input.
+            if (!target && el.tagName === 'LABEL') {
+              const htmlFor = el.getAttribute('for');
+              if (htmlFor) {
+                target = document.getElementById(htmlFor);
+              }
+              if (!target) {
+                target = el.querySelector(FOCUSABLE);
+              }
+            }
+            // 3. Wrapper click — look inside, then up. Inside first
+            // because a button-shaped div around an input is more
+            // common than the reverse.
+            if (!target && el.querySelector) {
+              target = el.querySelector(FOCUSABLE);
+            }
+            if (!target && el.closest) {
+              target = el.closest(FOCUSABLE);
+            }
+            if (target && target.focus) {
+              try { target.focus({ preventScroll: false }); } catch (e) {}
+            } else if (el.focus) {
+              try { el.focus(); } catch (e) {}
+            }
+          }
           return true;
         })();
         """
@@ -230,10 +300,22 @@ actor WebDriver: UXDriving {
     }
 
     private func dispatchType(_ text: String) async throws {
-        // Insert text into the focused field. Falls back to
-        // `document.execCommand("insertText")` on contenteditable
-        // surfaces; otherwise sets `value` and dispatches input events
-        // so React-style listeners pick the change up.
+        // Insert text into the focused field.
+        //
+        // **React-controlled inputs need the native value setter.**
+        // React maintains an internal "value tracker" on every input it
+        // controls; setting `el.value = ...` directly bypasses that
+        // tracker, so on the next render React believes the value
+        // hasn't changed and resets it to its own state — the user
+        // sees their typed text vanish, and form validation rejects
+        // the empty submit. The fix is to call the native setter via
+        // its property descriptor (which React's tracker hooks into),
+        // then dispatch input/change events so listeners run. This is
+        // the well-known pattern used by every browser test framework
+        // that drives React forms (Cypress, Playwright internals, etc.).
+        //
+        // Contenteditable falls back to `document.execCommand("insertText")`,
+        // which dispatches the right input events natively.
         let escaped = Self.jsEscape(text)
         let js = """
         (() => {
@@ -245,7 +327,21 @@ actor WebDriver: UXDriving {
           } else if ('value' in el) {
             const start = el.selectionStart ?? el.value.length;
             const end = el.selectionEnd ?? el.value.length;
-            el.value = el.value.slice(0, start) + text + el.value.slice(end);
+            const newValue = el.value.slice(0, start) + text + el.value.slice(end);
+            // Resolve the appropriate prototype's `value` setter: <input>
+            // and <textarea> have separate descriptors. The native setter
+            // calls into React's value tracker (or any framework's
+            // equivalent) so the change is recognised; a direct `el.value
+            // = ...` assignment doesn't.
+            const proto = el instanceof HTMLTextAreaElement
+              ? HTMLTextAreaElement.prototype
+              : HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && desc.set) {
+              desc.set.call(el, newValue);
+            } else {
+              el.value = newValue;
+            }
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
           } else {
@@ -341,6 +437,174 @@ actor WebDriver: UXDriving {
         }
     }
 
+    // MARK: - Set-of-Mark (V6)
+
+    /// Run the JS probe that enumerates every visible interactive
+    /// element in the current DOM, returns their bounding rects (CSS
+    /// pixels) and accessible names, and assigns each a numeric id
+    /// 1..N in reading order. Caller should call this RIGHT BEFORE
+    /// taking the snapshot so the marks reflect the same DOM state.
+    private func probeInteractiveElements() async throws -> [InteractiveMark] {
+        // Selector covers the standard focusable surface. Filtering to
+        // "actually visible in the viewport with non-zero rect" happens
+        // in JS — saves a round-trip and keeps the returned list short.
+        // Reading order: top → bottom, left → right by (y, x).
+        let js = """
+        (() => {
+          const SELECTOR = 'input:not([type="hidden"]), textarea, select, button, a[href], [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="textbox"], [role="combobox"], [contenteditable=""], [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
+          const out = [];
+          const seen = new WeakSet();
+          const vw = window.innerWidth, vh = window.innerHeight;
+          const els = document.querySelectorAll(SELECTOR);
+          for (const el of els) {
+            if (seen.has(el)) continue;
+            seen.add(el);
+            const cs = window.getComputedStyle(el);
+            if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue;
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) continue;
+            // Must be at least partially in-viewport.
+            if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
+            // Pick an accessible name. Order matches what a real
+            // assistive-tech reader would prefer.
+            let label = el.getAttribute('aria-label')
+              || el.getAttribute('placeholder')
+              || el.getAttribute('title')
+              || el.value
+              || el.innerText
+              || el.getAttribute('name')
+              || '';
+            label = String(label).trim().replace(/\\s+/g, ' ');
+            if (label.length > 80) label = label.slice(0, 77) + '…';
+            const role = el.getAttribute('role') || el.tagName.toLowerCase();
+            const inputType = el.getAttribute('type') || null;
+            out.push({
+              x: Math.round(r.left),
+              y: Math.round(r.top),
+              w: Math.round(r.width),
+              h: Math.round(r.height),
+              role: role,
+              type: inputType,
+              label: label
+            });
+          }
+          // Sort top-to-bottom, then left-to-right so the agent reads
+          // marks in a predictable order.
+          out.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+          return out;
+        })();
+        """
+        // Need a return value from JS — switch off the side-effect-only
+        // `runJS` path here. Convert the non-Sendable `[[String: Any]]`
+        // dict array into our Sendable `InteractiveMark` shape **inside
+        // the @MainActor closure** so the boundary crossing carries
+        // only Sendable values.
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[InteractiveMark], any Error>) in
+            Task { @MainActor in
+                self.controller.webView.evaluateJavaScript(js) { value, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                        return
+                    }
+                    let array = (value as? [[String: Any]]) ?? []
+                    let marks: [InteractiveMark] = array.enumerated().map { (idx, dict) in
+                        InteractiveMark(
+                            id: idx + 1,
+                            rect: CGRect(
+                                x: (dict["x"] as? Double) ?? Double((dict["x"] as? Int) ?? 0),
+                                y: (dict["y"] as? Double) ?? Double((dict["y"] as? Int) ?? 0),
+                                width: (dict["w"] as? Double) ?? Double((dict["w"] as? Int) ?? 0),
+                                height: (dict["h"] as? Double) ?? Double((dict["h"] as? Int) ?? 0)
+                            ),
+                            role: (dict["role"] as? String) ?? "",
+                            inputType: dict["type"] as? String,
+                            label: (dict["label"] as? String) ?? ""
+                        )
+                    }
+                    cont.resume(returning: marks)
+                }
+            }
+        }
+    }
+
+    /// Click the element associated with `id` from the most recent
+    /// screenshot's mark cache. Resolves to the rect's center, then
+    /// runs the same `dispatchClick` path as `tap` — so focus routing,
+    /// label-resolution, etc. all work the same way.
+    private func dispatchMarkClick(id: Int) async throws {
+        guard let mark = lastMarks.first(where: { $0.id == id }) else {
+            throw WebDriverError.unknownMark(id: id)
+        }
+        let cx = Int(mark.rect.midX.rounded())
+        let cy = Int(mark.rect.midY.rounded())
+        try await dispatchClick(x: cx, y: cy, button: 0, count: 1)
+    }
+
+    /// Draw numbered badges over every mark's bounding rect on a copy
+    /// of `image`. The output is what we save to disk and send to the
+    /// model — agents and human reviewers both see the same scaffolding.
+    /// Mark coordinates are in CSS pixels (= NSImage points), so the
+    /// drawing math is 1:1.
+    nonisolated private static func drawMarks(
+        on image: NSImage,
+        marks: [InteractiveMark],
+        viewport: CGSize
+    ) -> NSImage {
+        guard !marks.isEmpty else { return image }
+        let size = image.size
+        let result = NSImage(size: size)
+        result.lockFocus()
+        defer { result.unlockFocus() }
+        // Base layer: the original snapshot.
+        image.draw(at: .zero, from: NSRect(origin: .zero, size: size), operation: .copy, fraction: 1.0)
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return result }
+        // The accent + supporting colors come from HarnessDesign so the
+        // overlay reads as part of the app rather than dev-tool clutter.
+        let accent = NSColor(red: 0.07, green: 0.58, blue: 0.42, alpha: 1.0)   // harnessAccent (light)
+        let badgeBG = accent.cgColor
+        let badgeFG = NSColor.white
+        let outline = accent.withAlphaComponent(0.85).cgColor
+        for mark in marks {
+            let r = mark.rect
+            // Outline the element.
+            ctx.setStrokeColor(outline)
+            ctx.setLineWidth(2.0)
+            ctx.stroke(r)
+            // Number badge in the top-left of the rect.
+            let labelText = "\(mark.id)"
+            let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: badgeFG
+            ]
+            let textSize = (labelText as NSString).size(withAttributes: attrs)
+            let pad: CGFloat = 4
+            let badgeW = max(20, textSize.width + 2 * pad)
+            let badgeH: CGFloat = 18
+            // Anchor inside the rect's top-left so the badge stays
+            // visually attached to the element it labels.
+            let badgeRect = CGRect(
+                x: r.minX,
+                y: r.minY,
+                width: badgeW,
+                height: badgeH
+            )
+            ctx.setFillColor(badgeBG)
+            ctx.fill(badgeRect)
+            // Draw the number.
+            let textPoint = CGPoint(
+                x: badgeRect.minX + pad,
+                y: badgeRect.minY + (badgeH - textSize.height) / 2
+            )
+            (labelText as NSString).draw(at: textPoint, withAttributes: attrs)
+        }
+        // Sanity-clamp the marks to the viewport so a stray off-screen
+        // rect doesn't paint over the page edge — the JS probe filters
+        // already, but defensively re-check.
+        _ = viewport
+        return result
+    }
+
     /// Escape a string for safe interpolation into a JS source literal.
     private static func jsEscape(_ s: String) -> String {
         var out = ""
@@ -362,11 +626,30 @@ actor WebDriver: UXDriving {
 enum WebDriverError: Error, Sendable, LocalizedError {
     case captureFailed
     case invalidURL(String)
+    /// V6 — agent emitted `tap_mark(id:)` with an id that wasn't in the
+    /// most recent screenshot's mark cache. Surfaces back through the
+    /// run as a tool failure so the next iteration's screenshot can
+    /// re-establish marks.
+    case unknownMark(id: Int)
 
     var errorDescription: String? {
         switch self {
         case .captureFailed: return "WKWebView snapshot failed."
         case .invalidURL(let s): return "Invalid URL: '\(s)'."
+        case .unknownMark(let id):
+            return "tap_mark(id: \(id)) — that id wasn't in the latest screenshot's mark set. The page may have changed; the next screenshot will refresh the marks."
         }
     }
+}
+
+/// One numbered Set-of-Mark entry. Built per-screenshot by the WebDriver
+/// JS probe, kept on the actor for the duration of the next tool call,
+/// and looked up by id when the agent emits `tap_mark(id:)`. CSS-pixel
+/// rect; `id` is 1-based to match the badge text drawn on the snapshot.
+struct InteractiveMark: Sendable, Equatable {
+    let id: Int
+    let rect: CGRect
+    let role: String
+    let inputType: String?
+    let label: String
 }

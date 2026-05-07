@@ -152,6 +152,13 @@ struct LLMTurn: Sendable {
 
 struct LLMStepResponse: Sendable {
     let toolCall: ToolCall
+    /// Friction events the model emitted alongside the action tool on
+    /// this same turn (per the system prompt, "exactly one tool call …
+    /// optionally accompanied by one or more `note_friction` calls").
+    /// Empty when the model only emitted the action. Surfaced through
+    /// `AgentDecision.inlineFriction` so the orchestrator can log + emit
+    /// them at the current step's index without a second round-trip.
+    let inlineFriction: [(FrictionKind, String)]
     let usage: TokenUsage
 }
 
@@ -319,7 +326,7 @@ actor ClaudeClient: LLMClient {
         }
 
         let toolCall = try Self.toolCall(fromToolUse: toolUse)
-        return LLMStepResponse(toolCall: toolCall, usage: parsed.usage)
+        return LLMStepResponse(toolCall: toolCall, inlineFriction: parsed.inlineFriction, usage: parsed.usage)
     }
 
     // MARK: Request body
@@ -459,6 +466,7 @@ actor ClaudeClient: LLMClient {
 
     private struct ParsedResponse {
         let toolUse: ToolUseBlock?
+        let inlineFriction: [(FrictionKind, String)]
         let usage: TokenUsage
     }
 
@@ -484,10 +492,12 @@ actor ClaudeClient: LLMClient {
             )
         }()
 
-        // Collect every tool_use content block. The agent loop expects
-        // exactly one per turn — if the model emits multiple, throw
-        // `invalidToolCall` so the parse-retry path kicks in with a
-        // corrective hint instead of silently dropping the rest.
+        // Collect every tool_use content block. Per the system prompt:
+        // "exactly one tool call (the action) ... optionally accompanied
+        // by one or more `note_friction` calls". So we accept ANY number
+        // of `note_friction` blocks, but exactly one action block. The
+        // frictions ride out via `inlineFriction` and get logged at the
+        // current step's index by `RunCoordinator`.
         var blocks: [ToolUseBlock] = []
         if let content = root["content"] as? [[String: Any]] {
             for block in content where (block["type"] as? String) == "tool_use" {
@@ -499,14 +509,27 @@ actor ClaudeClient: LLMClient {
             }
         }
 
-        if blocks.count > 1 {
-            let names = blocks.map { $0.name }.joined(separator: ", ")
+        let frictionName = ToolKind.noteFriction.rawValue
+        let actionBlocks = blocks.filter { $0.name != frictionName }
+        let frictionBlocks = blocks.filter { $0.name == frictionName }
+
+        if actionBlocks.count > 1 {
+            let names = actionBlocks.map { $0.name }.joined(separator: ", ")
             throw LLMError.invalidToolCall(
-                detail: "model emitted \(blocks.count) tool calls (\(names)); expected exactly one"
+                detail: "model emitted \(actionBlocks.count) action tool calls (\(names)); expected exactly one (note_friction may accompany it)"
             )
         }
 
-        return ParsedResponse(toolUse: blocks.first, usage: usage)
+        let inlineFriction: [(FrictionKind, String)] = frictionBlocks.compactMap { block in
+            guard let dict = (try? JSONSerialization.jsonObject(with: block.input)) as? [String: Any]
+            else { return nil }
+            let kindRaw = (dict["kind"] as? String) ?? FrictionKind.unexpectedState.rawValue
+            let kind = FrictionKind(rawValue: kindRaw) ?? .unexpectedState
+            let detail = (dict["detail"] as? String) ?? ""
+            return (kind, detail)
+        }
+
+        return ParsedResponse(toolUse: actionBlocks.first, inlineFriction: inlineFriction, usage: usage)
     }
 
     // MARK: tool_use → ToolCall

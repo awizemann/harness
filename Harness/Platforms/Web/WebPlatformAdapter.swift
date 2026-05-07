@@ -43,15 +43,24 @@ struct WebPlatformAdapter: PlatformAdapter {
               let startURL = URL(string: urlString) else {
             throw WebPlatformAdapterError.missingStartURL
         }
-        let viewportW = request.webViewportWidthPt ?? 1280
-        let viewportH = request.webViewportHeightPt ?? 1600
-        let initialViewport = CGSize(width: viewportW, height: viewportH)
-        // If the live mirror has already measured its canvas in a previous
-        // run, prefer those dimensions for the WKWebView so the very first
-        // screenshot fills the column without letterbox. Falls back to
-        // the configured viewport when the registry is empty (first run
-        // after launch).
-        let preferredViewport = await MainActor.run { LiveWebMirror.canvasSize } ?? initialViewport
+        let configuredW = CGFloat(request.webViewportWidthPt ?? 1280)
+        let configuredH = CGFloat(request.webViewportHeightPt ?? 1600)
+        // The configured WIDTH is what makes the page lay out as desktop
+        // / tablet / mobile — `window.innerWidth` is read against this.
+        // We honour it as-is. The HEIGHT is what we adapt to the canvas
+        // when one has been measured: `(W, W × canvasH/canvasW)` lets
+        // the snapshot match the canvas aspect (no letterbox at display
+        // time) without forcing the page into a narrow / mobile layout.
+        // When no canvas has been measured (first web run after launch),
+        // fall back to the configured height.
+        let canvasSize = await MainActor.run { LiveWebMirror.canvasSize }
+        let preferredViewport: CGSize = {
+            guard let canvas = canvasSize, canvas.width > 0, canvas.height > 0 else {
+                return CGSize(width: configuredW, height: configuredH)
+            }
+            let derivedH = (configuredW * canvas.height / canvas.width).rounded()
+            return CGSize(width: configuredW, height: derivedH)
+        }()
 
         // Construct + load on the main actor.
         let controller: WebViewWindowController = await MainActor.run {

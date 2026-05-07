@@ -208,6 +208,7 @@ enum ToolSchema {
 
     static let webToolNames: [String] = [
         ToolKind.tap.rawValue,
+        ToolKind.tapMark.rawValue,
         ToolKind.doubleTap.rawValue,
         ToolKind.rightClick.rawValue,
         ToolKind.scroll.rawValue,
@@ -261,7 +262,8 @@ enum ToolSchema {
 
     private static func webCanonical() -> [CanonicalTool] {
         [
-            tap(description: "Click at one point. Coordinates in CSS pixels (top-left origin within the rendered viewport)."),
+            tap(description: "Click at one point. Coordinates in CSS pixels (top-left origin within the rendered viewport). Prefer `tap_mark(id)` whenever the target has a numbered mark in the screenshot — coordinates are for unmarked positions only (scrolling, image regions)."),
+            tapMark(),
             doubleTap(description: "Double-click the left mouse button at one point. (Same name as iOS double-tap; click on macOS / web.)"),
             rightClick(),
             scroll(),
@@ -350,6 +352,33 @@ enum ToolSchema {
                     "intent": ["type": "string"]
                 ],
                 "required": ["text", "observation", "intent"]
+            ]
+        )
+    }
+
+    private static func tapMark() -> CanonicalTool {
+        CanonicalTool(
+            name: "tap_mark",
+            description: """
+            Click an interactive element by its numbered Set-of-Mark badge in the screenshot. \
+            The screenshot you receive overlays a small numbered badge on every focusable \
+            element (inputs, buttons, links, checkboxes, dropdowns) currently visible in the \
+            viewport. Use the `id` printed on the badge of the element you want to act on. \
+            This is more precise than `tap(x, y)` — it always lands on the element's center \
+            and won't miss by a few pixels. \
+            Use `tap_mark` whenever the target HAS a mark. Use `tap(x, y)` only for unmarked \
+            content (scrolling targets, image regions, page-level positions). \
+            If the element you want isn't marked, scroll until it comes into view; the next \
+            screenshot's marks will include it.
+            """,
+            jsonSchema: [
+                "type": "object",
+                "properties": [
+                    "id": ["type": "integer", "minimum": 1],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["id", "observation", "intent"]
             ]
         )
     }

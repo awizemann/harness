@@ -414,6 +414,9 @@ enum ToolKind: String, Sendable, Hashable, Codable, CaseIterable {
     // V5 — universal across platforms that have a focused-text-field
     // concept (iOS / macOS / web). Types the run's pre-staged credential.
     case fillCredential = "fill_credential"
+    // V6 — Set-of-Mark click. Web today; iOS / macOS in a follow-up
+    // (see wiki Roadmap "Set-of-Mark targeting on iOS + macOS").
+    case tapMark        = "tap_mark"
 }
 
 /// Tagged-union payload for any tool. Field names match `https://github.com/awizemann/harness/wiki/Tool-Schema`.
@@ -456,6 +459,13 @@ enum ToolInput: Sendable, Hashable, Codable {
     /// password value never enters the model's context window or the
     /// JSONL log. The agent picks the field; the run picks the credential.
     case fillCredential(field: CredentialField)
+    /// V6: Click an interactive element by its Set-of-Mark id. Each
+    /// screenshot overlays numbered badges on focusable elements; the
+    /// agent picks an id from the visible scaffolding. The driver
+    /// resolves the id to the element's center (cached at probe time)
+    /// and dispatches the same click + focus path as `tap`. Eliminates
+    /// the off-by-a-few-pixels misses of coordinate-only targeting.
+    case tapMark(id: Int)
 }
 
 /// Which slot of a stored credential `fill_credential` should type.

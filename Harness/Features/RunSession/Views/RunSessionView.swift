@@ -326,6 +326,14 @@ private struct LeftRail: View {
             metaRow("Project", req.project.displayName)
             metaRow("Scheme", req.project.scheme)
             metaRow("Device", "\(req.simulator.name) · \(req.simulator.runtime)")
+            // V5 — show only when the user staged a credential for this
+            // run. Hidden entirely otherwise so the no-auth case stays
+            // tight. Matches the run-replay header's display: label and
+            // username only, never the password.
+            if let label = vm.runCredentialLabel,
+               let username = vm.runCredentialUsername {
+                metaRow("Credential", "\(label) · \(username)")
+            }
             metaRow("Started", startedLabel)
         }
     }

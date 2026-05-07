@@ -234,7 +234,7 @@ actor AgentLoop: AgentLooping {
                 ))
                 return AgentDecision(
                     toolCall: response.toolCall,
-                    inlineFriction: [],
+                    inlineFriction: response.inlineFriction,
                     usage: response.usage
                 )
             } catch LLMError.invalidToolCall(let detail) {

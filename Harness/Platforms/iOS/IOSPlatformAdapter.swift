@@ -141,10 +141,13 @@ struct IOSSimDriver: UXDriving {
             guard let credential else { return }
             let text = field == .username ? credential.username : credential.password
             try await simulatorDriver.type(text, on: ref)
-        case .rightClick, .keyShortcut, .scroll, .navigate, .back, .forward, .refresh:
+        case .rightClick, .keyShortcut, .scroll, .navigate, .back, .forward, .refresh, .tapMark:
             // These tool variants belong to other platforms. The iOS
             // adapter never advertises them via toolDefinitions, so an
             // emission here is a contract bug — surface it loudly.
+            // (`tap_mark` ships on web only today; iOS gets it via a
+            // follow-up that wires the WDA accessibility tree as the
+            // probe — see wiki Roadmap.)
             throw UXDriverError.unsupportedTool(name: call.tool.rawValue, platform: .iosSimulator)
         }
     }

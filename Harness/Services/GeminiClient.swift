@@ -134,7 +134,7 @@ actor GeminiClient: LLMClient {
             name: toolCallSpec.name,
             inputData: toolCallSpec.argumentsData
         )
-        return LLMStepResponse(toolCall: toolCall, usage: parsed.usage)
+        return LLMStepResponse(toolCall: toolCall, inlineFriction: parsed.inlineFriction, usage: parsed.usage)
     }
 
     // MARK: Request body
@@ -264,6 +264,7 @@ actor GeminiClient: LLMClient {
 
     private struct ParsedResponse {
         let toolCall: ToolCallSpec?
+        let inlineFriction: [(FrictionKind, String)]
         let usage: TokenUsage
     }
 
@@ -315,13 +316,28 @@ actor GeminiClient: LLMClient {
             }
         }
 
-        if calls.count > 1 {
-            let names = calls.map { $0.name }.joined(separator: ", ")
+        // Per the system prompt, exactly one ACTION tool call per turn,
+        // plus zero-or-more `note_friction` calls riding alongside.
+        let frictionName = ToolKind.noteFriction.rawValue
+        let actionCalls = calls.filter { $0.name != frictionName }
+        let frictionCalls = calls.filter { $0.name == frictionName }
+
+        if actionCalls.count > 1 {
+            let names = actionCalls.map { $0.name }.joined(separator: ", ")
             throw LLMError.invalidToolCall(
-                detail: "model emitted \(calls.count) tool calls (\(names)); expected exactly one"
+                detail: "model emitted \(actionCalls.count) action tool calls (\(names)); expected exactly one (note_friction may accompany it)"
             )
         }
 
-        return ParsedResponse(toolCall: calls.first, usage: usage)
+        let inlineFriction: [(FrictionKind, String)] = frictionCalls.compactMap { spec in
+            guard let dict = (try? JSONSerialization.jsonObject(with: spec.argumentsData)) as? [String: Any]
+            else { return nil }
+            let kindRaw = (dict["kind"] as? String) ?? FrictionKind.unexpectedState.rawValue
+            let kind = FrictionKind(rawValue: kindRaw) ?? .unexpectedState
+            let detail = (dict["detail"] as? String) ?? ""
+            return (kind, detail)
+        }
+
+        return ParsedResponse(toolCall: actionCalls.first, inlineFriction: inlineFriction, usage: usage)
     }
 }

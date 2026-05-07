@@ -253,6 +253,8 @@ final class RunHistoryViewModel {
             // this tool; the password is never in the JSONL by design.
             let raw = (dict["field"] as? String) ?? CredentialField.username.rawValue
             input = .fillCredential(field: CredentialField(rawValue: raw) ?? .username)
+        case .tapMark:
+            input = .tapMark(id: (dict["id"] as? Int) ?? 0)
         }
         return ToolCall(
             tool: kind,

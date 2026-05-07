@@ -102,6 +102,7 @@ extension LLMStepResponse {
                 observation: observation,
                 intent: intent
             ),
+            inlineFriction: [],
             usage: TokenUsage(
                 inputTokens: inputTokens,
                 outputTokens: outputTokens,
@@ -119,6 +120,7 @@ extension LLMStepResponse {
                 observation: "done",
                 intent: "wrapping up"
             ),
+            inlineFriction: [],
             usage: TokenUsage(
                 inputTokens: inputTokens,
                 outputTokens: outputTokens,

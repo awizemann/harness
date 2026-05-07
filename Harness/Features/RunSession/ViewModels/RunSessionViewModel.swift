@@ -63,6 +63,14 @@ final class RunSessionViewModel {
     /// fills the column with no letterbox. Drives `WebMirrorView`'s
     /// aspect-ratio math.
     var webActiveViewport: CGSize?
+    /// V5: public-safe identity of the credential staged for this run,
+    /// resolved at run-start from `request.credentialID` via
+    /// `RunHistoryStore.credential(id:)`. Never carries the password —
+    /// only the label + username, same shape as what lands on the
+    /// `run_started` JSONL row. `nil` when no credential was staged
+    /// (and the LeftRail hides its row).
+    var runCredentialLabel: String?
+    var runCredentialUsername: String?
 
     /// One leg's status in the chain progress list. The session view maps
     /// this onto the existing `StatusChip` primitive.
@@ -124,6 +132,8 @@ final class RunSessionViewModel {
                 // approval-card description layer. The user already
                 // staged the credential and knows what they staged.
                 return "Fill credential (\(field.rawValue))"
+            case .tapMark(let id):
+                return "Tap mark \(id)"
             }
         }
     }
@@ -184,6 +194,22 @@ final class RunSessionViewModel {
         self.webCurrentURL = request.platformKind == .web ? request.webStartURL : nil
         self.webIsLoading = false
         self.webActiveViewport = request.platformKind == .web ? request.simulator.pointSize : nil
+        // Reset; the async load below will populate them if a credential
+        // is staged. Doing this on the actor (rather than the runTask)
+        // means the LeftRail row can render as soon as the lookup
+        // completes without waiting for the first run event.
+        self.runCredentialLabel = nil
+        self.runCredentialUsername = nil
+        if let credentialID = request.credentialID {
+            let history = container.runHistory
+            Task { [weak self] in
+                let snapshot = try? await history.credential(id: credentialID)
+                await MainActor.run {
+                    self?.runCredentialLabel = snapshot?.label
+                    self?.runCredentialUsername = snapshot?.username
+                }
+            }
+        }
 
         let coordinator = container.makeRunCoordinator(for: request)
         let approvals = AsyncStream<UserApproval> { continuation in
@@ -253,26 +279,35 @@ final class RunSessionViewModel {
     func reject(note: String) { approvalContinuation?.yield(.reject(note: note)); status = .running }
 
     /// Called by `WebMirrorView` when its screen-area canvas dimensions
-    /// settle on a new size (initial mount or window resize). Snaps the
-    /// active web viewport to the canvas so the WKWebView renders at
-    /// exactly the size the user sees — no letterbox, no scaling. The
-    /// configured viewport from the application snapshot is just an
-    /// initial hint; the live mirror's geometry is the source of truth.
+    /// settle on a new size (initial mount or window resize). The active
+    /// viewport keeps the configured CSS-pixel WIDTH (so the page lays
+    /// out as desktop / tablet / mobile per the user's intent) and
+    /// derives its HEIGHT from the canvas aspect — that way the snapshot
+    /// fills the column without letterbox AND without forcing a narrow
+    /// "zoomed-in" mobile layout when the user's window is small.
     func handleWebCanvasMeasured(_ canvas: CGSize) {
         guard request?.platformKind == .web else { return }
         guard canvas.width > 0, canvas.height > 0 else { return }
-        // Round to whole CSS pixels so successive sub-pixel layout passes
-        // don't churn the viewport on every frame.
-        let rounded = CGSize(width: canvas.width.rounded(), height: canvas.height.rounded())
-        // Always publish the latest measurement so the next run picks it
-        // up before its WKWebView is constructed.
-        LiveWebMirror.canvasSize = rounded
-        guard rounded != webActiveViewport else { return }
-        webActiveViewport = rounded
+        // Always publish the raw canvas measurement so the next run
+        // picks it up before its WKWebView is constructed.
+        LiveWebMirror.canvasSize = CGSize(
+            width: canvas.width.rounded(),
+            height: canvas.height.rounded()
+        )
+        // Compute the active viewport: configured width × derived height.
+        // `webActiveViewport` was seeded from `request.simulator.pointSize`
+        // at run start, which is the configured (W, H). We keep that W
+        // and only adjust H here.
+        let configuredW = webActiveViewport?.width
+            ?? CGFloat(request?.webViewportWidthPt ?? 1280)
+        let derivedH = (configuredW * canvas.height / canvas.width).rounded()
+        let target = CGSize(width: configuredW, height: derivedH)
+        guard target != webActiveViewport else { return }
+        webActiveViewport = target
         // Resize the live WKWebView if a run is in flight. No-op when
         // there's no active run.
         if let driver = LiveWebMirror.activeDriver {
-            Task.detached { await driver.resize(to: rounded) }
+            Task.detached { await driver.resize(to: target) }
         }
     }
 

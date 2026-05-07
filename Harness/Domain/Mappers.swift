@@ -36,7 +36,7 @@ extension PreviewToolKind {
     /// `.complete` (renders generically).
     init(_ kind: ToolKind) {
         switch kind {
-        case .tap, .doubleTap, .rightClick: self = .tap
+        case .tap, .doubleTap, .rightClick, .tapMark: self = .tap
         case .type, .fillCredential:        self = .type
         case .swipe, .scroll:                self = .swipe
         case .wait, .readScreen:             self = .wait
@@ -100,6 +100,8 @@ extension PreviewToolCall {
         case .fillCredential(let field):
             // The chip never carries the value — only the slot.
             return field.rawValue
+        case .tapMark(let id):
+            return "#\(id)"
         }
     }
 }

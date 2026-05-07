@@ -475,6 +475,12 @@ actor RunLogger: RunLogging {
                 "pointHeight": p.simulator.pointHeight,
                 "scaleFactor": p.simulator.scaleFactor
             ] as [String: Any]
+            // V3 — credential metadata is optional on the wire; only
+            // include keys when a credential was staged so v2 readers
+            // see the same row shape they always have for credential-
+            // less runs.
+            if let label = p.credentialLabel { dict["credentialLabel"] = label }
+            if let username = p.credentialUsername { dict["credentialUsername"] = username }
 
         case .stepStarted(let p):
             dict["step"] = p.step
@@ -643,6 +649,8 @@ extension LogRow {
             // See `standards/14-run-logging-format.md` § Credential
             // redaction for the rule this enforces.
             dict = ["field": field.rawValue]
+        case .tapMark(let id):
+            dict = ["id": id]
         }
         let data = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])
         return String(data: data, encoding: .utf8) ?? "{}"

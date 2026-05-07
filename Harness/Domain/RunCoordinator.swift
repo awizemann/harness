@@ -679,6 +679,19 @@ actor RunCoordinator {
             continuation.yield(.toolProposed(step: stepIndex, toolCall: decision.toolCall))
             try await logger.append(.toolCall(step: stepIndex, call: decision.toolCall))
 
+            // Inline `note_friction` calls the model emitted alongside
+            // the action this turn. The system prompt explicitly allows
+            // them; surfacing each one as a `friction` row keeps the
+            // friction report in sync with what the model actually said.
+            for (kind, detailText) in decision.inlineFriction {
+                let f = FrictionEvent(step: stepIndex, kind: kind, detail: detailText)
+                try? await logger.append(.friction(FrictionPayload(
+                    step: f.step, frictionKind: f.kind.rawValue, detail: f.detail
+                )))
+                continuation.yield(.frictionEmitted(f))
+                frictionThisLeg += 1
+            }
+
             // Approval gate (step mode only).
             var userDecision: UserDecision = .approved
             var userNote: String?

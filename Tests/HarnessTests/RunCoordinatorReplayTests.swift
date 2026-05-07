@@ -33,6 +33,7 @@ struct RunCoordinatorReplayTests {
                     observation: "field focused",
                     intent: "type milk"
                 ),
+                inlineFriction: [],
                 usage: TokenUsage(inputTokens: 120, outputTokens: 35, cacheReadInputTokens: 0, cacheCreationInputTokens: 0)
             ),
             .makingMarkDone(

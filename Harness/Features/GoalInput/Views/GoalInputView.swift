@@ -582,6 +582,12 @@ struct GoalInputView: View {
         // platformKind is always iOS — but threading it now means
         // Phase 2 lands without touching this call site.
         if let appID = coordinator.selectedApplicationID {
+            // CAREFUL: this rebuild has to forward EVERY field of the
+            // request that `vm.buildRequest` populated. RunRequest has
+            // `nil`-defaulted parameters, so a forgotten field silently
+            // vanishes here (V5 credentialID was dropped in its first
+            // shipping build until we caught it via a missing log row).
+            // If you add a field to RunRequest, add it here too.
             request = RunRequest(
                 id: request.id,
                 name: request.name,
@@ -600,7 +606,8 @@ struct GoalInputView: View {
                 macAppBundlePath: activeApplication?.macAppBundlePath,
                 webStartURL: activeApplication?.webStartURL,
                 webViewportWidthPt: activeApplication?.webViewportWidthPt,
-                webViewportHeightPt: activeApplication?.webViewportHeightPt
+                webViewportHeightPt: activeApplication?.webViewportHeightPt,
+                credentialID: request.credentialID
             )
         }
         coordinator.startedRun(id: request.id)
