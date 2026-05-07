@@ -76,6 +76,7 @@ struct GoalInputView: View {
                     heroHeading
                     targetSection(vm: vm)
                     PersonaSection(vm: vm)
+                    CredentialSection(vm: vm)
                     SourceSection(vm: vm)
                     runModeStrip(vm: vm)
                     advancedSection(vm: vm)
@@ -626,6 +627,16 @@ struct GoalInputView: View {
             // Reset overrideDefaults since the active application changed.
             vm.overrideDefaults = false
         }
+        // V5: refresh credentials whenever the active application
+        // resolves — both on app switch and on subsequent revisits, so
+        // newly-staged credentials show up without requiring a session
+        // restart.
+        if let snapshot {
+            await vm.loadCredentials(forApplication: snapshot.id, store: container.runHistory)
+        } else {
+            vm.credentials = []
+            vm.credentialID = nil
+        }
     }
 }
 
@@ -1032,6 +1043,39 @@ private struct InheritsBadge: View {
                         style: StrokeStyle(lineWidth: 0.5, dash: [2, 2])
                     )
             )
+    }
+}
+
+/// V5 — pre-run credential picker. Renders only when the active
+/// Application has at least one stored credential; defaults to "None"
+/// so a Run never silently inherits a credential the user didn't
+/// actively pick this session.
+private struct CredentialSection: View {
+    @Bindable var vm: GoalInputViewModel
+
+    var body: some View {
+        // Hide entirely when the Application has nothing staged — keeps
+        // the Compose Run form short for the common no-auth case.
+        if !vm.credentials.isEmpty {
+            PanelContainer(title: "Credential") {
+                VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                    Picker("", selection: $vm.credentialID) {
+                        Text("None — start logged out").tag(UUID?.none)
+                        ForEach(vm.credentials, id: \.id) { cred in
+                            Text("\(cred.label) · \(cred.username)")
+                                .tag(UUID?.some(cred.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    Text("The agent will see the label and username; the password value never enters its context.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(Theme.spacing.l)
+            }
+        }
     }
 }
 

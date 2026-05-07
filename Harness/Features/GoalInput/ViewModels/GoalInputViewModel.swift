@@ -82,11 +82,19 @@ final class GoalInputViewModel {
     /// off the default.
     var tokenBudgetOverride: Int?
 
+    /// V5: which credential (if any) to stage for this run. `nil` means
+    /// "no credential — start logged-out". The picker only renders when
+    /// the active Application has ≥1 stored credential.
+    var credentialID: UUID?
+
     // MARK: Library snapshots (loaded async from RunHistoryStore)
 
     var personas: [PersonaSnapshot] = []
     var actions: [ActionSnapshot] = []
     var chains: [ActionChainSnapshot] = []
+    /// V5: credentials available for the active Application. Populated by
+    /// `loadLibraries(store:)` alongside personas / actions / chains.
+    var credentials: [CredentialSnapshot] = []
 
     // MARK: Status
 
@@ -299,6 +307,22 @@ final class GoalInputViewModel {
         if selectedChainID == nil { selectedChainID = c.first?.id }
     }
 
+    /// V5: load credentials for the active Application. Called by the
+    /// view when the active Application changes — the picker only renders
+    /// when there's at least one stored credential. `credentialID`
+    /// defaults to `nil` ("no credential, start logged-out") on every
+    /// fresh load so a Run never silently inherits a credential the user
+    /// didn't actively pick this session.
+    func loadCredentials(forApplication appID: UUID, store: any RunHistoryStoring) async {
+        let creds = (try? await store.credentials(forApplication: appID)) ?? []
+        self.credentials = creds
+        // Reset the selection when the underlying list changes — the
+        // user explicitly opts in per run.
+        if !creds.contains(where: { $0.id == credentialID }) {
+            credentialID = nil
+        }
+    }
+
     // MARK: Build a RunRequest
 
     /// Compose the request to hand to `AppContainer.stagePendingRun(_:)`.
@@ -408,7 +432,8 @@ final class GoalInputViewModel {
             macAppBundlePath: macAppBundlePath,
             webStartURL: platformKind == .web ? webStartURL : nil,
             webViewportWidthPt: platformKind == .web ? webViewportWidthPt : nil,
-            webViewportHeightPt: platformKind == .web ? webViewportHeightPt : nil
+            webViewportHeightPt: platformKind == .web ? webViewportHeightPt : nil,
+            credentialID: credentialID
         )
     }
 }

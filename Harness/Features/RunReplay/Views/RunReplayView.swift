@@ -42,6 +42,23 @@ struct RunReplayView: View {
                         if let v = vm.verdict { VerdictPill(verdict: PreviewVerdict(v)) }
                         Text(m.persona).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
+                    if let label = m.credentialLabel,
+                       let username = m.credentialUsername {
+                        // V5: surface the staged credential's identity so
+                        // the replay reader knows which account the agent
+                        // was driving. Password is never recorded; only
+                        // label + username land here.
+                        HStack(spacing: 4) {
+                            Image(systemName: "key.fill")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color.harnessAccent)
+                            Text("\(label) · \(username)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                 }
             }
             Spacer()

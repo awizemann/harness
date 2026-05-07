@@ -43,6 +43,7 @@ Per-app setting: each Application declares its kind once at create time. The age
 
 ## What's new
 
+- **Per-Application credential storage.** Pre-stage username/password pairs against an Application; pick one per run in Compose Run. The agent gets a new `fill_credential(field: "username"|"password")` tool for iOS, macOS, and web — the password value never enters the model's context, the JSONL log, or any prompt template. Login walls that used to block runs are now surfaceable surfaces. New friction kind `auth_required` for the "no credential staged" case. Standards: 02 (SwiftData V5), 13 (agent loop), 14 (run-log schema v3).
 - **Web mirror reworked.** Replaced the iPad-shaped device bezel with a flat browser chrome (URL pill, lock glyph, back/forward/refresh affordances) so web runs use the full middle column. Default viewport bumped to 1280×1600 — taller snapshots mean fewer scroll turns, which translates directly to lower API spend per run.
 
 ## What's new in 0.2.0

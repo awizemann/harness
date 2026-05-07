@@ -77,6 +77,7 @@ struct ApplicationDetailView: View {
                     application: application,
                     onUpdateDefaults: onUpdateDefaults
                 )
+                CredentialsPanel(applicationID: application.id)
                 RecentRunsPanel(
                     application: application,
                     runs: recentRuns
@@ -668,5 +669,322 @@ private struct RecentRunsPanel: View {
 
     private func formatted(_ date: Date) -> String {
         Self.formatter.string(from: date)
+    }
+}
+
+// MARK: - Credentials panel (V5)
+
+/// CRUD panel for the Application's stored credentials. Each credential
+/// is a (label, username, password) triple where the password lives in
+/// Keychain (via `KeychainStoring.writePassword`) and the rest lives in
+/// SwiftData (via `RunHistoryStoring.upsertCredential`). The list shows
+/// label + username; the password is **never** displayed.
+private struct CredentialsPanel: View {
+
+    let applicationID: UUID
+
+    @Environment(AppContainer.self) private var container
+    @State private var credentials: [CredentialSnapshot] = []
+    @State private var loadError: String?
+    @State private var showAdd: Bool = false
+    @State private var replacePasswordFor: CredentialSnapshot?
+    @State private var deleteCandidate: CredentialSnapshot?
+
+    var body: some View {
+        PanelContainer(title: "Credentials") {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                if let err = loadError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(Color.harnessFailure)
+                }
+                if credentials.isEmpty {
+                    Text("No credentials staged. Add one to let the agent sign in to gated experiences during a run.")
+                        .font(.caption).foregroundStyle(.tertiary)
+                        .padding(.vertical, Theme.spacing.xs)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(credentials) { cred in
+                            CredentialRow(
+                                credential: cred,
+                                onReplacePassword: { replacePasswordFor = cred },
+                                onDelete: { deleteCandidate = cred }
+                            )
+                            if cred.id != credentials.last?.id {
+                                Rectangle().fill(Color.harnessLineSoft).frame(height: 0.5)
+                            }
+                        }
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radius.panel)
+                            .fill(Color.harnessPanel2.opacity(0.5))
+                    )
+                }
+                HStack {
+                    Spacer()
+                    Button {
+                        showAdd = true
+                    } label: {
+                        Label("Add credential", systemImage: "plus")
+                    }
+                }
+                Text("Passwords are stored in macOS Keychain. The agent never sees the password value — it only knows the label and username.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(Theme.spacing.l)
+        }
+        .task(id: applicationID) {
+            await load()
+        }
+        .sheet(isPresented: $showAdd) {
+            AddCredentialSheet(applicationID: applicationID) {
+                Task { await load() }
+            }
+        }
+        .sheet(item: $replacePasswordFor) { cred in
+            ReplacePasswordSheet(credential: cred)
+        }
+        .alert(
+            "Delete credential?",
+            isPresented: Binding(
+                get: { deleteCandidate != nil },
+                set: { if !$0 { deleteCandidate = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { deleteCandidate = nil }
+            Button("Delete", role: .destructive) {
+                if let cred = deleteCandidate {
+                    Task {
+                        await deleteCredential(cred)
+                        deleteCandidate = nil
+                    }
+                }
+            }
+        } message: {
+            if let cred = deleteCandidate {
+                Text("Remove the credential \"\(cred.label)\" (\(cred.username))? The Keychain entry is also deleted. Existing runs that referenced this credential keep their staged label + username in the run log; the password is gone forever.")
+            }
+        }
+    }
+
+    private func load() async {
+        do {
+            credentials = try await container.runHistory
+                .credentials(forApplication: applicationID)
+            loadError = nil
+        } catch {
+            credentials = []
+            loadError = "Couldn't load credentials: \(error.localizedDescription)"
+        }
+    }
+
+    private func deleteCredential(_ cred: CredentialSnapshot) async {
+        do {
+            try await container.runHistory.deleteCredential(id: cred.id)
+            try? container.keychain.deletePassword(applicationID: cred.applicationID, credentialID: cred.id)
+            await load()
+        } catch {
+            loadError = "Delete failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+private struct CredentialRow: View {
+    let credential: CredentialSnapshot
+    let onReplacePassword: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.spacing.m) {
+            Image(systemName: "key.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.harnessAccent)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(credential.label)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(credential.username)
+                    .font(HFont.mono)
+                    .foregroundStyle(Color.harnessText3)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Menu {
+                Button("Replace password…") { onReplacePassword() }
+                Button("Delete", role: .destructive) { onDelete() }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuIndicator(.hidden)
+            .frame(width: 28)
+        }
+        .padding(.horizontal, Theme.spacing.m)
+        .padding(.vertical, Theme.spacing.s)
+    }
+}
+
+/// Add-credential sheet. Three fields; on save we insert the SwiftData
+/// row first, then write the Keychain entry. Failure of either rolls the
+/// other back so we don't leave half-state on disk.
+private struct AddCredentialSheet: View {
+
+    let applicationID: UUID
+    let onSaved: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppContainer.self) private var container
+    @State private var label: String = ""
+    @State private var username: String = ""
+    @State private var password: String = ""
+    @State private var saveError: String?
+    @State private var saving: Bool = false
+
+    private var canSave: Bool {
+        !label.trimmingCharacters(in: .whitespaces).isEmpty
+            && !username.trimmingCharacters(in: .whitespaces).isEmpty
+            && !password.isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.l) {
+            HStack {
+                Text("Add credential").font(.title3.weight(.semibold))
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                Text("Label").font(.callout.weight(.medium))
+                TextField("e.g. free user", text: $label)
+                    .textFieldStyle(.roundedBorder)
+                Text("How you'll pick this credential at run time. Per-Application unique recommended (free user / paid user / admin).")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                Text("Username / email").font(.callout.weight(.medium))
+                TextField("you@example.com", text: $username)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+            }
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                Text("Password").font(.callout.weight(.medium))
+                SecureField("••••••••", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                Text("Stored in macOS Keychain. Never logged, never shown to the agent.")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            if let err = saveError {
+                Text(err)
+                    .font(.callout)
+                    .foregroundStyle(Color.harnessFailure)
+            }
+            Spacer()
+            HStack {
+                Spacer()
+                Button("Add") { Task { await save() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canSave || saving)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(Theme.spacing.l)
+        .frame(minWidth: 460, idealWidth: 500, minHeight: 380)
+    }
+
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        let snapshot = CredentialSnapshot(
+            id: UUID(),
+            applicationID: applicationID,
+            label: label.trimmingCharacters(in: .whitespaces),
+            username: username.trimmingCharacters(in: .whitespaces)
+        )
+        do {
+            try await container.runHistory.upsertCredential(snapshot)
+        } catch {
+            saveError = "Saving credential failed: \(error.localizedDescription)"
+            return
+        }
+        do {
+            try container.keychain.writePassword(
+                password,
+                applicationID: snapshot.applicationID,
+                credentialID: snapshot.id
+            )
+        } catch {
+            // Roll back the SwiftData row so we don't leak a row whose
+            // Keychain partner doesn't exist.
+            try? await container.runHistory.deleteCredential(id: snapshot.id)
+            saveError = "Saving password to Keychain failed: \(error.localizedDescription)"
+            return
+        }
+        onSaved()
+        dismiss()
+    }
+}
+
+/// Sheet for replacing a credential's password. Label + username stay
+/// untouched; only the Keychain entry is rewritten.
+private struct ReplacePasswordSheet: View {
+
+    let credential: CredentialSnapshot
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppContainer.self) private var container
+    @State private var newPassword: String = ""
+    @State private var saveError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.l) {
+            HStack {
+                Text("Replace password").font(.title3.weight(.semibold))
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Credential").font(.caption).foregroundStyle(.secondary)
+                Text("\(credential.label) · \(credential.username)")
+                    .font(.callout)
+            }
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                Text("New password").font(.callout.weight(.medium))
+                SecureField("••••••••", text: $newPassword)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if let err = saveError {
+                Text(err)
+                    .font(.callout)
+                    .foregroundStyle(Color.harnessFailure)
+            }
+            Spacer()
+            HStack {
+                Spacer()
+                Button("Save") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(newPassword.isEmpty)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(Theme.spacing.l)
+        .frame(minWidth: 460, idealWidth: 500, minHeight: 280)
+    }
+
+    private func save() {
+        do {
+            try container.keychain.writePassword(
+                newPassword,
+                applicationID: credential.applicationID,
+                credentialID: credential.id
+            )
+            dismiss()
+        } catch {
+            saveError = "Saving to Keychain failed: \(error.localizedDescription)"
+        }
     }
 }
