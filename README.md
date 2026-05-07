@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: macOS 14+](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Targets: iOS · macOS · Web](https://img.shields.io/badge/targets-iOS%20%C2%B7%20macOS%20%C2%B7%20Web-3DDC97)
-![Version: 0.2.1](https://img.shields.io/badge/version-0.2.1-blue)
+![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-blue)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
 
 <p align="center">
@@ -39,12 +39,17 @@ Three artifacts come out of every run:
 
 Per-app setting: each Application declares its kind once at create time. The agent's tool schema (clicks vs swipes vs key shortcuts vs navigate) and the system-prompt context block re-shape per platform. Run history, replay, and friction reporting are platform-neutral.
 
-> **Status:** v0.2.1 (alpha). All three platforms wired end-to-end; **multi-provider LLM support** (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5 + OpenAI GPT-5 Mini / GPT-4.1 Nano + Google Gemini 2.5 Flash / Flash Lite); per-provider Keychain storage; configurable per-model token budgets; unlimited-step option. macOS needs Screen Recording permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** v0.3.0 (alpha). All three platforms wired end-to-end; **per-Application credential storage + Set-of-Mark targeting on web** (numbered overlays on focusable elements; agent clicks by id, no pixel guessing); **multi-provider LLM support** (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5 + OpenAI GPT-5 Mini / GPT-4.1 Nano + Google Gemini 2.5 Flash / Flash Lite); per-provider Keychain storage; configurable per-model token budgets; unlimited-step option. macOS needs Screen Recording permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-## What's new
+## What's new in 0.3.0
 
-- **Per-Application credential storage.** Pre-stage username/password pairs against an Application; pick one per run in Compose Run. The agent gets a new `fill_credential(field: "username"|"password")` tool for iOS, macOS, and web — the password value never enters the model's context, the JSONL log, or any prompt template. Login walls that used to block runs are now surfaceable surfaces. New friction kind `auth_required` for the "no credential staged" case. Standards: 02 (SwiftData V5), 13 (agent loop), 14 (run-log schema v3).
+- **Per-Application credential storage.** Pre-stage username/password pairs against an Application; pick one per run in Compose Run. The agent gets a new `fill_credential(field: "username"|"password")` tool for iOS, macOS, and web. Password bytes never enter the model's context, the JSONL log, or any prompt template — `tool_call.input` for password fills records `{"field":"password"}` and nothing else. New friction kind `auth_required` for the "agent hit a login wall and has nothing to fill" case.
+- **Set-of-Mark targeting (web).** Every screenshot now overlays small numbered badges on focusable elements (form fields, buttons, dropdowns, checkboxes). The agent calls `tap_mark(id)` and the WebDriver resolves to the element's center — no more "agent picked y=228, input was at y=242" misses. Coordinate `tap(x, y)` stays available for unmarked content. Probe pierces open shadow roots so inputs in modern signin / payment widgets get marks. iOS / macOS get the same treatment in a follow-up via accessibility-tree probes (tracked on the [wiki Roadmap](https://github.com/awizemann/harness/wiki/Roadmap)).
 - **Web mirror reworked.** Replaced the iPad-shaped device bezel with a flat browser chrome (URL pill, lock glyph, back/forward/refresh affordances) so web runs use the full middle column. Default viewport bumped to 1280×1600 — taller snapshots mean fewer scroll turns, which translates directly to lower API spend per run.
+- **React-aware form fill.** `dispatchType` now uses the native value setter via `Object.getOwnPropertyDescriptor`, so React's value tracker actually sees the change and re-renders won't reset typed text. Same fix applies to `fill_credential`. Click-target focus routing now walks `<label>`, wrappers, and shadow children to focus the actual input, not the styled `<div>` on top of it.
+- **Multi-tool emissions accepted.** The system prompt always allowed *"exactly one tool call ... optionally accompanied by one or more `note_friction` calls"*; the parsers were rejecting anything > 1 block. Each provider's parser now splits action vs `note_friction` and forwards inline frictions through `AgentDecision.inlineFriction` → JSONL friction rows.
+- **Run-log schema v3.** `run_started` payload gains optional `credentialLabel` + `credentialUsername` (decode-if-present so v2 logs round-trip). Standards doc §5 documents the v2→v3 migration and the three credential-redaction invariants.
+- **`RunHistoryStore` adopts `@ModelActor`.** Eliminates the *"Unbinding from the main queue. ModelContexts are not Sendable"* runtime warning that Swift's strict concurrency was right to flag.
 
 ## What's new in 0.2.0
 

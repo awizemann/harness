@@ -86,8 +86,8 @@ targets:
         INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
         INFOPLIST_KEY_CFBundleName: Harness
         INFOPLIST_KEY_CFBundleDisplayName: Harness
-        MARKETING_VERSION: "0.2.1"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "3"
     preBuildScripts:
       # Bake $SRCROOT into the generated Swift stub so the running app can find
       # `vendor/WebDriverAgent` for first-run WDA builds. Read at runtime via
