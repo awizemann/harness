@@ -440,33 +440,91 @@ actor WebDriver: UXDriving {
     // MARK: - Set-of-Mark (V6)
 
     /// Run the JS probe that enumerates every visible interactive
-    /// element in the current DOM, returns their bounding rects (CSS
+    /// element where pixel-accurate targeting matters (form fields,
+    /// buttons, custom-role widgets), returns their bounding rects (CSS
     /// pixels) and accessible names, and assigns each a numeric id
     /// 1..N in reading order. Caller should call this RIGHT BEFORE
     /// taking the snapshot so the marks reflect the same DOM state.
+    ///
+    /// **Mark selection philosophy.** Marks are visual scaffolding for
+    /// targets where the agent typically misses by a few pixels —
+    /// inputs, dropdowns, checkboxes, action buttons. Plain text links
+    /// and generic `[tabindex]` elements are NOT marked: there are too
+    /// many of them on content-heavy pages (eBay homepage produced
+    /// 60+), and they're typically large enough that coordinate-only
+    /// tapping is reliable.
+    ///
+    /// **Shadow-DOM traversal.** Modern signin / payment forms wrap
+    /// their inputs in custom elements with open shadow roots. A flat
+    /// `document.querySelectorAll` doesn't pierce those, so we walk
+    /// the tree manually and recurse into every accessible shadow root
+    /// we find. Closed shadow roots stay invisible to JS — that's a
+    /// platform limit, not something we can work around.
     private func probeInteractiveElements() async throws -> [InteractiveMark] {
-        // Selector covers the standard focusable surface. Filtering to
-        // "actually visible in the viewport with non-zero rect" happens
-        // in JS — saves a round-trip and keeps the returned list short.
-        // Reading order: top → bottom, left → right by (y, x).
         let js = """
         (() => {
-          const SELECTOR = 'input:not([type="hidden"]), textarea, select, button, a[href], [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="textbox"], [role="combobox"], [contenteditable=""], [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
+          // Targets where pixel precision matters. Plain <a> links and
+          // bare [tabindex] are deliberately excluded — they bloated
+          // the mark count without earning their visual cost.
+          const SELECTOR = [
+            'input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"])',
+            'textarea',
+            'select',
+            'button',
+            'input[type="button"]',
+            'input[type="submit"]',
+            'input[type="reset"]',
+            '[role="button"]',
+            '[role="checkbox"]',
+            '[role="radio"]',
+            '[role="textbox"]',
+            '[role="combobox"]',
+            '[role="searchbox"]',
+            '[role="switch"]',
+            '[role="menuitem"]',
+            '[role="tab"]',
+            '[contenteditable=""]',
+            '[contenteditable="true"]'
+          ].join(', ');
           const out = [];
           const seen = new WeakSet();
           const vw = window.innerWidth, vh = window.innerHeight;
-          const els = document.querySelectorAll(SELECTOR);
-          for (const el of els) {
-            if (seen.has(el)) continue;
-            seen.add(el);
+
+          // Recursive walker that pierces open shadow roots. The flat
+          // `document.querySelectorAll` misses inputs nested inside
+          // custom elements (common on modern signin / payment forms).
+          function collect(root) {
+            // Direct matches at this level.
+            let here;
+            try {
+              here = root.querySelectorAll ? root.querySelectorAll(SELECTOR) : [];
+            } catch (e) {
+              here = [];
+            }
+            for (const el of here) {
+              if (!seen.has(el)) {
+                seen.add(el);
+                consider(el);
+              }
+            }
+            // Recurse into every descendant's open shadow root. We can't
+            // see closed shadow roots from JS at all — that's a platform
+            // limit. Same with cross-origin iframes.
+            const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+            for (const node of all) {
+              if (node.shadowRoot) collect(node.shadowRoot);
+            }
+          }
+
+          function consider(el) {
             const cs = window.getComputedStyle(el);
-            if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue;
+            if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') return;
+            // `disabled` form controls aren't actionable; don't waste
+            // a mark on them.
+            if (el.disabled === true) return;
             const r = el.getBoundingClientRect();
-            if (r.width <= 0 || r.height <= 0) continue;
-            // Must be at least partially in-viewport.
-            if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) continue;
-            // Pick an accessible name. Order matches what a real
-            // assistive-tech reader would prefer.
+            if (r.width <= 0 || r.height <= 0) return;
+            if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) return;
             let label = el.getAttribute('aria-label')
               || el.getAttribute('placeholder')
               || el.getAttribute('title')
@@ -488,8 +546,11 @@ actor WebDriver: UXDriving {
               label: label
             });
           }
-          // Sort top-to-bottom, then left-to-right so the agent reads
-          // marks in a predictable order.
+
+          collect(document);
+          // Reading order: top-to-bottom, then left-to-right. The
+          // agent's prompt assumes this, and it makes runs easier
+          // to skim by ID.
           out.sort((a, b) => (a.y - b.y) || (a.x - b.x));
           return out;
         })();
