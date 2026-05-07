@@ -29,11 +29,15 @@ actor WebDriver: UXDriving {
     /// initial value. Snapshots after `resize` come through at the new
     /// dimensions; the agent's CSS-pixel coordinate space follows.
     private var viewport: CGSize
+    /// V5 — pre-staged credential for this run, or nil. Same lifecycle as
+    /// the iOS / macOS drivers'.
+    private let credential: CredentialBinding?
 
-    init(controller: WebViewWindowController, startURL: URL?, viewport: CGSize) {
+    init(controller: WebViewWindowController, startURL: URL?, viewport: CGSize, credential: CredentialBinding? = nil) {
         self.controller = controller
         self.startURL = startURL
         self.viewport = viewport
+        self.credential = credential
     }
 
     /// Current viewport in CSS pixels. Read by the UI to keep the live
@@ -97,6 +101,17 @@ actor WebDriver: UXDriving {
             try? await Task.sleep(for: .milliseconds(ms))
         case .readScreen, .noteFriction, .markGoalDone:
             return
+        case .fillCredential(let field):
+            // No staged credential → soft no-op. With a binding, route
+            // through the same JS `dispatchType`-style path as the
+            // ordinary `type` tool: set `value` on the focused input
+            // (or `execCommand('insertText', …)` for contenteditable),
+            // then dispatch input/change events so React-style
+            // listeners see the change. WKWebView's `<input type="password">`
+            // renders bullets natively, so screenshots stay masked.
+            guard let credential else { return }
+            let text = field == .username ? credential.username : credential.password
+            try await dispatchType(text)
         case .swipe, .pressButton:
             throw UXDriverError.unsupportedTool(name: call.tool.rawValue, platform: .web)
         }

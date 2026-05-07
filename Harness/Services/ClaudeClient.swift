@@ -94,6 +94,11 @@ struct LLMStepRequest: Sendable {
     /// onto its provider's wire format. Defaults to `.iosSimulator` so
     /// pre-multi-platform tests / call sites keep working.
     let platformKind: PlatformKind
+    /// V5: text substituted into the system prompt's `{{CREDENTIALS}}`
+    /// slot. Built by `PromptLibrary.credentialBlock(for:)` from the
+    /// resolved binding (or "no credential staged" when nil). Empty
+    /// string also works — substitutes a blank section. Always cached.
+    let credentialBlock: String
     /// Retry-detail hint surfaced after a parse-failure. When non-nil,
     /// the client prepends "Your previous response was rejected: <hint>.
     /// Emit exactly one tool call." to the current-turn user message so
@@ -115,6 +120,7 @@ struct LLMStepRequest: Sendable {
         platformContext: String = "",
         deviceName: String = "iPhone Simulator",
         platformKind: PlatformKind = .iosSimulator,
+        credentialBlock: String = "",
         retryHint: String? = nil
     ) {
         self.model = model
@@ -129,6 +135,7 @@ struct LLMStepRequest: Sendable {
         self.platformContext = platformContext
         self.deviceName = deviceName
         self.platformKind = platformKind
+        self.credentialBlock = credentialBlock
         self.retryHint = retryHint
     }
 }
@@ -324,7 +331,8 @@ actor ClaudeClient: LLMClient {
             goal: request.goal,
             pointSize: request.pointSize,
             platformContext: request.platformContext,
-            deviceName: request.deviceName
+            deviceName: request.deviceName,
+            credentialBlock: request.credentialBlock
         )
 
         // System: array form so each block can carry cache_control.
@@ -428,7 +436,8 @@ actor ClaudeClient: LLMClient {
         goal: String,
         pointSize: CGSize,
         platformContext: String,
-        deviceName: String
+        deviceName: String,
+        credentialBlock: String
     ) -> String {
         // Phase 2: prepend the platform-context override block when an
         // adapter provides one (macOS / web). iOS adapters return "" so
@@ -442,6 +451,7 @@ actor ClaudeClient: LLMClient {
         s = s.replacingOccurrences(of: "{{PERSONA}}", with: persona)
         s = s.replacingOccurrences(of: "{{GOAL}}", with: goal)
         s = s.replacingOccurrences(of: "{{DEVICE_NAME}}", with: deviceName)
+        s = s.replacingOccurrences(of: "{{CREDENTIALS}}", with: credentialBlock)
         return s
     }
 

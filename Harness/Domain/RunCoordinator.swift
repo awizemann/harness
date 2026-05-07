@@ -72,6 +72,7 @@ actor RunCoordinator {
         promptLibrary: any PromptLoading = PromptLibrary(),
         toolLocator: (any ToolLocating)? = nil,
         processRunner: (any ProcessRunning)? = nil,
+        keychain: (any KeychainStoring)? = nil,
         platformAdapterOverride: (any PlatformAdapter)? = nil
     ) {
         self.builder = builder
@@ -81,18 +82,21 @@ actor RunCoordinator {
         self.history = history
         self.windowController = windowController
         self.hideSimulator = hideSimulator
-        // Default to a fresh ProcessRunner / ToolLocator pair when the
-        // caller didn't override — production callers (AppContainer) pass
-        // explicit instances; tests can pass nils and get sensible
-        // defaults without ceremony.
+        // Default to a fresh ProcessRunner / ToolLocator / KeychainStore
+        // when the caller didn't override — production callers
+        // (AppContainer) pass explicit instances; tests can pass nils and
+        // get sensible defaults without ceremony.
         let resolvedProcess: any ProcessRunning = processRunner ?? ProcessRunner()
         let resolvedTools: any ToolLocating = toolLocator ?? ToolLocator(processRunner: resolvedProcess)
+        let resolvedKeychain: any KeychainStoring = keychain ?? KeychainStore()
         self.platformServices = PlatformAdapterServices(
             processRunner: resolvedProcess,
             toolLocator: resolvedTools,
             xcodeBuilder: builder,
             simulatorDriver: driver,
-            promptLibrary: promptLibrary
+            promptLibrary: promptLibrary,
+            keychain: resolvedKeychain,
+            runHistory: history
         )
         self.platformAdapterOverride = platformAdapterOverride
     }
@@ -145,7 +149,18 @@ actor RunCoordinator {
         let logger = try await RunLogger.open(runID: request.id)
         defer { Task { await logger.close() } }
 
-        try await logger.append(.runStarted(from: request))
+        // Resolve the staged credential's public-safe identity so the
+        // run-started log row carries it. The adapter resolves the full
+        // binding (including password) again at `prepare()` time — that
+        // duplicate read is cheap (one in-memory ModelActor lookup + one
+        // Keychain read) and keeps the password off this code path
+        // entirely.
+        let credentialIdentity = await platformServices.resolveCredentialBinding(for: request)
+        try await logger.append(.runStarted(
+            from: request,
+            credentialLabel: credentialIdentity?.label,
+            credentialUsername: credentialIdentity?.username
+        ))
         continuation.yield(.runStarted(request))
 
         // Phase 2: dispatch to the right `PlatformAdapter` based on the
@@ -543,7 +558,8 @@ actor RunCoordinator {
             macAppBundlePath: request.macAppBundlePath,
             webStartURL: request.webStartURL,
             webViewportWidthPt: request.webViewportWidthPt,
-            webViewportHeightPt: request.webViewportHeightPt
+            webViewportHeightPt: request.webViewportHeightPt,
+            credentialID: request.credentialID
         )
 
         var stepIndex = startStepIndex                     // global, gap-free
@@ -641,7 +657,11 @@ actor RunCoordinator {
                     tokensUsedSoFar: totalUsage,
                     sessionPointSize: captureMetadata.pointSize,
                     platformContext: platformContext,
-                    deviceName: session.displayLabel
+                    deviceName: session.displayLabel,
+                    credentialBlock: CredentialPromptBlock.render(
+                        label: session.credentialLabel,
+                        username: session.credentialUsername
+                    )
                 ))
             } catch let e as AgentLoopError {
                 // Loop-internal failure → emit `agent_blocked` friction and end the leg.

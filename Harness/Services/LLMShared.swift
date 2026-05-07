@@ -95,6 +95,14 @@ enum LLMShared {
             payload = .forward
         case .refresh:
             payload = .refresh
+        case .fillCredential:
+            // Fall back to .username if the model omits the field — it's
+            // the safer of the two slots to retry against (typing the
+            // username doesn't expose anything sensitive). The driver
+            // ignores the call when no credential is staged.
+            let raw = (input["field"] as? String) ?? CredentialField.username.rawValue
+            let field = CredentialField(rawValue: raw) ?? .username
+            payload = .fillCredential(field: field)
         }
 
         return ToolCall(tool: kind, input: payload, observation: observation, intent: intent)

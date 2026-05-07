@@ -119,6 +119,11 @@ final class RunSessionViewModel {
             case .back: return "Browser back"
             case .forward: return "Browser forward"
             case .refresh: return "Refresh"
+            case .fillCredential(let field):
+                // Show only the field — never any value, even at the
+                // approval-card description layer. The user already
+                // staged the credential and knows what they staged.
+                return "Fill credential (\(field.rawValue))"
             }
         }
     }

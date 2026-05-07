@@ -146,7 +146,8 @@ actor GeminiClient: LLMClient {
             goal: request.goal,
             pointSize: request.pointSize,
             platformContext: request.platformContext,
-            deviceName: request.deviceName
+            deviceName: request.deviceName,
+            credentialBlock: request.credentialBlock
         )
 
         var contents: [[String: Any]] = []
@@ -243,7 +244,8 @@ actor GeminiClient: LLMClient {
         goal: String,
         pointSize: CGSize,
         platformContext: String,
-        deviceName: String
+        deviceName: String,
+        credentialBlock: String
     ) -> String {
         var s = systemPrompt
         if !platformContext.isEmpty {
@@ -254,6 +256,7 @@ actor GeminiClient: LLMClient {
         s = s.replacingOccurrences(of: "{{PERSONA}}", with: persona)
         s = s.replacingOccurrences(of: "{{GOAL}}", with: goal)
         s = s.replacingOccurrences(of: "{{DEVICE_NAME}}", with: deviceName)
+        s = s.replacingOccurrences(of: "{{CREDENTIALS}}", with: credentialBlock)
         return s
     }
 

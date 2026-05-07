@@ -37,6 +37,11 @@ struct AgentLoopState: Sendable {
     let sessionPointSize: CGSize
     let platformContext: String
     let deviceName: String
+    /// V5: pre-rendered text for the system prompt's `{{CREDENTIALS}}`
+    /// slot. Empty string is fine — substitutes a blank section. The
+    /// password is **never** part of this string; only `label` and
+    /// `username` from the staged credential ever surface.
+    let credentialBlock: String
 
     init(
         request: RunRequest,
@@ -46,7 +51,8 @@ struct AgentLoopState: Sendable {
         tokensUsedSoFar: TokenUsage,
         sessionPointSize: CGSize? = nil,
         platformContext: String = "",
-        deviceName: String = "iPhone Simulator"
+        deviceName: String = "iPhone Simulator",
+        credentialBlock: String = ""
     ) {
         self.request = request
         self.stepIndex = stepIndex
@@ -58,6 +64,7 @@ struct AgentLoopState: Sendable {
         self.sessionPointSize = sessionPointSize ?? request.simulator.pointSize
         self.platformContext = platformContext
         self.deviceName = deviceName
+        self.credentialBlock = credentialBlock
     }
 }
 
@@ -222,6 +229,7 @@ actor AgentLoop: AgentLooping {
                     platformContext: state.platformContext,
                     deviceName: state.deviceName,
                     platformKind: state.request.platformKind,
+                    credentialBlock: state.credentialBlock,
                     retryHint: retryHint
                 ))
                 return AgentDecision(

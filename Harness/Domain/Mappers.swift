@@ -37,7 +37,7 @@ extension PreviewToolKind {
     init(_ kind: ToolKind) {
         switch kind {
         case .tap, .doubleTap, .rightClick: self = .tap
-        case .type:                          self = .type
+        case .type, .fillCredential:        self = .type
         case .swipe, .scroll:                self = .swipe
         case .wait, .readScreen:             self = .wait
         case .pressButton, .keyShortcut, .noteFriction, .markGoalDone,
@@ -97,6 +97,9 @@ extension PreviewToolCall {
         case .back: return "←"
         case .forward: return "→"
         case .refresh: return "⟳"
+        case .fillCredential(let field):
+            // The chip never carries the value — only the slot.
+            return field.rawValue
         }
     }
 }
@@ -114,6 +117,7 @@ extension PreviewFrictionKind {
         case .unresponsive:    self = .unresponsive
         case .confusingCopy:   self = .ambiguousLabel  // closest preview palette
         case .unexpectedState: self = .missingUndo     // closest preview palette
+        case .authRequired:    self = .deadEnd         // closest preview palette
         case .agentBlocked:    self = .deadEnd
         }
     }

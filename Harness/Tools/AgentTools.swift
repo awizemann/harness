@@ -184,6 +184,7 @@ enum ToolSchema {
         ToolKind.doubleTap.rawValue,
         ToolKind.swipe.rawValue,
         ToolKind.type.rawValue,
+        ToolKind.fillCredential.rawValue,
         ToolKind.pressButton.rawValue,
         ToolKind.wait.rawValue,
         ToolKind.readScreen.rawValue,
@@ -197,6 +198,7 @@ enum ToolSchema {
         ToolKind.rightClick.rawValue,
         ToolKind.scroll.rawValue,
         ToolKind.type.rawValue,
+        ToolKind.fillCredential.rawValue,
         ToolKind.keyShortcut.rawValue,
         ToolKind.wait.rawValue,
         ToolKind.readScreen.rawValue,
@@ -210,6 +212,7 @@ enum ToolSchema {
         ToolKind.rightClick.rawValue,
         ToolKind.scroll.rawValue,
         ToolKind.type.rawValue,
+        ToolKind.fillCredential.rawValue,
         ToolKind.keyShortcut.rawValue,
         ToolKind.navigate.rawValue,
         ToolKind.back.rawValue,
@@ -229,6 +232,7 @@ enum ToolSchema {
             doubleTap(description: "Tap twice quickly at one point."),
             swipe(),
             type(),
+            fillCredential(),
             pressButton(),
             wait(),
             readScreen(),
@@ -246,6 +250,7 @@ enum ToolSchema {
             rightClick(),
             scroll(),
             type(),
+            fillCredential(),
             keyShortcut(),
             wait(),
             readScreen(),
@@ -261,6 +266,7 @@ enum ToolSchema {
             rightClick(),
             scroll(),
             type(),
+            fillCredential(),
             keyShortcut(),
             navigate(),
             back(),
@@ -344,6 +350,32 @@ enum ToolSchema {
                     "intent": ["type": "string"]
                 ],
                 "required": ["text", "observation", "intent"]
+            ]
+        )
+    }
+
+    private static func fillCredential() -> CanonicalTool {
+        CanonicalTool(
+            name: "fill_credential",
+            description: """
+            Type the run's pre-staged credential into the currently-focused text field. \
+            Pick which slot to fill via `field`: "username" or "password". The actual \
+            value lives outside your context — you choose which slot, and the runtime \
+            substitutes the configured value at type time. The password value is never \
+            visible to you in any form. \
+            Use this only when the system prompt's "Credentials" block lists a staged \
+            credential. If no credential is staged and you encounter a login wall, emit \
+            `note_friction(kind: "auth_required", ...)` and continue with what you can \
+            reach. Always tap/click the target field first so the focus is correct.
+            """,
+            jsonSchema: [
+                "type": "object",
+                "properties": [
+                    "field": ["type": "string", "enum": ["username", "password"]],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["field", "observation", "intent"]
             ]
         )
     }

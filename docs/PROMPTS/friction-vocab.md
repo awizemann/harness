@@ -38,6 +38,11 @@ The user saw a state they didn't expect from their last action.
 - *Example*: "I tapped 'Add' but the input field still has 'milk' in it. Did it save?"
 - *Looks like*: action → unexpected screen state → confusion → re-trying or seeking confirmation.
 
+### `auth_required`
+The user hit a login wall they can't get past — the run has no credential staged for this Application, or the staged credential won't help (wrong account type for this surface). The user can't observe what's behind the wall, so reporting "I needed to log in to continue" is the actionable signal.
+- *Example*: "I tried to view the order history but the app is asking me to sign in. I don't have an account staged for this run."
+- *Looks like*: navigating to a protected surface → encountering a sign-in prompt → realizing there's no way through.
+
 ---
 
 ## System-emitted kind (the loop synthesizes)

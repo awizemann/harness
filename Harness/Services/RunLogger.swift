@@ -58,6 +58,14 @@ struct RunStartedPayload: Sendable, Codable {
     let tokenBudget: Int
     let project: ProjectInfo
     let simulator: SimulatorInfo
+    /// V3 — public-safe identity of the credential staged for this run.
+    /// Optional in the Codable shape so v2 logs decode cleanly. The
+    /// password is NEVER part of this payload (and never anywhere else
+    /// in the JSONL): only `credentialLabel` + `credentialUsername` ever
+    /// land on disk. See `standards/14-run-logging-format.md` § Credential
+    /// redaction for the rule this enforces.
+    let credentialLabel: String?
+    let credentialUsername: String?
 
     struct ProjectInfo: Sendable, Codable {
         let path: String
@@ -71,6 +79,52 @@ struct RunStartedPayload: Sendable, Codable {
         let pointWidth: Int
         let pointHeight: Int
         let scaleFactor: Double
+    }
+
+    init(
+        goal: String,
+        persona: String,
+        model: String,
+        mode: String,
+        stepBudget: Int,
+        tokenBudget: Int,
+        project: ProjectInfo,
+        simulator: SimulatorInfo,
+        credentialLabel: String? = nil,
+        credentialUsername: String? = nil
+    ) {
+        self.goal = goal
+        self.persona = persona
+        self.model = model
+        self.mode = mode
+        self.stepBudget = stepBudget
+        self.tokenBudget = tokenBudget
+        self.project = project
+        self.simulator = simulator
+        self.credentialLabel = credentialLabel
+        self.credentialUsername = credentialUsername
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case goal, persona, model, mode
+        case stepBudget, tokenBudget
+        case project, simulator
+        case credentialLabel, credentialUsername
+    }
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.goal = try c.decode(String.self, forKey: .goal)
+        self.persona = try c.decode(String.self, forKey: .persona)
+        self.model = try c.decode(String.self, forKey: .model)
+        self.mode = try c.decode(String.self, forKey: .mode)
+        self.stepBudget = try c.decode(Int.self, forKey: .stepBudget)
+        self.tokenBudget = try c.decode(Int.self, forKey: .tokenBudget)
+        self.project = try c.decode(ProjectInfo.self, forKey: .project)
+        self.simulator = try c.decode(SimulatorInfo.self, forKey: .simulator)
+        // V3 additions — decodeIfPresent so v2 logs round-trip cleanly.
+        self.credentialLabel = try c.decodeIfPresent(String.self, forKey: .credentialLabel)
+        self.credentialUsername = try c.decodeIfPresent(String.self, forKey: .credentialUsername)
     }
 }
 
@@ -234,7 +288,7 @@ actor RunLogger: RunLogging {
     /// Schema version stamped on every row. Bumped to **v2** in Phase E
     /// to add `leg_started` / `leg_completed`. v1 logs (pre-rework) stay
     /// readable via the parser's tolerant fallback path.
-    static let schemaVersion = 2
+    static let schemaVersion = 3
 
     let runID: UUID
     private let runDir: URL
@@ -495,8 +549,15 @@ actor RunLogger: RunLogging {
 // MARK: - Convenience builders
 
 extension LogRow {
-    /// Build a `runStarted` row from a `RunRequest`.
-    static func runStarted(from request: RunRequest) -> LogRow {
+    /// Build a `runStarted` row from a `RunRequest`. The optional
+    /// credential identity (label + username) is included when the run
+    /// staged a credential — never the password value, which the JSONL
+    /// schema explicitly forbids.
+    static func runStarted(
+        from request: RunRequest,
+        credentialLabel: String? = nil,
+        credentialUsername: String? = nil
+    ) -> LogRow {
         let sim = request.simulator
         return .runStarted(RunStartedPayload(
             goal: request.goal,
@@ -517,7 +578,9 @@ extension LogRow {
                 pointWidth: Int(sim.pointSize.width),
                 pointHeight: Int(sim.pointSize.height),
                 scaleFactor: Double(sim.scaleFactor)
-            )
+            ),
+            credentialLabel: credentialLabel,
+            credentialUsername: credentialUsername
         ))
     }
 
@@ -572,6 +635,14 @@ extension LogRow {
             dict = ["url": url]
         case .back, .forward, .refresh:
             dict = [:]
+        case .fillCredential(let field):
+            // CRITICAL: only the field name lands in the JSONL; the
+            // actual value (especially the password) is intentionally
+            // absent. The driver synthesises the typed text from a
+            // `CredentialBinding` it caches in memory and never logs.
+            // See `standards/14-run-logging-format.md` § Credential
+            // redaction for the rule this enforces.
+            dict = ["field": field.rawValue]
         }
         let data = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])
         return String(data: data, encoding: .utf8) ?? "{}"

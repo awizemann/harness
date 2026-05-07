@@ -48,11 +48,13 @@ struct IOSPlatformAdapter: PlatformAdapter {
         try await services.simulatorDriver.startInputSession(request.simulator)
         continuation.yield(.simulatorReady(request.simulator))
 
+        let credential = await services.resolveCredentialBinding(for: request)
         let driver = IOSSimDriver(
             ref: request.simulator,
             simulatorDriver: services.simulatorDriver,
             appBundle: build.appBundle,
-            bundleIdentifier: build.bundleIdentifier
+            bundleIdentifier: build.bundleIdentifier,
+            credential: credential
         )
         return RunSession(
             kind: .iosSimulator,
@@ -60,7 +62,9 @@ struct IOSPlatformAdapter: PlatformAdapter {
             pointSize: request.simulator.pointSize,
             bundleIdentifier: build.bundleIdentifier,
             appBundleURL: build.appBundle,
-            displayLabel: "\(request.simulator.name) · \(request.simulator.runtime)"
+            displayLabel: "\(request.simulator.name) · \(request.simulator.runtime)",
+            credentialLabel: credential?.label,
+            credentialUsername: credential?.username
         )
     }
 
@@ -92,6 +96,10 @@ struct IOSSimDriver: UXDriving {
     let simulatorDriver: any SimulatorDriving
     let appBundle: URL
     let bundleIdentifier: String
+    /// V5 — the run's pre-staged credential, resolved once at run start.
+    /// `nil` means no credential is staged for this run; `fill_credential`
+    /// is a soft no-op (the agent should emit `auth_required` instead).
+    let credential: CredentialBinding?
 
     func screenshot(into url: URL) async throws -> ScreenshotMetadata {
         _ = try await simulatorDriver.screenshot(ref, into: url)
@@ -124,6 +132,15 @@ struct IOSSimDriver: UXDriving {
         case .readScreen, .noteFriction, .markGoalDone:
             // Non-action tools — RunCoordinator handles them upstream.
             return
+        case .fillCredential(let field):
+            // No staged credential → soft no-op. The agent will see no
+            // visible change in the next screenshot and is expected to
+            // emit `auth_required` friction. We deliberately don't throw
+            // here because the run might still be useful for the
+            // pre-login surfaces.
+            guard let credential else { return }
+            let text = field == .username ? credential.username : credential.password
+            try await simulatorDriver.type(text, on: ref)
         case .rightClick, .keyShortcut, .scroll, .navigate, .back, .forward, .refresh:
             // These tool variants belong to other platforms. The iOS
             // adapter never advertises them via toolDefinitions, so an

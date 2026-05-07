@@ -119,10 +119,10 @@ enum RunLogParser {
                 continue
             }
 
-            // Schema check. Both v1 (pre-Phase-E) and v2 (Phase E+) parse;
-            // unknown versions throw so a future v3 reader doesn't silently
-            // misinterpret the row shape.
-            if let v = obj["schemaVersion"] as? Int, v != 1 && v != 2 {
+            // Schema check. v1 (pre-Phase-E), v2 (Phase E+), and v3 (V5
+            // credential metadata) all parse; unknown versions throw so a
+            // future v4 reader doesn't silently misinterpret the row shape.
+            if let v = obj["schemaVersion"] as? Int, v != 1 && v != 2 && v != 3 {
                 throw ParseError.schemaVersionUnsupported(v)
             }
 

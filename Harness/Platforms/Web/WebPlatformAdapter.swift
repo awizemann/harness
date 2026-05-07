@@ -76,10 +76,12 @@ struct WebPlatformAdapter: PlatformAdapter {
         )
         continuation.yield(.simulatorReady(pseudoSim))
 
+        let credential = await services.resolveCredentialBinding(for: request)
         let driver = WebDriver(
             controller: controller,
             startURL: startURL,
-            viewport: preferredViewport
+            viewport: preferredViewport,
+            credential: credential
         )
         // Publish the driver so the live mirror can call `resize` when
         // the canvas dimensions change.
@@ -94,7 +96,9 @@ struct WebPlatformAdapter: PlatformAdapter {
             pointSize: preferredViewport,
             bundleIdentifier: nil,
             appBundleURL: nil,
-            displayLabel: startURL.host ?? "Web"
+            displayLabel: startURL.host ?? "Web",
+            credentialLabel: credential?.label,
+            credentialUsername: credential?.username
         )
     }
 

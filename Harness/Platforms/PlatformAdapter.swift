@@ -37,6 +37,14 @@ struct RunSession: Sendable {
     /// Short human label for the target — used in the live-run header
     /// ("iPhone 16 Pro · iOS 26", "TextEdit", "example.com").
     let displayLabel: String
+    /// V5 — the public-safe identity of the credential staged for this
+    /// run, OR nil if no credential was staged. The `password` is
+    /// **deliberately absent** from this struct: only the driver knows
+    /// the password value, and only for as long as the run lives. The
+    /// label and username are safe to log (`run_started`) and safe to
+    /// substitute into the system prompt's `{{CREDENTIALS}}` block.
+    let credentialLabel: String?
+    let credentialUsername: String?
 }
 
 /// Per-platform façade. Stateless — instantiated fresh per run. The
@@ -120,4 +128,40 @@ struct PlatformAdapterServices: Sendable {
     let xcodeBuilder: any XcodeBuilding
     let simulatorDriver: any SimulatorDriving
     let promptLibrary: any PromptLoading
+    /// V5 — needed to resolve the run's pre-staged credential at
+    /// `prepare()` time. The DB lookup gives us label + username; the
+    /// Keychain read gives us the password. Together they form the
+    /// `CredentialBinding` the driver caches for the run's lifetime.
+    let keychain: any KeychainStoring
+    let runHistory: any RunHistoryStoring
+}
+
+extension PlatformAdapterServices {
+    /// Resolve `request.credentialID` to a fully-populated
+    /// `CredentialBinding` (DB lookup + Keychain read), or `nil` when no
+    /// credential is staged or any lookup fails. The agent path treats a
+    /// nil binding as "no credential available" — the run still proceeds
+    /// and the agent can emit `auth_required` friction if needed.
+    ///
+    /// We **soft-fail** on lookup error rather than throw: a Keychain
+    /// glitch shouldn't take down a whole run that might not even need
+    /// the credential. The error is logged at the call site if useful.
+    func resolveCredentialBinding(for request: RunRequest) async -> CredentialBinding? {
+        guard let credentialID = request.credentialID else { return nil }
+        do {
+            guard let snapshot = try await runHistory.credential(id: credentialID) else { return nil }
+            guard let password = try keychain.readPassword(
+                applicationID: snapshot.applicationID,
+                credentialID: snapshot.id
+            ) else { return nil }
+            return CredentialBinding(
+                id: snapshot.id,
+                label: snapshot.label,
+                username: snapshot.username,
+                password: password
+            )
+        } catch {
+            return nil
+        }
+    }
 }

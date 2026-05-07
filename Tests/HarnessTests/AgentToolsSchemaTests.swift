@@ -19,7 +19,7 @@ struct AgentToolsSchemaTests {
     /// their own subsets. These tests assert the iOS schema's well-
     /// formedness; macOS / web schemas have their own suites below.
     private static let iOSToolKinds: Set<ToolKind> = [
-        .tap, .doubleTap, .swipe, .type, .pressButton,
+        .tap, .doubleTap, .swipe, .type, .fillCredential, .pressButton,
         .wait, .readScreen, .noteFriction, .markGoalDone
     ]
 

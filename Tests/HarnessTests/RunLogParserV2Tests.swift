@@ -210,12 +210,16 @@ struct RunLogParserV2Tests {
 
     // MARK: Schema-version guard
 
-    @Test("Unknown schema version (v3) throws schemaVersionUnsupported")
+    @Test("Unknown schema version (v4) throws schemaVersionUnsupported")
     func unknownVersionThrows() {
+        // v3 is now valid (V5 ships with schemaVersion=3 — credential
+        // metadata on run_started + fill_credential tool input shape).
+        // Probe with v4 instead so the guard still fires until a future
+        // bump catches up.
         let runID = UUID()
         let ts = Self.makeFormatter().string(from: Date())
         let data = Self.writeJSON([
-            ["schemaVersion": 3, "runId": runID.uuidString, "ts": ts,
+            ["schemaVersion": 4, "runId": runID.uuidString, "ts": ts,
              "kind": "run_started", "goal": "x", "persona": "y",
              "model": "claude-opus-4-7", "mode": "autonomous",
              "stepBudget": 1, "tokenBudget": 1,
@@ -227,7 +231,7 @@ struct RunLogParserV2Tests {
             _ = try RunLogParser.parse(jsonlData: data)
             Issue.record("expected schemaVersionUnsupported throw")
         } catch ParseError.schemaVersionUnsupported(let v) {
-            #expect(v == 3)
+            #expect(v == 4)
         } catch {
             Issue.record("wrong error: \(error)")
         }

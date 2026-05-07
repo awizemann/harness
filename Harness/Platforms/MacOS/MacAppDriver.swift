@@ -37,10 +37,14 @@ actor MacAppDriver: UXDriving {
     /// terminate + relaunch the app between chain legs that don't
     /// preserve state.
     let appBundleURL: URL?
+    /// V5 — pre-staged credential for this run, or nil. Same lifecycle as
+    /// the iOS driver's: resolved once at run start, dropped at teardown.
+    let credential: CredentialBinding?
 
-    init(bundleIdentifier: String, appBundleURL: URL?) {
+    init(bundleIdentifier: String, appBundleURL: URL?, credential: CredentialBinding? = nil) {
         self.bundleIdentifier = bundleIdentifier
         self.appBundleURL = appBundleURL
+        self.credential = credential
     }
 
     // MARK: - UXDriving
@@ -97,6 +101,15 @@ actor MacAppDriver: UXDriving {
             try? await Task.sleep(for: .milliseconds(ms))
         case .readScreen, .noteFriction, .markGoalDone:
             return
+        case .fillCredential(let field):
+            // No staged credential → soft no-op; the agent should emit
+            // `auth_required` friction. With a binding, route through
+            // the same CGEvent unicode-string typing path as the
+            // ordinary `type` tool — the macOS app sees a focused
+            // text field receive characters, just like a human typing.
+            guard let credential else { return }
+            let text = field == .username ? credential.username : credential.password
+            try await postType(text)
         case .swipe, .pressButton, .navigate, .back, .forward, .refresh:
             throw UXDriverError.unsupportedTool(name: call.tool.rawValue, platform: .macosApp)
         }

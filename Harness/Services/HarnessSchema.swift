@@ -588,6 +588,12 @@ enum HarnessSchemaV3: VersionedSchema {
 // V3 is **lightweight** because all V4 additions are optional / defaulted —
 // `platformKindRaw` defaults to `"ios_simulator"` so existing rows resolve
 // to the iOS path with no behavioural change.
+// V4 is now frozen — the nested types below are an exact copy of the
+// V4 file-scope shape captured before V5 added per-Application
+// credentials. Production code keeps using the file-scope `Application`,
+// `RunRecord`, etc. (which evolved to V5); the migration plan uses
+// `HarnessSchemaV4.X` for V3→V4 lightweight inference and as the
+// fromVersion of the v4ToV5 stage.
 enum HarnessSchemaV4: VersionedSchema {
     static var versionIdentifier: Schema.Version { .init(4, 0, 0) }
     static var models: [any PersistentModel.Type] {
@@ -598,6 +604,289 @@ enum HarnessSchemaV4: VersionedSchema {
             Action.self,
             ActionChain.self,
             ActionChainStep.self
+        ]
+    }
+
+    @Model
+    final class RunRecord {
+        @Attribute(.unique) var id: UUID
+        var name: String?
+        var createdAt: Date
+        var completedAt: Date?
+        var projectPath: String
+        var scheme: String
+        var displayName: String
+        var simulatorUDID: String
+        var simulatorName: String
+        var simulatorRuntime: String
+        var goal: String
+        var persona: String
+        var modelRaw: String
+        var modeRaw: String
+        var verdictRaw: String?
+        var summary: String?
+        var stepCount: Int
+        var frictionCount: Int
+        var wouldRealUserSucceed: Bool
+        var tokensUsedInput: Int
+        var tokensUsedOutput: Int
+        var runDirectoryPath: String
+        @Relationship(deleteRule: .nullify) var application: HarnessSchemaV4.Application?
+        @Relationship(deleteRule: .nullify) var persona_: HarnessSchemaV4.Persona?
+        @Relationship(deleteRule: .nullify) var action: HarnessSchemaV4.Action?
+        @Relationship(deleteRule: .nullify) var actionChain: HarnessSchemaV4.ActionChain?
+        var applicationLookupID: UUID?
+        var personaLookupID: UUID?
+        var actionLookupID: UUID?
+        var actionChainLookupID: UUID?
+        var legsJSON: String? = nil
+        var tokensUsedCacheRead: Int? = nil
+        var tokensUsedCacheCreation: Int? = nil
+        var platformKindRaw: String? = nil
+
+        init(
+            id: UUID,
+            name: String? = nil,
+            createdAt: Date,
+            completedAt: Date? = nil,
+            projectPath: String,
+            scheme: String,
+            displayName: String,
+            simulatorUDID: String,
+            simulatorName: String,
+            simulatorRuntime: String,
+            goal: String,
+            persona: String,
+            modelRaw: String,
+            modeRaw: String,
+            runDirectoryPath: String
+        ) {
+            self.id = id
+            self.name = name
+            self.createdAt = createdAt
+            self.completedAt = completedAt
+            self.projectPath = projectPath
+            self.scheme = scheme
+            self.displayName = displayName
+            self.simulatorUDID = simulatorUDID
+            self.simulatorName = simulatorName
+            self.simulatorRuntime = simulatorRuntime
+            self.goal = goal
+            self.persona = persona
+            self.modelRaw = modelRaw
+            self.modeRaw = modeRaw
+            self.runDirectoryPath = runDirectoryPath
+            self.stepCount = 0
+            self.frictionCount = 0
+            self.wouldRealUserSucceed = false
+            self.tokensUsedInput = 0
+            self.tokensUsedOutput = 0
+        }
+    }
+
+    @Model
+    final class Application {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+        var platformKindRaw: String? = nil
+        var projectPath: String
+        var projectBookmark: Data?
+        var scheme: String
+        var defaultSimulatorUDID: String?
+        var defaultSimulatorName: String?
+        var defaultSimulatorRuntime: String?
+        var macAppBundlePath: String? = nil
+        var macAppBundleBookmark: Data? = nil
+        var webStartURL: String? = nil
+        var webViewportWidthPt: Int? = nil
+        var webViewportHeightPt: Int? = nil
+        var defaultModelRaw: String
+        var defaultModeRaw: String
+        var defaultStepBudget: Int
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil,
+            platformKindRaw: String? = nil,
+            projectPath: String,
+            projectBookmark: Data? = nil,
+            scheme: String,
+            defaultSimulatorUDID: String? = nil,
+            defaultSimulatorName: String? = nil,
+            defaultSimulatorRuntime: String? = nil,
+            macAppBundlePath: String? = nil,
+            macAppBundleBookmark: Data? = nil,
+            webStartURL: String? = nil,
+            webViewportWidthPt: Int? = nil,
+            webViewportHeightPt: Int? = nil,
+            defaultModelRaw: String,
+            defaultModeRaw: String,
+            defaultStepBudget: Int
+        ) {
+            self.id = id
+            self.name = name
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+            self.platformKindRaw = platformKindRaw
+            self.projectPath = projectPath
+            self.projectBookmark = projectBookmark
+            self.scheme = scheme
+            self.defaultSimulatorUDID = defaultSimulatorUDID
+            self.defaultSimulatorName = defaultSimulatorName
+            self.defaultSimulatorRuntime = defaultSimulatorRuntime
+            self.macAppBundlePath = macAppBundlePath
+            self.macAppBundleBookmark = macAppBundleBookmark
+            self.webStartURL = webStartURL
+            self.webViewportWidthPt = webViewportWidthPt
+            self.webViewportHeightPt = webViewportHeightPt
+            self.defaultModelRaw = defaultModelRaw
+            self.defaultModeRaw = defaultModeRaw
+            self.defaultStepBudget = defaultStepBudget
+        }
+    }
+
+    @Model
+    final class Persona {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var blurb: String
+        var promptText: String
+        var isBuiltIn: Bool
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            blurb: String,
+            promptText: String,
+            isBuiltIn: Bool = false,
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil
+        ) {
+            self.id = id
+            self.name = name
+            self.blurb = blurb
+            self.promptText = promptText
+            self.isBuiltIn = isBuiltIn
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+        }
+    }
+
+    @Model
+    final class Action {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var promptText: String
+        var notes: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            promptText: String,
+            notes: String = "",
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil
+        ) {
+            self.id = id
+            self.name = name
+            self.promptText = promptText
+            self.notes = notes
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+        }
+    }
+
+    @Model
+    final class ActionChain {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var notes: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+        @Relationship(deleteRule: .cascade) var steps: [HarnessSchemaV4.ActionChainStep]
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            notes: String = "",
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil,
+            steps: [HarnessSchemaV4.ActionChainStep] = []
+        ) {
+            self.id = id
+            self.name = name
+            self.notes = notes
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+            self.steps = steps
+        }
+    }
+
+    @Model
+    final class ActionChainStep {
+        @Attribute(.unique) var id: UUID
+        var index: Int
+        @Relationship(deleteRule: .nullify) var action: HarnessSchemaV4.Action?
+        var preservesState: Bool
+
+        init(
+            id: UUID = UUID(),
+            index: Int,
+            action: HarnessSchemaV4.Action? = nil,
+            preservesState: Bool = false
+        ) {
+            self.id = id
+            self.index = index
+            self.action = action
+            self.preservesState = preservesState
+        }
+    }
+}
+
+// V5 introduces per-Application credentials. The user can store any number
+// of (label, username, password) triples per Application; each Run binds
+// to at most one of them via `RunRequest.credentialID`. Password bytes
+// live in Keychain via `CredentialStore`; the SwiftData row only carries
+// the label + username + parent-Application reference.
+//
+// V5's `@Model` types continue to live at file scope (the same convention
+// V4 used before being frozen above). Production code references
+// `Application`, `Credential`, etc. without a namespace.
+//
+// Migration from V4 is **lightweight**: `Credential` is a brand-new model;
+// `Application` only gains a new `credentials` relationship (defaults to
+// empty). Existing V4 rows decode cleanly with `credentials == []`.
+enum HarnessSchemaV5: VersionedSchema {
+    static var versionIdentifier: Schema.Version { .init(5, 0, 0) }
+    static var models: [any PersistentModel.Type] {
+        [
+            RunRecord.self,
+            Application.self,
+            Persona.self,
+            Action.self,
+            ActionChain.self,
+            ActionChainStep.self,
+            Credential.self
         ]
     }
 }
@@ -814,6 +1103,15 @@ final class Application {
     var defaultModeRaw: String
     var defaultStepBudget: Int
 
+    // MARK: V5 — credentials
+
+    /// V5: zero or more stored credentials the user can pre-stage for runs
+    /// against this Application. Cascade delete: removing the Application
+    /// removes its credential rows. Password bytes don't live here — they
+    /// sit in Keychain via `CredentialStore`. Defaults to `[]`; existing
+    /// V4 rows lightweight-migrate to V5 with no credentials.
+    @Relationship(deleteRule: .cascade) var credentials: [Credential] = []
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -985,6 +1283,53 @@ final class ActionChainStep {
     }
 }
 
+/// V5 — one stored login per Application. Many credentials per Application
+/// is supported (e.g. "free user" + "paid user" personas); each Run binds
+/// to at most one via `RunRequest.credentialID`.
+///
+/// **Password bytes do not live in this model.** The SwiftData row only
+/// carries identifying metadata (label, username) and a parent-Application
+/// reference. The password sits in Keychain under
+/// `service: "com.harness.credentials"`, `account: "<applicationID>:<credentialID>"`,
+/// managed by `CredentialStore`. That separation keeps the on-disk
+/// SwiftData store free of password bytes — even an unencrypted backup of
+/// `history.store` carries no secret material.
+@Model
+final class Credential {
+
+    @Attribute(.unique) var id: UUID
+
+    /// Short user-facing label, e.g. "free user", "admin", "test-account-3".
+    /// Must be unique-per-Application at the application layer (not enforced
+    /// by SwiftData — the CRUD path checks).
+    var label: String
+
+    /// The username/email the agent will type into the login form when the
+    /// run dispatches `fill_credential(field: "username")`.
+    var username: String
+
+    var createdAt: Date
+
+    /// Backreference to the owning Application. Nullified at the DB level
+    /// when the Application deletes (cascade deletes the Credential row),
+    /// so this is `nil` only briefly during teardown.
+    @Relationship(inverse: \Application.credentials) var application: Application?
+
+    init(
+        id: UUID = UUID(),
+        label: String,
+        username: String,
+        createdAt: Date = Date(),
+        application: Application? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.username = username
+        self.createdAt = createdAt
+        self.application = application
+    }
+}
+
 // MARK: - Migration plan
 
 /// V1 → V2: lightweight model addition (Application/Persona/Action/
@@ -1001,11 +1346,11 @@ enum HarnessMigrationPlan: SchemaMigrationPlan {
     )
 
     static var schemas: [any VersionedSchema.Type] {
-        [HarnessSchemaV1.self, HarnessSchemaV2.self, HarnessSchemaV3.self, HarnessSchemaV4.self]
+        [HarnessSchemaV1.self, HarnessSchemaV2.self, HarnessSchemaV3.self, HarnessSchemaV4.self, HarnessSchemaV5.self]
     }
 
     static var stages: [MigrationStage] {
-        [v1ToV2, v2ToV3, v3ToV4]
+        [v1ToV2, v2ToV3, v3ToV4, v4ToV5]
     }
 
     static let v1ToV2 = MigrationStage.custom(
@@ -1034,6 +1379,17 @@ enum HarnessMigrationPlan: SchemaMigrationPlan {
     static let v3ToV4 = MigrationStage.lightweight(
         fromVersion: HarnessSchemaV3.self,
         toVersion: HarnessSchemaV4.self
+    )
+
+    /// Lightweight: adds the new `Credential` entity and an optional
+    /// `Application.credentials` cascade relationship (defaults to
+    /// empty `[]`). Existing V4 stores reopen with no credentials staged
+    /// against any Application; nothing to backfill. Password bytes are
+    /// kept entirely out of the SwiftData store — see `CredentialStore`
+    /// for the Keychain side.
+    static let v4ToV5 = MigrationStage.lightweight(
+        fromVersion: HarnessSchemaV4.self,
+        toVersion: HarnessSchemaV5.self
     )
 
     /// Walk every `RunRecord` in the post-migration store, group by

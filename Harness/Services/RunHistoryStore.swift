@@ -63,6 +63,22 @@ protocol RunHistoryStoring: Sendable {
     func upsert(_ snapshot: ActionChainSnapshot) async throws
     func archive(actionChainID: UUID) async throws
     func deleteActionChain(id: UUID) async throws
+
+    // MARK: Credentials (V5)
+    /// All credentials stored against `applicationID`, sorted by `createdAt`.
+    /// Empty when the Application has none staged.
+    func credentials(forApplication applicationID: UUID) async throws -> [CredentialSnapshot]
+    /// Look up a single credential by id. Returns `nil` if not found or if
+    /// its parent Application was deleted.
+    func credential(id: UUID) async throws -> CredentialSnapshot?
+    /// Insert or update a credential. The parent Application referenced by
+    /// `snapshot.applicationID` must already exist in the store.
+    func upsertCredential(_ snapshot: CredentialSnapshot) async throws
+    /// Remove a single credential by id. Idempotent — no-op if absent. The
+    /// caller is responsible for clearing the matching Keychain entry via
+    /// `CredentialStore.deletePassword` (kept separate so the SwiftData
+    /// row and the Keychain item can be reasoned about independently).
+    func deleteCredential(id: UUID) async throws
 }
 
 // Default-argument shims so callers can write `applications()`.
@@ -225,6 +241,66 @@ struct RunRecordSnapshot: Sendable, Hashable {
     }
 }
 
+/// Sendable snapshot of a `Credential`. Mirrors the SwiftData `@Model`
+/// minus the relationship reference (the `applicationID` carries the link
+/// across the actor boundary). The password value is NEVER part of this
+/// type — passwords live exclusively in Keychain via `CredentialStore`.
+struct CredentialSnapshot: Sendable, Hashable, Identifiable {
+    let id: UUID
+    let applicationID: UUID
+    var label: String
+    var username: String
+    let createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        applicationID: UUID,
+        label: String,
+        username: String,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.applicationID = applicationID
+        self.label = label
+        self.username = username
+        self.createdAt = createdAt
+    }
+}
+
+extension CredentialSnapshot {
+    /// Build a Sendable snapshot from a fetched `Credential` row. Fails if
+    /// the parent Application reference is somehow nil — shouldn't happen
+    /// in practice (the cascade rule deletes the credential when the
+    /// Application goes away), but we surface it cleanly rather than
+    /// crashing.
+    init?(from row: Credential) {
+        guard let appID = row.application?.id else { return nil }
+        self.init(
+            id: row.id,
+            applicationID: appID,
+            label: row.label,
+            username: row.username,
+            createdAt: row.createdAt
+        )
+    }
+}
+
+// MARK: - Errors
+
+enum RunHistoryStoreError: Error, Sendable, LocalizedError {
+    /// Tried to insert a credential whose `applicationID` doesn't resolve
+    /// to a row in the store. The caller should ensure the Application is
+    /// inserted before staging credentials against it.
+    case applicationNotFound(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .applicationNotFound(let id):
+            return "No Application with id \(id) exists in the store."
+        }
+    }
+}
+
 // MARK: - Default actor implementation
 
 @ModelActor
@@ -253,7 +329,7 @@ actor RunHistoryStore: RunHistoryStoring {
     /// In-memory variant for unit tests. Same schema + migration plan as
     /// the on-disk store; no persistence between processes.
     static func inMemory() throws -> RunHistoryStore {
-        let schema = Schema(versionedSchema: HarnessSchemaV4.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV5.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true
@@ -279,7 +355,7 @@ actor RunHistoryStore: RunHistoryStoring {
         url: URL,
         resetOnMigrationFailure: Bool
     ) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: HarnessSchemaV4.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema, url: url)
         do {
             return try ModelContainer(
@@ -757,6 +833,51 @@ actor RunHistoryStore: RunHistoryStoring {
         }
     }
 
+    // MARK: Credentials (V5)
+
+    func credentials(forApplication applicationID: UUID) async throws -> [CredentialSnapshot] {
+        let descriptor = FetchDescriptor<Credential>(
+            predicate: #Predicate { $0.application?.id == applicationID },
+            sortBy: [SortDescriptor(\.createdAt, order: .forward)]
+        )
+        return try modelContext.fetch(descriptor).compactMap { CredentialSnapshot(from: $0) }
+    }
+
+    func credential(id: UUID) async throws -> CredentialSnapshot? {
+        try fetchCredential(id: id).flatMap { CredentialSnapshot(from: $0) }
+    }
+
+    func upsertCredential(_ snapshot: CredentialSnapshot) async throws {
+        let appID = snapshot.applicationID
+        guard let app = try fetchApplication(id: appID) else {
+            throw RunHistoryStoreError.applicationNotFound(appID)
+        }
+        if let existing = try fetchCredential(id: snapshot.id) {
+            existing.label = snapshot.label
+            existing.username = snapshot.username
+            // `application` is the inverse of `Application.credentials`;
+            // an Application change isn't supported here (caller would
+            // delete + recreate). createdAt is immutable.
+        } else {
+            let row = Credential(
+                id: snapshot.id,
+                label: snapshot.label,
+                username: snapshot.username,
+                createdAt: snapshot.createdAt,
+                application: app
+            )
+            modelContext.insert(row)
+        }
+        try saveOrLog("upsert(credential:)")
+    }
+
+    func deleteCredential(id: UUID) async throws {
+        if let row = try fetchCredential(id: id) {
+            modelContext.delete(row)
+            try saveOrLog("deleteCredential")
+        }
+    }
+
     // MARK: Internal fetch helpers (actor-isolated; @Model is not Sendable)
 
     private func fetchApplication(id: UUID) throws -> Application? {
@@ -771,6 +892,11 @@ actor RunHistoryStore: RunHistoryStoring {
 
     private func fetchAction(id: UUID) throws -> Action? {
         let d = FetchDescriptor<Action>(predicate: #Predicate { $0.id == id })
+        return try modelContext.fetch(d).first
+    }
+
+    private func fetchCredential(id: UUID) throws -> Credential? {
+        let d = FetchDescriptor<Credential>(predicate: #Predicate { $0.id == id })
         return try modelContext.fetch(d).first
     }
 

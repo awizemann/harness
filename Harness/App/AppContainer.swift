@@ -100,7 +100,8 @@ final class AppContainer {
             llm: llm,
             history: runHistory,
             windowController: simulatorWindowController,
-            hideSimulator: !appState.keepSimulatorVisible
+            hideSimulator: !appState.keepSimulatorVisible,
+            keychain: keychain
         )
     }
 

@@ -29,7 +29,7 @@ Every row is a complete JSON object on a single line. Common fields on every row
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `schemaVersion` | int | yes | `2` today (Phase E). Bumps only on backward-incompatible change. v1 logs (pre-Phase-E) stay readable — see §5. |
+| `schemaVersion` | int | yes | `3` today (V5 — credential metadata on `run_started`, `fill_credential` tool inputs). Bumps only on backward-incompatible change. v1 (pre-Phase-E) and v2 logs stay readable — see §5. |
 | `runId` | string (UUID) | yes | Constant across the whole file. |
 | `ts` | string (ISO 8601, UTC) | yes | `2026-05-03T19:14:22.118Z` |
 | `kind` | string | yes | One of the enum below. |
@@ -250,10 +250,27 @@ When `schemaVersion` bumps:
 
 v1 logs (pre-Phase-E) carry **no** leg rows. The parser handles this transparently:
 
-- `RunLogParser.parse(...)` accepts both `schemaVersion: 1` and `schemaVersion: 2` rows. Anything else throws `schemaVersionUnsupported`.
+- `RunLogParser.parse(...)` accepts `schemaVersion: 1`, `2`, and `3` rows. Anything else throws `schemaVersionUnsupported`.
 - `RunLogParser.legViews(from:)` synthesizes a single virtual leg around all step rows when no `leg_started` row appears in the log. Downstream views (replay timeline, friction sectioning, `RunRecord.legs`) therefore treat every run as having ≥1 leg without conditionals.
 - The on-disk format is **never** rewritten. v1 logs stay byte-identical; only readers know about the migration.
 - New runs always emit v2 — even single-action runs (one synthetic `leg_started`/`leg_completed` pair around the step rows).
+
+### v2 → v3 reader migration *(V5 — credential support)*
+
+v3 introduces two additive changes:
+
+- **`run_started` payload** gains optional `credentialLabel` and `credentialUsername` fields. v2 logs decode cleanly via `decodeIfPresent` — historical runs simply don't surface a credential identity.
+- **`fill_credential` tool calls** appear in `tool_call` rows with `input: {"field": "username" | "password"}`. v2 logs never carry this tool kind (the agent didn't have it).
+
+### Credential redaction *(v3 invariants — never weaken)*
+
+Three guarantees the run-log format enforces:
+
+1. **No password in the JSONL.** The `tool_call.input` shape for `fill_credential` is exactly `{"field": "username"}` or `{"field": "password"}`. The actual value is intentionally absent. The driver synthesises the typed text from a `CredentialBinding` it caches in memory and never serialises.
+2. **No password in the system prompt.** The `{{CREDENTIALS}}` block injected into the system prompt lists `label + username` only — even when a credential is staged. The agent is told the field exists and how to invoke `fill_credential`, but never sees the password value.
+3. **Screenshots rely on platform secure-text-entry.** iOS `SecureField`, macOS `NSSecureTextField`, and HTML `<input type="password">` all mask the value visually. We accept that an unusual SUT that doesn't use secure-text-entry could leak a password into a captured PNG. Document this on the run-creation surface; don't claim guarantees we can't enforce.
+
+A grep over a run's `events.jsonl` for any password value should return zero hits. The audit checklist in §8 includes a check for this.
 
 ---
 

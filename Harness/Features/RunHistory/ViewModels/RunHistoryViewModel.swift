@@ -248,6 +248,11 @@ final class RunHistoryViewModel {
         case .back: input = .back
         case .forward: input = .forward
         case .refresh: input = .refresh
+        case .fillCredential:
+            // Replay path — `dict["field"]` is the only thing logged for
+            // this tool; the password is never in the JSONL by design.
+            let raw = (dict["field"] as? String) ?? CredentialField.username.rawValue
+            input = .fillCredential(field: CredentialField(rawValue: raw) ?? .username)
         }
         return ToolCall(
             tool: kind,

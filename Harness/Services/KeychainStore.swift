@@ -196,3 +196,62 @@ extension KeychainStoring {
         try deleteKey(for: .anthropic)
     }
 }
+
+// MARK: - Per-Application credential conveniences (V5)
+
+extension KeychainStoring {
+    /// Shared service identifier for every per-Application credential.
+    /// All credentials live under one service; the per-credential identity
+    /// is encoded into the account string. This keeps the keychain
+    /// queryable as "everything Harness owns for credentials" while still
+    /// letting us read/write/delete individual entries.
+    static var credentialsService: String { "com.harness.credentials" }
+
+    /// Account format: `<applicationID>:<credentialID>`. Both UUIDs are
+    /// rendered uppercase (Foundation's `UUID.uuidString` default) so
+    /// round-trips are stable across writes. The Application id is
+    /// included so a future "delete all of an app's credentials" sweep
+    /// can prefix-match.
+    static func credentialsAccount(applicationID: UUID, credentialID: UUID) -> String {
+        "\(applicationID.uuidString):\(credentialID.uuidString)"
+    }
+
+    /// Persist a password against `(applicationID, credentialID)`. Trims
+    /// whitespace; rejects empty strings (a deliberately-empty password
+    /// makes no sense for a stored credential — use `deletePassword`
+    /// instead).
+    func writePassword(
+        _ password: String,
+        applicationID: UUID,
+        credentialID: UUID
+    ) throws {
+        let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8) else {
+            throw KeychainError.unhandled(status: errSecParam)
+        }
+        try write(
+            data,
+            service: Self.credentialsService,
+            account: Self.credentialsAccount(applicationID: applicationID, credentialID: credentialID)
+        )
+    }
+
+    /// Read a stored password. Returns `nil` if no entry exists for that
+    /// (Application, Credential) pair.
+    func readPassword(applicationID: UUID, credentialID: UUID) throws -> String? {
+        guard let data = try read(
+            service: Self.credentialsService,
+            account: Self.credentialsAccount(applicationID: applicationID, credentialID: credentialID)
+        ) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Idempotent — no-op if the entry doesn't exist.
+    func deletePassword(applicationID: UUID, credentialID: UUID) throws {
+        try delete(
+            service: Self.credentialsService,
+            account: Self.credentialsAccount(applicationID: applicationID, credentialID: credentialID)
+        )
+    }
+}

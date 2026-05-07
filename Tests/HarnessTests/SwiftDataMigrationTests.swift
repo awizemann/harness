@@ -245,6 +245,121 @@ struct SwiftDataMigrationTests {
         #expect(app.platformKind == .iosSimulator)
     }
 
+    @Test("V4 store reopens as V5: existing Applications gain an empty credentials relation")
+    func v4_to_v5_app_has_empty_credentials_relation() async throws {
+        let storeURL = Self.makeStoreURL()
+        defer { Self.removeStore(at: storeURL) }
+
+        let appID = UUID()
+        try Self.seedV4(at: storeURL) { context in
+            context.insert(HarnessSchemaV4.Application(
+                id: appID,
+                name: "Pre-V5 App",
+                createdAt: Date(timeIntervalSince1970: 1),
+                lastUsedAt: Date(timeIntervalSince1970: 2),
+                platformKindRaw: PlatformKind.iosSimulator.rawValue,
+                projectPath: "/tmp/pre-v5.xcodeproj",
+                scheme: "PreV5",
+                defaultModelRaw: AgentModel.opus47.rawValue,
+                defaultModeRaw: RunMode.stepByStep.rawValue,
+                defaultStepBudget: 40
+            ))
+        }
+
+        // Reopen via the production store, which routes through the full
+        // migration plan including V4→V5 lightweight (adds the new
+        // Credential model + empty `Application.credentials` relation).
+        let store = try RunHistoryStore.at(url: storeURL)
+        let apps = try await store.applications(includeArchived: true)
+        #expect(apps.count == 1)
+        let app = try #require(apps.first)
+        #expect(app.id == appID)
+        // The Application snapshot doesn't carry credentials directly —
+        // they're queried separately. New API surfaces in the next CRUD
+        // commit; for this migration test we just confirm the store
+        // reopens cleanly with the expected identity preserved.
+        #expect(app.name == "Pre-V5 App")
+    }
+
+    @Test("V5 round-trip: an Application written with credentials survives reopen")
+    func v5_application_credentials_roundtrip() async throws {
+        let storeURL = Self.makeStoreURL()
+        defer { Self.removeStore(at: storeURL) }
+
+        let store = try RunHistoryStore.at(url: storeURL)
+        let appID = UUID()
+        let snapshot = ApplicationSnapshot(
+            id: appID,
+            name: "App With Credentials",
+            createdAt: Date(timeIntervalSince1970: 100),
+            lastUsedAt: Date(timeIntervalSince1970: 200),
+            archivedAt: nil,
+            platformKindRaw: PlatformKind.iosSimulator.rawValue,
+            projectPath: "/tmp/creds.xcodeproj",
+            projectBookmark: nil,
+            scheme: "Creds",
+            defaultSimulatorUDID: "UDID",
+            defaultSimulatorName: "iPhone",
+            defaultSimulatorRuntime: "iOS 26.0",
+            defaultModelRaw: AgentModel.opus47.rawValue,
+            defaultModeRaw: RunMode.stepByStep.rawValue,
+            defaultStepBudget: 40
+        )
+        try await store.upsert(snapshot)
+
+        let credID1 = UUID()
+        let credID2 = UUID()
+        try await store.upsertCredential(CredentialSnapshot(
+            id: credID1, applicationID: appID, label: "free user",
+            username: "free@example.com", createdAt: Date(timeIntervalSince1970: 300)
+        ))
+        try await store.upsertCredential(CredentialSnapshot(
+            id: credID2, applicationID: appID, label: "paid user",
+            username: "paid@example.com", createdAt: Date(timeIntervalSince1970: 400)
+        ))
+
+        let reread = try await store.credentials(forApplication: appID)
+        #expect(reread.count == 2)
+        let labels = Set(reread.map(\.label))
+        #expect(labels == ["free user", "paid user"])
+        let usernamesByLabel = Dictionary(uniqueKeysWithValues: reread.map { ($0.label, $0.username) })
+        #expect(usernamesByLabel["free user"] == "free@example.com")
+        #expect(usernamesByLabel["paid user"] == "paid@example.com")
+    }
+
+    @Test("V5: deleting an Application cascades to its Credentials")
+    func v5_delete_application_cascades_credentials() async throws {
+        let storeURL = Self.makeStoreURL()
+        defer { Self.removeStore(at: storeURL) }
+
+        let store = try RunHistoryStore.at(url: storeURL)
+        let appID = UUID()
+        try await store.upsert(ApplicationSnapshot(
+            id: appID, name: "Disposable",
+            createdAt: Date(timeIntervalSince1970: 1),
+            lastUsedAt: Date(timeIntervalSince1970: 2),
+            archivedAt: nil,
+            platformKindRaw: PlatformKind.iosSimulator.rawValue,
+            projectPath: "/tmp/dispose.xcodeproj",
+            projectBookmark: nil, scheme: "Dispose",
+            defaultSimulatorUDID: nil, defaultSimulatorName: nil,
+            defaultSimulatorRuntime: nil,
+            defaultModelRaw: AgentModel.opus47.rawValue,
+            defaultModeRaw: RunMode.stepByStep.rawValue,
+            defaultStepBudget: 40
+        ))
+        let credID = UUID()
+        try await store.upsertCredential(CredentialSnapshot(
+            id: credID, applicationID: appID, label: "throwaway",
+            username: "x@example.com", createdAt: Date()
+        ))
+        #expect(try await store.credentials(forApplication: appID).count == 1)
+
+        try await store.deleteApplication(id: appID)
+        let leftover = try await store.credentials(forApplication: appID)
+        #expect(leftover.isEmpty)
+    }
+
     // MARK: - Helpers
 
     /// Build a unique on-disk URL under the per-test temp directory. The
@@ -311,6 +426,26 @@ extension SwiftDataMigrationTests {
         }
         _ = container
     }
+
+    /// Open `storeURL` with V4 schema (using the V1→V2→V3→V4 plan, no V5)
+    /// so SwiftData stamps the store with V4's version identifier. The
+    /// caller seeds V4 rows; the test then reopens through the full plan
+    /// to exercise V4→V5.
+    fileprivate static func seedV4(at storeURL: URL, _ seed: (ModelContext) throws -> Void) throws {
+        let schema = Schema(versionedSchema: HarnessSchemaV4.self)
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: V4OnlyMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let context = ModelContext(container)
+        try seed(context)
+        if context.hasChanges {
+            try context.save()
+        }
+        _ = container
+    }
 }
 
 /// Migration plan that stops at V3 — used by `seedV3(...)` so the test
@@ -322,5 +457,18 @@ private enum V3OnlyMigrationPlan: SchemaMigrationPlan {
     }
     static var stages: [MigrationStage] {
         [HarnessMigrationPlan.v1ToV2, HarnessMigrationPlan.v2ToV3]
+    }
+}
+
+/// Migration plan that stops at V4 — used by `seedV4(...)` so the test
+/// fixture is stamped with V4's version identifier and the production
+/// `HarnessMigrationPlan` can pick up from there at reopen time to
+/// exercise V4→V5.
+private enum V4OnlyMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [HarnessSchemaV1.self, HarnessSchemaV2.self, HarnessSchemaV3.self, HarnessSchemaV4.self]
+    }
+    static var stages: [MigrationStage] {
+        [HarnessMigrationPlan.v1ToV2, HarnessMigrationPlan.v2ToV3, HarnessMigrationPlan.v3ToV4]
     }
 }

@@ -54,6 +54,14 @@ struct RunRequest: Sendable, Hashable, Codable {
     let webViewportWidthPt: Int?
     let webViewportHeightPt: Int?
 
+    /// V5: optional pointer to a `Credential` the user pre-staged for this
+    /// run. `nil` means the run starts logged-out and the agent has no
+    /// credential to fill. The actual password lives in Keychain — only
+    /// the id travels in the request, and the resolution to a real
+    /// `CredentialBinding` happens in `RunCoordinator.execute` once the
+    /// run actually starts.
+    let credentialID: UUID?
+
     /// Resolved platform kind for this run.
     var platformKind: PlatformKind { PlatformKind.from(rawValue: platformKindRaw) }
 
@@ -75,7 +83,8 @@ struct RunRequest: Sendable, Hashable, Codable {
         macAppBundlePath: String? = nil,
         webStartURL: String? = nil,
         webViewportWidthPt: Int? = nil,
-        webViewportHeightPt: Int? = nil
+        webViewportHeightPt: Int? = nil,
+        credentialID: UUID? = nil
     ) {
         self.id = id
         self.name = name
@@ -95,6 +104,7 @@ struct RunRequest: Sendable, Hashable, Codable {
         self.webStartURL = webStartURL
         self.webViewportWidthPt = webViewportWidthPt
         self.webViewportHeightPt = webViewportHeightPt
+        self.credentialID = credentialID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -102,6 +112,7 @@ struct RunRequest: Sendable, Hashable, Codable {
         case applicationID, personaID, payload, project, simulator
         case model, mode, stepBudget, tokenBudget, platformKindRaw
         case macAppBundlePath, webStartURL, webViewportWidthPt, webViewportHeightPt
+        case credentialID
     }
 
     init(from decoder: Decoder) throws {
@@ -125,6 +136,7 @@ struct RunRequest: Sendable, Hashable, Codable {
         self.webStartURL = try c.decodeIfPresent(String.self, forKey: .webStartURL)
         self.webViewportWidthPt = try c.decodeIfPresent(Int.self, forKey: .webViewportWidthPt)
         self.webViewportHeightPt = try c.decodeIfPresent(Int.self, forKey: .webViewportHeightPt)
+        self.credentialID = try c.decodeIfPresent(UUID.self, forKey: .credentialID)
     }
 }
 
@@ -399,6 +411,9 @@ enum ToolKind: String, Sendable, Hashable, Codable, CaseIterable {
     case back           = "back"
     case forward        = "forward"
     case refresh        = "refresh"
+    // V5 — universal across platforms that have a focused-text-field
+    // concept (iOS / macOS / web). Types the run's pre-staged credential.
+    case fillCredential = "fill_credential"
 }
 
 /// Tagged-union payload for any tool. Field names match `https://github.com/awizemann/harness/wiki/Tool-Schema`.
@@ -435,6 +450,67 @@ enum ToolInput: Sendable, Hashable, Codable {
     case back
     case forward
     case refresh
+    /// V5: Type the run's pre-staged credential (username or password)
+    /// into the focused text field. The actual value comes from the
+    /// driver's cached `CredentialBinding`, NOT from the agent — the
+    /// password value never enters the model's context window or the
+    /// JSONL log. The agent picks the field; the run picks the credential.
+    case fillCredential(field: CredentialField)
+}
+
+/// Which slot of a stored credential `fill_credential` should type.
+/// String-backed so it serialises cleanly into the tool's `input` JSON
+/// in the agent's tool call.
+enum CredentialField: String, Sendable, Hashable, Codable, CaseIterable {
+    case username
+    case password
+}
+
+/// A run-time, fully-resolved credential. Built once at run start by
+/// `RunCoordinator` (DB lookup + Keychain read) and handed to the active
+/// platform driver, which uses it to satisfy `fill_credential` tool calls.
+///
+/// **Containment rules**:
+/// - `password` lives only here, on the driver, for the run's duration.
+/// - It is never logged, never put in `tool_call.input`, never substituted
+///   into prompt templates, never emitted on a `RunEvent`.
+/// - When the run ends, the binding is dropped along with the driver.
+struct CredentialBinding: Sendable {
+    let id: UUID
+    let label: String
+    let username: String
+    let password: String
+}
+
+/// Builds the multi-line text injected into the system prompt's
+/// `{{CREDENTIALS}}` slot. Pure function so it's trivially testable and
+/// callable from any actor / queue. The two surfaces it serves:
+///
+/// - `(label, username)` provided → a 5-line block describing the staged
+///   credential and how to use `fill_credential`.
+/// - both nil → a one-line "no credential" note that pre-emptively
+///   instructs the agent to emit `auth_required` if it hits a login wall.
+///
+/// Critically, **the password is never an input** — the binding's
+/// `password` field is only on the driver, and the agent never sees it.
+enum CredentialPromptBlock {
+    static func render(label: String?, username: String?) -> String {
+        guard let label, let username else {
+            return """
+            No credential is staged for this run. If you encounter a login wall, you cannot proceed past it — emit `note_friction(kind: "auth_required", detail: "...")` and continue exploring whatever public surfaces you can reach.
+            """
+        }
+        return """
+        You have one credential staged for this run:
+          - Label: "\(label)"
+          - Username: "\(username)"
+          - Password: (not shown — never visible to you)
+
+        When you encounter a login form, tap/click the relevant text field to focus it, then call `fill_credential(field: "username")` or `fill_credential(field: "password")`. The runtime will type the staged value into the focused field; the password value never enters your context. After both fields are filled, submit the form like a real user would.
+
+        If the staged credential turns out to be wrong (e.g. the app rejects it), emit `note_friction(kind: "auth_required", detail: "staged credential rejected")` and stop retrying.
+        """
+    }
 }
 
 struct ToolResult: Sendable, Hashable, Codable {
@@ -502,6 +578,12 @@ enum FrictionKind: String, Sendable, Hashable, Codable, CaseIterable {
 
     /// Saw a state the agent didn't expect from its last action.
     case unexpectedState = "unexpected_state"
+
+    /// V5: hit a login wall the run can't proceed past — typically because
+    /// no credential was staged. Distinct from `dead_end` so the friction
+    /// report can surface "this run needs a stored credential to fully
+    /// exercise" as its own bucket.
+    case authRequired = "auth_required"
 
     /// Loop-synthesized. Step/token budget exhausted, cycle detected, parse-retry exhausted.
     /// NOT in the model's tool vocabulary — only the runtime emits this.
