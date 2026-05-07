@@ -47,6 +47,22 @@ final class RunSessionViewModel {
     /// Latest leg name (the chain step's `actionName`) the agent is on. For
     /// single-action runs this stays the action's name from the request.
     var currentLegName: String = ""
+    /// Web platform only: URL shown in the browser-chrome of the live
+    /// mirror. Seeded from `request.webStartURL` and updated whenever the
+    /// agent issues a `navigate` tool call. In-page redirects (form posts,
+    /// JS history pushes) won't update this — the chrome is decoration,
+    /// the screenshot is the truth.
+    var webCurrentURL: String?
+    /// Web platform only: true between a navigation tool call and the
+    /// next post-step screenshot landing. Drives the chrome's spinner.
+    var webIsLoading: Bool = false
+    /// Web platform only: the actual CSS-pixel viewport the WKWebView is
+    /// currently rendering at. Starts at the request's configured viewport
+    /// and updates when `WebMirrorView` reports its measured canvas size
+    /// — at that point we ask the live driver to resize so the snapshot
+    /// fills the column with no letterbox. Drives `WebMirrorView`'s
+    /// aspect-ratio math.
+    var webActiveViewport: CGSize?
 
     /// One leg's status in the chain progress list. The session view maps
     /// this onto the existing `StatusChip` primitive.
@@ -160,6 +176,9 @@ final class RunSessionViewModel {
         self.currentGoal = request.goal
         self.currentLegName = Self.initialLegName(for: request)
         self.totalTokenUsage = .zero
+        self.webCurrentURL = request.platformKind == .web ? request.webStartURL : nil
+        self.webIsLoading = false
+        self.webActiveViewport = request.platformKind == .web ? request.simulator.pointSize : nil
 
         let coordinator = container.makeRunCoordinator(for: request)
         let approvals = AsyncStream<UserApproval> { continuation in
@@ -228,6 +247,30 @@ final class RunSessionViewModel {
     func skip() { approvalContinuation?.yield(.skip); status = .running }
     func reject(note: String) { approvalContinuation?.yield(.reject(note: note)); status = .running }
 
+    /// Called by `WebMirrorView` when its screen-area canvas dimensions
+    /// settle on a new size (initial mount or window resize). Snaps the
+    /// active web viewport to the canvas so the WKWebView renders at
+    /// exactly the size the user sees — no letterbox, no scaling. The
+    /// configured viewport from the application snapshot is just an
+    /// initial hint; the live mirror's geometry is the source of truth.
+    func handleWebCanvasMeasured(_ canvas: CGSize) {
+        guard request?.platformKind == .web else { return }
+        guard canvas.width > 0, canvas.height > 0 else { return }
+        // Round to whole CSS pixels so successive sub-pixel layout passes
+        // don't churn the viewport on every frame.
+        let rounded = CGSize(width: canvas.width.rounded(), height: canvas.height.rounded())
+        // Always publish the latest measurement so the next run picks it
+        // up before its WKWebView is constructed.
+        LiveWebMirror.canvasSize = rounded
+        guard rounded != webActiveViewport else { return }
+        webActiveViewport = rounded
+        // Resize the live WKWebView if a run is in flight. No-op when
+        // there's no active run.
+        if let driver = LiveWebMirror.activeDriver {
+            Task.detached { await driver.resize(to: rounded) }
+        }
+    }
+
     /// User clicked on the mirror — forward to the simulator via idb.
     /// Best-effort: we don't surface tap errors here (the agent loop will
     /// react to the next screenshot regardless). Updates the last-tap dot
@@ -266,6 +309,9 @@ final class RunSessionViewModel {
             if let img = NSImage(contentsOf: url) {
                 self.liveImage = img
             }
+            // A fresh post-step screenshot has landed — any web navigation
+            // initiated on the previous step is now visually committed.
+            self.webIsLoading = false
 
         case .toolProposed(let step, let call):
             // Append a feed cell with no thumbnail (we don't ferry the
@@ -283,6 +329,18 @@ final class RunSessionViewModel {
                 self.lastTapPoint = CGPoint(x: x, y: y)
             } else if case .doubleTap(let x, let y) = call.input {
                 self.lastTapPoint = CGPoint(x: x, y: y)
+            }
+            // Mirror chrome state for the web platform: track URL changes
+            // and "loading" gaps between a navigation call and its next
+            // screenshot.
+            switch call.input {
+            case .navigate(let url):
+                self.webCurrentURL = url
+                self.webIsLoading = true
+            case .back, .forward, .refresh:
+                self.webIsLoading = true
+            default:
+                break
             }
 
         case .awaitingApproval(let step, let call):

@@ -292,13 +292,13 @@ private struct WebSection: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Viewport height (px)")
                             .font(.callout.weight(.medium))
-                        TextField("800", value: $vm.webViewportHeight, format: .number)
+                        TextField("1600", value: $vm.webViewportHeight, format: .number)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 120)
                     }
                     Spacer()
                 }
-                Text("Default 1280×800 (desktop). Try 375×812 to test a mobile-shaped viewport.")
+                Text("Default 1280×1600 (tall desktop — fewer scrolls per goal). Try 375×812 to test a mobile-shaped viewport.")
                     .font(.caption).foregroundStyle(.tertiary)
             }
             .padding(Theme.spacing.l)

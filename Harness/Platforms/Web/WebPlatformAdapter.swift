@@ -22,6 +22,14 @@ struct WebPlatformAdapter: PlatformAdapter {
     let kind: PlatformKind = .web
     let services: PlatformAdapterServices
 
+    /// Settle delay after the first navigation's `didFinish`. WKWebView
+    /// fires `didFinish` once the document parser is done, but lazy-loaded
+    /// images, web-fonts, and JS-driven layout shifts can land a little
+    /// later — without this wait the first screenshot regularly captures
+    /// a half-painted page. Subsequent navigates inside the run aren't
+    /// padded; the agent can always issue `wait` if it needs more time.
+    private static let firstLoadSettleDelay: Duration = .milliseconds(1500)
+
     init(services: PlatformAdapterServices) {
         self.services = services
     }
@@ -36,18 +44,26 @@ struct WebPlatformAdapter: PlatformAdapter {
             throw WebPlatformAdapterError.missingStartURL
         }
         let viewportW = request.webViewportWidthPt ?? 1280
-        let viewportH = request.webViewportHeightPt ?? 800
-        let viewport = CGSize(width: viewportW, height: viewportH)
+        let viewportH = request.webViewportHeightPt ?? 1600
+        let initialViewport = CGSize(width: viewportW, height: viewportH)
+        // If the live mirror has already measured its canvas in a previous
+        // run, prefer those dimensions for the WKWebView so the very first
+        // screenshot fills the column without letterbox. Falls back to
+        // the configured viewport when the registry is empty (first run
+        // after launch).
+        let preferredViewport = await MainActor.run { LiveWebMirror.canvasSize } ?? initialViewport
 
         // Construct + load on the main actor.
         let controller: WebViewWindowController = await MainActor.run {
-            WebViewWindowController(viewport: viewport)
+            WebViewWindowController(viewport: preferredViewport)
         }
         await MainActor.run {
             controller.webView.load(URLRequest(url: startURL))
         }
         let nav = await MainActor.run { controller.navigationDelegate }
         await nav.awaitNextLoad(timeout: .seconds(20))
+        // Give the page a moment to paint past `didFinish`. See note above.
+        try? await Task.sleep(for: Self.firstLoadSettleDelay)
 
         // Synthesise a SimulatorRef so the existing UI events keep firing
         // — same trick MacOSPlatformAdapter uses.
@@ -55,7 +71,7 @@ struct WebPlatformAdapter: PlatformAdapter {
             udid: "web-\(startURL.host ?? "localhost")",
             name: startURL.host ?? "Web",
             runtime: "Web",
-            pointSize: viewport,
+            pointSize: preferredViewport,
             scaleFactor: 1.0
         )
         continuation.yield(.simulatorReady(pseudoSim))
@@ -63,8 +79,11 @@ struct WebPlatformAdapter: PlatformAdapter {
         let driver = WebDriver(
             controller: controller,
             startURL: startURL,
-            viewport: viewport
+            viewport: preferredViewport
         )
+        // Publish the driver so the live mirror can call `resize` when
+        // the canvas dimensions change.
+        await MainActor.run { LiveWebMirror.activeDriver = driver }
 
         // Hold the controller alive for the run duration via a small
         // wrapper. RunSession stores `any UXDriving`; the controller
@@ -72,7 +91,7 @@ struct WebPlatformAdapter: PlatformAdapter {
         return RunSession(
             kind: .web,
             driver: driver,
-            pointSize: viewport,
+            pointSize: preferredViewport,
             bundleIdentifier: nil,
             appBundleURL: nil,
             displayLabel: startURL.host ?? "Web"
@@ -80,6 +99,7 @@ struct WebPlatformAdapter: PlatformAdapter {
     }
 
     func teardown(_ session: RunSession) async {
+        await MainActor.run { LiveWebMirror.activeDriver = nil }
         // Close the WebView's hosting window.
         if let driver = session.driver as? WebDriver {
             await driver.closeUnderlyingWindow()

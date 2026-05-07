@@ -59,7 +59,7 @@ final class GoalInputViewModel {
     /// Web start URL + viewport mirrored from the Application snapshot.
     var webStartURL: String = ""
     var webViewportWidthPt: Int = 1280
-    var webViewportHeightPt: Int = 800
+    var webViewportHeightPt: Int = 1600
     /// Optional user-supplied run name. Empty falls back to a
     /// placeholder synthesized from the chosen action / chain + date.
     var runName: String = ""
@@ -273,7 +273,7 @@ final class GoalInputViewModel {
             macAppBundlePath = nil
             webStartURL = app.webStartURL ?? ""
             webViewportWidthPt = app.webViewportWidthPt ?? 1280
-            webViewportHeightPt = app.webViewportHeightPt ?? 800
+            webViewportHeightPt = app.webViewportHeightPt ?? 1600
         }
     }
 

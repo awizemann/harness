@@ -35,11 +35,15 @@ Three artifacts come out of every run:
 |---|---|
 | **iOS Simulator** | `xcodebuild` your project + scheme; `simctl` boot/install/launch; WebDriverAgent for input. |
 | **macOS app** | NSWorkspace launch (pre-built `.app` *or* xcodebuild macOS scheme); `CGEvent` for input; `CGWindowListCreateImage` for capture. |
-| **Web app** | Embedded `WKWebView` at a chosen viewport (e.g. 1280×800 desktop, 375×812 mobile); JS-synthesised events for input; `WKWebView.takeSnapshot` for capture. |
+| **Web app** | Embedded `WKWebView` at a chosen viewport (default **1280×1600** tall desktop, or 375×812 mobile); JS-synthesised events for input; `WKWebView.takeSnapshot` for capture. The mirror shows a flat browser chrome (no device bezel) so the screenshot fills the full pane and one snapshot covers more page — fewer scrolls per goal, lower API cost. |
 
 Per-app setting: each Application declares its kind once at create time. The agent's tool schema (clicks vs swipes vs key shortcuts vs navigate) and the system-prompt context block re-shape per platform. Run history, replay, and friction reporting are platform-neutral.
 
 > **Status:** v0.2.1 (alpha). All three platforms wired end-to-end; **multi-provider LLM support** (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5 + OpenAI GPT-5 Mini / GPT-4.1 Nano + Google Gemini 2.5 Flash / Flash Lite); per-provider Keychain storage; configurable per-model token budgets; unlimited-step option. macOS needs Screen Recording permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## What's new
+
+- **Web mirror reworked.** Replaced the iPad-shaped device bezel with a flat browser chrome (URL pill, lock glyph, back/forward/refresh affordances) so web runs use the full middle column. Default viewport bumped to 1280×1600 — taller snapshots mean fewer scroll turns, which translates directly to lower API spend per run.
 
 ## What's new in 0.2.0
 

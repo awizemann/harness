@@ -102,17 +102,27 @@ struct RunReplayView: View {
         }
     }
 
+    @ViewBuilder
     private var screenshotPane: some View {
-        PanelContainer {
-            ZStack {
-                Color.harnessBg2
-                if let img = vm.currentScreenshot {
-                    Image(nsImage: img)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(Theme.spacing.l)
-                } else {
-                    Text("Screenshot missing").foregroundStyle(Color.harnessText3)
+        if vm.isWebRun {
+            WebMirrorView(
+                image: .constant(vm.currentScreenshot),
+                viewport: vm.replayViewport,
+                currentURL: vm.currentReplayURL,
+                isLoading: false
+            )
+        } else {
+            PanelContainer {
+                ZStack {
+                    Color.harnessBg2
+                    if let img = vm.currentScreenshot {
+                        Image(nsImage: img)
+                            .resizable()
+                            .scaledToFit()
+                            .padding(Theme.spacing.l)
+                    } else {
+                        Text("Screenshot missing").foregroundStyle(Color.harnessText3)
+                    }
                 }
             }
         }

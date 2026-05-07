@@ -29,6 +29,39 @@ struct RunSessionView: View {
         }
     }
 
+    /// Mirror primitive selection. Web runs use the flat `WebMirrorView`
+    /// with browser chrome; everything else keeps the device-bezel
+    /// `SimulatorMirrorView`. User-tap forwarding is wired only on
+    /// platforms where `simulatorDriver` can route taps (iOS today) —
+    /// web tap forwarding would need to plumb through `WebDriver`, which
+    /// isn't surfaced to this view-model.
+    @ViewBuilder
+    private func mirror(vm: RunSessionViewModel) -> some View {
+        switch vm.request?.platformKind {
+        case .web:
+            WebMirrorView(
+                image: Binding(get: { vm.liveImage }, set: { vm.liveImage = $0 }),
+                lastTapPoint: vm.lastTapPoint,
+                viewport: vm.webActiveViewport
+                    ?? vm.request?.simulator.pointSize
+                    ?? CGSize(width: 1280, height: 1600),
+                currentURL: vm.webCurrentURL,
+                isLoading: vm.webIsLoading,
+                onTapForward: nil,
+                onCanvasMeasured: { vm.handleWebCanvasMeasured($0) }
+            )
+        default:
+            SimulatorMirrorView(
+                image: Binding(get: { vm.liveImage }, set: { vm.liveImage = $0 }),
+                lastTapPoint: vm.lastTapPoint,
+                deviceSize: vm.request?.simulator.pointSize ?? CGSize(width: 393, height: 852),
+                onTapForward: { point in
+                    vm.userForwardedTap(at: point)
+                }
+            )
+        }
+    }
+
     @ViewBuilder
     private func content(vm: RunSessionViewModel) -> some View {
         if case .idle = vm.status {
@@ -40,22 +73,15 @@ struct RunSessionView: View {
                 LeftRail(vm: vm)
                     .frame(minWidth: 260, idealWidth: 280, maxWidth: 320)
                 ZStack(alignment: .bottom) {
-                    SimulatorMirrorView(
-                        image: Binding(get: { vm.liveImage }, set: { vm.liveImage = $0 }),
-                        lastTapPoint: vm.lastTapPoint,
-                        deviceSize: vm.request?.simulator.pointSize ?? CGSize(width: 393, height: 852),
-                        onTapForward: { point in
-                            vm.userForwardedTap(at: point)
+                    mirror(vm: vm)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(Theme.spacing.l)
+                        .overlay(alignment: .topTrailing) {
+                            if let kind = vm.statusKind {
+                                StatusChip(kind: kind)
+                                    .padding(Theme.spacing.l)
+                            }
                         }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(Theme.spacing.l)
-                    .overlay(alignment: .topTrailing) {
-                        if let kind = vm.statusKind {
-                            StatusChip(kind: kind)
-                                .padding(Theme.spacing.l)
-                        }
-                    }
                     if case .awaitingApproval = vm.status, let pending = vm.pendingApproval {
                         ApprovalCardWrapper(pending: pending,
                                             onApprove: vm.approve,

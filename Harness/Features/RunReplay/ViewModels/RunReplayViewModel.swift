@@ -23,6 +23,10 @@ final class RunReplayViewModel {
         let success: Bool
         let frictionEvents: [FrictionEvent]
         let screenshotURL: URL
+        /// Web runs only — the navigate-target URL when this step's tool
+        /// call is `navigate`. Nil for any non-navigate step. Used by the
+        /// replay's web mirror chrome to walk back to the last known URL.
+        let webNavigateURL: String?
     }
 
     /// One leg as displayed in the replay timeline. Built from the
@@ -144,6 +148,10 @@ final class RunReplayViewModel {
                 let screenshotURL = HarnessPaths.screenshot(for: runID, step: stepNumber)
                 let toolKind = call?.tool ?? ""
                 let toolArg = Self.argDisplay(forToolJSON: call?.inputJSON ?? "")
+                let webNavigateURL: String? = {
+                    guard toolKind == "navigate" else { return nil }
+                    return Self.urlFromNavigateJSON(call?.inputJSON ?? "")
+                }()
                 return StepView(
                     id: stepNumber,
                     n: stepNumber,
@@ -153,7 +161,8 @@ final class RunReplayViewModel {
                     toolArg: toolArg,
                     success: result?.success ?? false,
                     frictionEvents: frictions,
-                    screenshotURL: screenshotURL
+                    screenshotURL: screenshotURL,
+                    webNavigateURL: webNavigateURL
                 )
             }
 
@@ -213,6 +222,42 @@ final class RunReplayViewModel {
     func step(forward: Bool) {
         let next = currentStepIndex + (forward ? 1 : -1)
         currentStepIndex = max(0, min(steps.count - 1, next))
+    }
+
+    /// True when the replayed run targeted the web platform. Detected from
+    /// the persisted simulator runtime — `WebPlatformAdapter` synthesises a
+    /// `SimulatorRef` with `runtime: "Web"` so the JSONL is self-describing
+    /// without bumping the schema.
+    var isWebRun: Bool { meta?.simulator.runtime == "Web" }
+
+    /// Viewport recorded for the run, in CSS pixels for web or device
+    /// points for iOS/macOS. Drives the mirror's aspect ratio.
+    var replayViewport: CGSize {
+        guard let m = meta else { return CGSize(width: 1280, height: 1600) }
+        return CGSize(width: m.simulator.pointWidth, height: m.simulator.pointHeight)
+    }
+
+    /// The URL active when the current replay step's screenshot was taken.
+    /// Walks backwards through the steps for the most recent `navigate`
+    /// call. Returns nil before the first navigate (the run starts on a
+    /// pre-loaded URL that today's JSONL schema doesn't persist).
+    var currentReplayURL: String? {
+        guard !steps.isEmpty,
+              currentStepIndex >= 0,
+              currentStepIndex < steps.count else { return nil }
+        for i in stride(from: currentStepIndex, through: 0, by: -1) {
+            if let url = steps[i].webNavigateURL { return url }
+        }
+        return nil
+    }
+
+    static func urlFromNavigateJSON(_ json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let url = dict["url"] as? String else {
+            return nil
+        }
+        return url
     }
 
     static func argDisplay(forToolJSON json: String) -> String? {

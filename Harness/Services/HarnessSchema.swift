@@ -804,7 +804,7 @@ final class Application {
     /// Initial URL the agent loads on first step.
     var webStartURL: String? = nil
     /// CSS-pixel viewport dimensions for the embedded WebView. Defaults to
-    /// 1280×800 at the snapshot layer when nil.
+    /// 1280×1600 at the snapshot layer when nil.
     var webViewportWidthPt: Int? = nil
     var webViewportHeightPt: Int? = nil
 

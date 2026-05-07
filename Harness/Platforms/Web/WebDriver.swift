@@ -24,12 +24,30 @@ actor WebDriver: UXDriving {
 
     private let controller: WebViewWindowController
     private let startURL: URL?
-    private let viewport: CGSize
+    /// Mutable so the live mirror can ask us to resize the WKWebView when
+    /// the canvas dimensions change — the configured viewport is just the
+    /// initial value. Snapshots after `resize` come through at the new
+    /// dimensions; the agent's CSS-pixel coordinate space follows.
+    private var viewport: CGSize
 
     init(controller: WebViewWindowController, startURL: URL?, viewport: CGSize) {
         self.controller = controller
         self.startURL = startURL
         self.viewport = viewport
+    }
+
+    /// Current viewport in CSS pixels. Read by the UI to keep the live
+    /// mirror's display math in sync with the WKWebView.
+    func currentViewport() async -> CGSize { viewport }
+
+    /// Resize the underlying WKWebView to `newViewport` (CSS pixels). The
+    /// next snapshot reflects the new dimensions. Idempotent — a no-op if
+    /// the new size equals the current viewport.
+    func resize(to newViewport: CGSize) async {
+        guard newViewport != viewport,
+              newViewport.width > 0, newViewport.height > 0 else { return }
+        viewport = newViewport
+        await controller.resize(newViewport)
     }
 
     func screenshot(into url: URL) async throws -> ScreenshotMetadata {
@@ -44,6 +62,13 @@ actor WebDriver: UXDriving {
             pixelSize: image.size,
             pointSize: viewport
         )
+    }
+
+    /// Read the WKWebView's current URL. Cheap; safe to poll. Used by the
+    /// live mirror's chrome to keep the URL pill in sync with in-page
+    /// navigation that didn't go through the agent's `navigate` tool.
+    func currentURL() async -> String? {
+        await MainActor.run { controller.webView.url?.absoluteString }
     }
 
     func execute(_ call: ToolCall) async throws {

@@ -62,7 +62,7 @@ final class ApplicationCreateViewModel {
     /// Phase 3 — web form fields.
     var webStartURL: String = ""
     var webViewportWidth: Int = 1280
-    var webViewportHeight: Int = 800
+    var webViewportHeight: Int = 1600
     var defaultModel: AgentModel = .opus47
     var defaultMode: RunMode = .stepByStep
     var defaultStepBudget: Int = 40
@@ -251,7 +251,7 @@ final class ApplicationCreateViewModel {
         macAppBundlePath = nil
         webStartURL = ""
         webViewportWidth = 1280
-        webViewportHeight = 800
+        webViewportHeight = 1600
         defaultModel = .opus47
         defaultMode = .stepByStep
         defaultStepBudget = 40
