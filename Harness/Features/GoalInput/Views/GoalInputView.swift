@@ -642,6 +642,11 @@ private struct SimulatorSection: View {
                         .foregroundStyle(.secondary)
                 } else {
                     Picker("", selection: $vm.simulatorUDID) {
+                        // Placeholder tag for the empty default — without
+                        // it, SwiftUI logs "selection \"\" is invalid" on
+                        // the first render passes before `.onAppear` seeds
+                        // a real UDID.
+                        Text("Select a simulator…").tag("")
                         ForEach(state.simulators, id: \.udid) { sim in
                             Text("\(sim.name) · \(sim.runtime)").tag(sim.udid)
                         }

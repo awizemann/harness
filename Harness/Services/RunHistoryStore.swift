@@ -227,61 +227,77 @@ struct RunRecordSnapshot: Sendable, Hashable {
 
 // MARK: - Default actor implementation
 
+@ModelActor
 actor RunHistoryStore: RunHistoryStoring {
 
-    private static let logger = Logger(subsystem: "com.harness.app", category: "RunHistoryStore")
+    nonisolated private static let logger = Logger(subsystem: "com.harness.app", category: "RunHistoryStore")
 
-    private let modelContainer: ModelContainer
-    private var modelContext: ModelContext
-
-    /// Production initializer — opens the default app-support store with
-    /// pre-release reset-on-migration-failure semantics. Migration tests
-    /// and any other caller that wants strict failure propagation should
-    /// use `init(url:resetOnMigrationFailure:)` with `false`.
+    /// Production factory — opens the default app-support store with
+    /// pre-release reset-on-migration-failure semantics. Tests that want
+    /// strict failure propagation use `at(url:resetOnMigrationFailure:)`.
     static func openDefault() throws -> RunHistoryStore {
         try HarnessPaths.ensureDirectory(HarnessPaths.appSupport)
         let url = HarnessPaths.appSupport.appendingPathComponent("history.store")
-        return try RunHistoryStore(url: url, resetOnMigrationFailure: true)
+        let container = try makeContainer(url: url, resetOnMigrationFailure: true)
+        return RunHistoryStore(modelContainer: container)
     }
 
-    /// Designated initializer.
-    ///
-    /// Pre-release recovery policy (`resetOnMigrationFailure == true`): if
-    /// SwiftData can't migrate the on-disk store (typically after a model
-    /// change without a paired `MigrationStage`), we delete the SQLite
-    /// file + its WAL/SHM siblings and start over. Data loss is
+    /// Test factory — opens the store at `url` and surfaces migration
+    /// failures unless `resetOnMigrationFailure` is true. Replaces the
+    /// pre-`@ModelActor` `init(url:resetOnMigrationFailure:)`.
+    static func at(url: URL, resetOnMigrationFailure: Bool = false) throws -> RunHistoryStore {
+        let container = try makeContainer(url: url, resetOnMigrationFailure: resetOnMigrationFailure)
+        return RunHistoryStore(modelContainer: container)
+    }
+
+    /// In-memory variant for unit tests. Same schema + migration plan as
+    /// the on-disk store; no persistence between processes.
+    static func inMemory() throws -> RunHistoryStore {
+        let schema = Schema(versionedSchema: HarnessSchemaV4.self)
+        let configuration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true
+        )
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: HarnessMigrationPlan.self,
+            configurations: [configuration]
+        )
+        return RunHistoryStore(modelContainer: container)
+    }
+
+    /// Pre-release recovery policy (`resetOnMigrationFailure == true`):
+    /// if SwiftData can't migrate the on-disk store (typically after a
+    /// model change without a paired `MigrationStage`), we delete the
+    /// SQLite file + its WAL/SHM siblings and start over. Data loss is
     /// acceptable while we're iterating; the alternative — silently
     /// falling through to an in-memory store — was the bug that prompted
     /// this rewrite (Applications / Personas / Actions appeared to
     /// "disappear" on relaunch). When we get closer to ship we can
     /// graduate this to an archive-and-warn flow.
-    ///
-    /// Tests pass `resetOnMigrationFailure: false` so a real migration
-    /// bug throws loudly instead of nuking the test fixture.
-    init(url: URL, resetOnMigrationFailure: Bool = false) throws {
+    nonisolated private static func makeContainer(
+        url: URL,
+        resetOnMigrationFailure: Bool
+    ) throws -> ModelContainer {
         let schema = Schema(versionedSchema: HarnessSchemaV4.self)
         let configuration = ModelConfiguration(schema: schema, url: url)
         do {
-            let container = try ModelContainer(
+            return try ModelContainer(
                 for: schema,
                 migrationPlan: HarnessMigrationPlan.self,
                 configurations: [configuration]
             )
-            self.modelContainer = container
-            self.modelContext = ModelContext(container)
         } catch {
             guard resetOnMigrationFailure else { throw error }
-            Self.logger.error("Couldn't open on-disk history store; deleting and starting fresh: \(error.localizedDescription, privacy: .public)")
-            Self.deleteStoreFiles(at: url)
-            // One retry against the cleaned slot. If this still fails it's a
-            // real problem (permissions, disk full) — let it propagate.
-            let container = try ModelContainer(
+            logger.error("Couldn't open on-disk history store; deleting and starting fresh: \(error.localizedDescription, privacy: .public)")
+            deleteStoreFiles(at: url)
+            // One retry against the cleaned slot. If this still fails it's
+            // a real problem (permissions, disk full) — let it propagate.
+            return try ModelContainer(
                 for: schema,
                 migrationPlan: HarnessMigrationPlan.self,
                 configurations: [configuration]
             )
-            self.modelContainer = container
-            self.modelContext = ModelContext(container)
         }
     }
 
@@ -294,25 +310,6 @@ actor RunHistoryStore: RunHistoryStoring {
                 try? fm.removeItem(atPath: path)
             }
         }
-    }
-
-    static func inMemory() throws -> RunHistoryStore {
-        let schema = Schema(versionedSchema: HarnessSchemaV4.self)
-        let configuration = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: true
-        )
-        let container = try ModelContainer(
-            for: schema,
-            migrationPlan: HarnessMigrationPlan.self,
-            configurations: [configuration]
-        )
-        return try RunHistoryStore(prebuiltContainer: container)
-    }
-
-    private init(prebuiltContainer container: ModelContainer) throws {
-        self.modelContainer = container
-        self.modelContext = ModelContext(container)
     }
 
     // MARK: Run records — upsert / mark completed

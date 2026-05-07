@@ -63,7 +63,7 @@ struct SwiftDataMigrationTests {
             ))
         }
 
-        let store = try RunHistoryStore(url: storeURL)
+        let store = try RunHistoryStore.at(url: storeURL)
         let apps = try await store.applications(includeArchived: true)
         #expect(apps.count == 2)
         let appPaths = Set(apps.map(\.projectPath))
@@ -105,7 +105,7 @@ struct SwiftDataMigrationTests {
             }
         }
 
-        let store = try RunHistoryStore(url: storeURL)
+        let store = try RunHistoryStore.at(url: storeURL)
         let apps = try await store.applications(includeArchived: true)
         #expect(apps.count == 1)
         let app = try #require(apps.first)
@@ -123,7 +123,7 @@ struct SwiftDataMigrationTests {
 
         try Self.seedV1(at: storeURL) { _ in }
 
-        let store = try RunHistoryStore(url: storeURL)
+        let store = try RunHistoryStore.at(url: storeURL)
         let apps = try await store.applications(includeArchived: true)
         #expect(apps.isEmpty)
         let recs = try await store.fetchRecent(limit: 100)
@@ -163,7 +163,7 @@ struct SwiftDataMigrationTests {
             context.insert(row)
         }
 
-        let store = try RunHistoryStore(url: storeURL)
+        let store = try RunHistoryStore.at(url: storeURL)
         let apps = try await store.applications(includeArchived: true)
         #expect(apps.count == 1)
         let app = try #require(apps.first)
@@ -202,7 +202,7 @@ struct SwiftDataMigrationTests {
 
         // Reopen via the production store, which routes through the full
         // migration plan (V3→V4 lightweight stage adds the optional column).
-        let store = try RunHistoryStore(url: storeURL)
+        let store = try RunHistoryStore.at(url: storeURL)
         let apps = try await store.applications(includeArchived: true)
         #expect(apps.count == 1)
         let app = try #require(apps.first)
@@ -219,7 +219,7 @@ struct SwiftDataMigrationTests {
         let storeURL = Self.makeStoreURL()
         defer { Self.removeStore(at: storeURL) }
 
-        let store = try RunHistoryStore(url: storeURL)
+        let store = try RunHistoryStore.at(url: storeURL)
         let snapshot = ApplicationSnapshot(
             id: UUID(),
             name: "iOS App",
