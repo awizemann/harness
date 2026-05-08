@@ -75,8 +75,7 @@ struct GoalInputView: View {
                     runNameRow(vm: vm)
                     heroHeading
                     targetSection(vm: vm)
-                    PersonaSection(vm: vm)
-                    CredentialSection(vm: vm)
+                    personaCredentialPair(vm: vm)
                     SourceSection(vm: vm)
                     runModeStrip(vm: vm)
                     advancedSection(vm: vm)
@@ -96,6 +95,26 @@ struct GoalInputView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.harnessBg)
         .navigationTitle("")
+    }
+
+    /// "Who's running this run?" — Persona on the left, Credential on
+    /// the right when one's staged for the active Application. Falls
+    /// back to a single-column stack on narrow windows via
+    /// `ViewThatFits`. When `vm.credentials.isEmpty`, `CredentialSection`
+    /// renders nothing and Persona's `.frame(maxWidth: .infinity)` lets
+    /// it expand to fill the row.
+    @ViewBuilder
+    private func personaCredentialPair(vm: GoalInputViewModel) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: Theme.spacing.l) {
+                PersonaSection(vm: vm).frame(maxWidth: .infinity, alignment: .topLeading)
+                CredentialSection(vm: vm).frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            VStack(alignment: .leading, spacing: Theme.spacing.l) {
+                PersonaSection(vm: vm)
+                CredentialSection(vm: vm)
+            }
+        }
     }
 
     /// Phase 2: the form's "where does this run?" section is platform-

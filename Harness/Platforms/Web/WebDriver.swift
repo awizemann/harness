@@ -69,20 +69,28 @@ actor WebDriver: UXDriving {
         self.lastMarks = marks
 
         let raw = try await captureSnapshot()
-        // Draw numbered badges over each mark's bounding rect on a copy
-        // of the snapshot. The agent and the replay both see the same
-        // marked-up image — so a human reviewing the run can match the
-        // agent's `tap_mark(id)` calls back to visible scaffolding.
-        let marked = Self.drawMarks(on: raw, marks: marks, viewport: viewport)
-        guard let tiff = marked.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else {
+        // Save the **unmarked** snapshot to disk. Replay, friction
+        // reports, and exported screenshots all read this PNG — keeping
+        // it clean means the green numbered overlay (which is agent
+        // scaffolding, not part of the page) never leaks into surfaces
+        // a human reviewer sees.
+        guard let rawPNG = Self.pngData(from: raw) else {
             throw WebDriverError.captureFailed
         }
-        try png.write(to: url, options: .atomic)
+        try rawPNG.write(to: url, options: .atomic)
+
+        // Render the marked copy in-memory only when there's something
+        // to draw. The agent loop receives these bytes via
+        // `ScreenshotMetadata.markedImageData`; everything else (disk,
+        // replay, friction report) keeps using the unmarked PNG.
+        let markedData: Data? = marks.isEmpty
+            ? nil
+            : Self.pngData(from: Self.drawMarks(on: raw, marks: marks, viewport: viewport))
+
         return ScreenshotMetadata(
-            pixelSize: marked.size,
-            pointSize: viewport
+            pixelSize: raw.size,
+            pointSize: viewport,
+            markedImageData: markedData
         )
     }
 
@@ -684,6 +692,15 @@ actor WebDriver: UXDriving {
         }
         _ = viewport  // reserved for future viewport-clamp checks
         return result
+    }
+
+    /// PNG-encode an `NSImage` via the same TIFF→bitmap path the
+    /// snapshot pipeline used before the marks split, so disk writes and
+    /// in-memory marked copies share one encoding routine.
+    nonisolated private static func pngData(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 
     /// Escape a string for safe interpolation into a JS source literal.

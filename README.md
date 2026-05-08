@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: macOS 14+](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Targets: iOS · macOS · Web](https://img.shields.io/badge/targets-iOS%20%C2%B7%20macOS%20%C2%B7%20Web-3DDC97)
-![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-blue)
+![Version: 0.3.1](https://img.shields.io/badge/version-0.3.1-blue)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
 
 <p align="center">
@@ -39,7 +39,12 @@ Three artifacts come out of every run:
 
 Per-app setting: each Application declares its kind once at create time. The agent's tool schema (clicks vs swipes vs key shortcuts vs navigate) and the system-prompt context block re-shape per platform. Run history, replay, and friction reporting are platform-neutral.
 
-> **Status:** v0.3.0 (alpha). All three platforms wired end-to-end; **per-Application credential storage + Set-of-Mark targeting on web** (numbered overlays on focusable elements; agent clicks by id, no pixel guessing); **multi-provider LLM support** (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5 + OpenAI GPT-5 Mini / GPT-4.1 Nano + Google Gemini 2.5 Flash / Flash Lite); per-provider Keychain storage; configurable per-model token budgets; unlimited-step option. macOS needs Screen Recording permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** v0.3.1 (alpha). All three platforms wired end-to-end; **per-Application credential storage + Set-of-Mark targeting on web** (numbered overlays on focusable elements; agent clicks by id, no pixel guessing — agent-only, never on disk); **multi-provider LLM support** (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5 + OpenAI GPT-5 Mini / GPT-4.1 Nano + Google Gemini 2.5 Flash / Flash Lite); per-provider Keychain storage; configurable per-model token budgets; unlimited-step option. macOS needs Screen Recording permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## What's new in 0.3.1
+
+- **Set-of-Mark badges no longer leak into human-visible surfaces.** The disk PNG is the **clean rendered page** — replay, friction reports, and exported screenshots show what a real user would see. The agent still receives the marked-up image (numbered green badges over focusable elements) via an in-memory `ScreenshotMetadata.markedImageData` channel; the on-disk artifact stays free of dev-tool clutter. Standard 14 §6 documents the new "no agent scaffolding on disk" invariant.
+- **Compose Run pairs Persona + Credential side-by-side.** Both sections answer "who's running this?", so they read as one row instead of two stacked panels. Saves vertical scroll; auto-falls-back to a single column on narrow windows via `ViewThatFits`. When no credentials are staged, Persona expands to fill the row naturally.
 
 ## What's new in 0.3.0
 

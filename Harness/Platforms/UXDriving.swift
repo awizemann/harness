@@ -31,6 +31,20 @@ struct ScreenshotMetadata: Sendable, Hashable {
     /// captured window's logical point size; for web the CSS-pixel
     /// viewport size.
     let pointSize: CGSize
+    /// V0.3.1 — optional in-memory PNG with agent scaffolding (e.g. the
+    /// web driver's Set-of-Mark numbered badges) drawn on top of the
+    /// same snapshot. Drivers that don't render scaffolding leave this
+    /// nil. The run-loop substitutes these bytes for the disk PNG when
+    /// building the LLM payload, so replay / friction reports / shared
+    /// screenshots see the clean rendered page while the agent still
+    /// sees its targeting overlay.
+    let markedImageData: Data?
+
+    init(pixelSize: CGSize, pointSize: CGSize, markedImageData: Data? = nil) {
+        self.pixelSize = pixelSize
+        self.pointSize = pointSize
+        self.markedImageData = markedImageData
+    }
 }
 
 /// What `RunCoordinator` does per step. Implementations are platform-

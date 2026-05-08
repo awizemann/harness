@@ -607,14 +607,25 @@ actor RunCoordinator {
             }
 
             // Capture screenshot. Write PNG before stepStarted row (per standard 08).
+            // The disk PNG is the **unmarked** rendering of the page —
+            // replay, friction reports, and any human-visible surface
+            // read this file. When the driver also produced an in-memory
+            // **marked** copy (web's Set-of-Mark numbered badges), we
+            // route those bytes to the LLM only via `screenshotForLLM`.
+            // Drivers without scaffolding (iOS/macOS today) leave
+            // `markedImageData` nil and both paths share the disk bytes.
             let screenshotURL: URL
-            let screenshotData: Data
+            let screenshotForLLM: Data
             let captureMetadata: ScreenshotMetadata
             do {
                 let url = HarnessPaths.screenshot(for: request.id, step: stepIndex)
                 captureMetadata = try await session.driver.screenshot(into: url)
                 screenshotURL = url
-                screenshotData = (try? Data(contentsOf: url)) ?? Data()
+                if let marked = captureMetadata.markedImageData {
+                    screenshotForLLM = marked
+                } else {
+                    screenshotForLLM = (try? Data(contentsOf: url)) ?? Data()
+                }
             } catch {
                 Self.logger.error("Screenshot failed at step \(stepIndex, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 throw error
@@ -639,9 +650,9 @@ actor RunCoordinator {
             // uses the captured window's logical size; web uses CSS
             // pixels — the platform driver returned the right value
             // via `ScreenshotMetadata.pointSize`.
-            let jpegForLLM = Self.downscaleJPEG(screenshotData,
+            let jpegForLLM = Self.downscaleJPEG(screenshotForLLM,
                                                  toPointSize: captureMetadata.pointSize)
-                ?? screenshotData
+                ?? screenshotForLLM
 
             // Decision. The agent loop sees the leg's `goal` via the
             // `legRequest` shadow — every other field is the run-level

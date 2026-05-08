@@ -279,6 +279,7 @@ A grep over a run's `events.jsonl` for any password value should return zero hit
 - PNG, simulator native resolution (no downscaling on disk — downscaling happens only when sending to Claude).
 - Filename: `step-NNN.png` with N zero-padded to 3 digits. Steps beyond 999 are out of scope (hard ceiling is 200).
 - The PNG is written **before** the `step_started` row that references it. If the PNG write fails, no `step_started` is emitted; the loop fails the step and emits a `friction` of kind `unexpected_state`.
+- **No agent scaffolding on disk.** Overlays the agent uses for targeting (the web driver's Set-of-Mark numbered badges, future iOS / macOS equivalents) are drawn on an in-memory copy only and routed to Claude via `ScreenshotMetadata.markedImageData`. The on-disk PNG always shows the clean rendered page — replay, friction reports, and exported screenshots stay free of dev-tool clutter.
 
 ---
 
