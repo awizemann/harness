@@ -188,6 +188,7 @@ h1 {
   transition: transform 80ms ease, background-color 120ms ease, border-color 120ms ease;
 }
 .btn:hover { text-decoration: none; transform: translateY(-1px); }
+.btn-icon { margin-right: 0.5rem; flex-shrink: 0; }
 .btn-primary {
   background: var(--accent); color: var(--accent-fg);
 }
