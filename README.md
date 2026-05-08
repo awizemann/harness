@@ -14,9 +14,17 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/awizemann/harness/releases/download/v0.3.1/Harness-v0.3.1-Universal.zip">
+    <img alt="Download Harness v0.3.1 — macOS Universal (Apple Silicon + Intel)" src="https://img.shields.io/badge/Download%20for%20Mac-v0.3.1%20Universal-1f6feb?style=for-the-badge&logo=apple&logoColor=white">
+  </a>
+  <br>
+  <sub>macOS 14+ · Apple Silicon &amp; Intel · ~12 MB</sub>
+</p>
+
+<p align="center">
   <a href="https://awizemann.github.io/harness/"><strong>awizemann.github.io/harness</strong></a> &nbsp;·&nbsp;
   <a href="https://github.com/awizemann/harness/wiki">Wiki</a> &nbsp;·&nbsp;
-  <a href="https://github.com/awizemann/harness/releases/latest">Releases</a>
+  <a href="https://github.com/awizemann/harness/releases/latest">All releases</a>
 </p>
 
 > A native macOS developer tool that drives an **iOS Simulator, a macOS app, or a web app** with an AI agent so you can run **user tests** — not scripted UI tests, but real-user simulation.

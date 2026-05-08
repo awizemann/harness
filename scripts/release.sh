@@ -163,8 +163,53 @@ PY
 log "Regenerating Harness.xcodeproj"
 xcodegen generate >/dev/null
 
+# ---------- bump version references in README.md ----------
+# README hero shows a "Download for Mac vX.Y.Z" button + version badge that point
+# at the versioned release asset. Each pattern is anchored to surrounding text
+# so unrelated digits-with-dots (timestamps, network ranges, etc.) can't match.
+# Dies if any pattern stops matching — README hero structure changed and the
+# bump would be silently incomplete otherwise.
+log "Updating README.md version references"
+python3 - "$REPO_ROOT/README.md" "$VERSION" <<'PY'
+import re, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+text = path.read_text()
+
+patterns = [
+    # Shields.io version badge alt text:  ![Version: X.Y.Z](...)
+    (r'(\[Version: )\d+\.\d+\.\d+(\])', rf'\g<1>{version}\g<2>'),
+    # Shields.io version badge URL:  .../version-X.Y.Z-blue
+    (r'(version-)\d+\.\d+\.\d+(-blue)', rf'\g<1>{version}\g<2>'),
+    # Download button URL: releases/download/vX.Y.Z/Harness-vX.Y.Z-Universal.zip
+    (r'(releases/download/v)\d+\.\d+\.\d+(/Harness-v)\d+\.\d+\.\d+(-Universal\.zip)',
+     rf'\g<1>{version}\g<2>{version}\g<3>'),
+    # Alt text on the download button image
+    (r'(Download Harness v)\d+\.\d+\.\d+( — macOS Universal)', rf'\g<1>{version}\g<2>'),
+    # Shields.io badge label (URL-encoded): Download%20for%20Mac-vX.Y.Z%20Universal-1f6feb
+    (r'(Download%20for%20Mac-v)\d+\.\d+\.\d+(%20Universal-1f6feb)',
+     rf'\g<1>{version}\g<2>'),
+]
+
+new = text
+missing = []
+for pat, repl in patterns:
+    new, n = re.subn(pat, repl, new)
+    if n == 0:
+        missing.append(pat)
+
+if missing:
+    raise SystemExit(
+        "README.md: version-bump pattern(s) not found — README hero may have changed:\n  "
+        + "\n  ".join(missing)
+    )
+
+if new != text:
+    path.write_text(new)
+PY
+
 # Stage the version bump (committed alongside the release notes below).
-git add project.yml
+git add project.yml README.md
 
 # ---------- archive ----------
 log "Cleaning build directory"
