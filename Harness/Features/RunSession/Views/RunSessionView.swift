@@ -563,9 +563,28 @@ private struct StepFeedRail: View {
                         ForEach(vm.frictionFeed) { f in
                             FrictionRow(event: f).id("f-\(f.id)")
                         }
+                        // Pending step skeleton sits at the END of the
+                        // feed (right after the most recent completed
+                        // step) — that's where the next StepFeedCell
+                        // will land when the model returns, so the
+                        // transition reads as the skeleton "becoming"
+                        // the real row. Cleared by the VM when a
+                        // `toolProposed` event lands.
+                        if let pending = vm.pendingStep {
+                            PendingStepCell(
+                                stepNumber: pending.stepIndex,
+                                phase: Self.cellPhase(from: pending.phase),
+                                phaseStartedAt: pending.phaseStartedAt,
+                                subText: Self.pendingSubText(for: pending),
+                                modelDisplayName: pending.model.displayName
+                            )
+                            .id("pending-\(pending.stepIndex)")
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
                     }
                     .padding(.horizontal, Theme.spacing.s)
                     .padding(.vertical, Theme.spacing.m)
+                    .animation(.easeOut(duration: 0.18), value: vm.pendingStep)
                 }
                 .onChange(of: vm.feed.count) {
                     if let last = vm.feed.last {
@@ -574,9 +593,71 @@ private struct StepFeedRail: View {
                         }
                     }
                 }
+                .onChange(of: vm.pendingStep?.stepIndex) { _, _ in
+                    // Each time a new pending step appears (i.e. the
+                    // step index advances), scroll the skeleton into
+                    // view — otherwise it lands below the fold and the
+                    // user keeps staring at the last completed step.
+                    if let pending = vm.pendingStep {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            proxy.scrollTo("pending-\(pending.stepIndex)", anchor: .bottom)
+                        }
+                    }
+                }
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    // MARK: - Pending-step helpers
+
+    /// Convert the app-target `StepPhase` to the design-system mirror so
+    /// HarnessDesign stays free of app-only types.
+    static func cellPhase(from phase: StepPhase) -> PendingStepCellPhase {
+        switch phase {
+        case .capturing: return .capturing
+        case .encoding:  return .encoding
+        case .thinking:  return .thinking
+        case .executing: return .executing
+        }
+    }
+
+    /// Contextual sub-text under the pending-step phase label.
+    ///
+    /// Designed to inform without nagging. Returns `nil` for the fast
+    /// happy path (cloud thinking under 15s, capturing / encoding) so
+    /// the cell stays compact. Branches:
+    ///
+    /// - Local + first step → cold-start explanation (load ~6 GB into
+    ///   RAM, subsequent steps are much faster).
+    /// - Local + warm step that's running long → reassurance that
+    ///   sub-10B vision inference on Apple Silicon is normally slow.
+    /// - Cloud + approaching the 120s timeout → warn the user before it
+    ///   fires so a long-running request isn't a surprise.
+    /// - Everything else → nil (the phase label alone is plenty).
+    static func pendingSubText(for pending: RunSessionViewModel.PendingStepProgress) -> String? {
+        // Sub-text only matters on the "thinking" phase — the others are
+        // sub-second.
+        guard pending.phase == .thinking else { return nil }
+        let elapsed = Date().timeIntervalSince(pending.phaseStartedAt)
+        let isLocal = (pending.model.provider == .local)
+        if isLocal {
+            if pending.isFirstStep {
+                return "First request — Ollama is loading the model into RAM. Subsequent steps will be 5–10× faster."
+            }
+            if elapsed > 30 {
+                return "Local inference is still working. Sub-10B vision models can take 20–60s per step on Apple Silicon."
+            }
+            return nil
+        } else {
+            if elapsed > 60 {
+                return "Approaching the 120-second cloud timeout — the request will fail at 2:00."
+            }
+            if elapsed > 15 {
+                return "Cloud model is still responding."
+            }
+            return nil
+        }
     }
 }
 

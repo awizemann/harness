@@ -91,7 +91,25 @@ final class AppContainer {
     /// request fall back to the user's `defaultProvider` from Settings.
     func makeRunCoordinator(for request: RunRequest? = nil) -> RunCoordinator {
         let provider = request?.model.provider ?? appState.defaultProvider
-        let llm = LLMClientFactory.client(for: provider, keychain: keychain)
+        // Local provider: thread the user's persisted base URL + custom
+        // model name (only used when picked model is `.customLocal`) into
+        // OpenAIClient. For every other provider the factory ignores
+        // these params.
+        // `normalizedLocalURL` transparently rewrites `localhost` →
+        // `127.0.0.1` so legacy persisted URLs work without nagging the
+        // user. See AppState for the IPv6 dual-stack rationale.
+        let localURL = AppState.normalizedLocalURL(appState.localBaseURL)
+        let customName: String? = {
+            guard request?.model == .customLocal else { return nil }
+            let trimmed = appState.localCustomModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+        let llm = LLMClientFactory.client(
+            for: provider,
+            keychain: keychain,
+            localBaseURL: localURL,
+            modelNameOverride: customName
+        )
         let agent = AgentLoop(llm: llm, promptLibrary: promptLibrary)
         return RunCoordinator(
             builder: xcodeBuilder,

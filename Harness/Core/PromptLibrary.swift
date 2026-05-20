@@ -90,6 +90,22 @@ struct PromptLibrary: PromptLoading {
                 return text
             }
         }
+        // HarnessCLI fallback: tool targets don't get a Resources/
+        // directory next to the executable, so bundle lookup misses
+        // every time. `HarnessPaths.repoRoot` was baked at build time
+        // via the pre-build script and points at the developer's
+        // working tree. The Harness GUI target reaches the bundle path
+        // before getting here, so this fallback fires only when the
+        // bundle path doesn't have the resource.
+        if let repoRoot = HarnessPaths.repoRoot {
+            let onDisk = repoRoot
+                .appendingPathComponent("docs", isDirectory: true)
+                .appendingPathComponent("PROMPTS", isDirectory: true)
+                .appendingPathComponent("\(stem).md")
+            if let text = try? String(contentsOf: onDisk, encoding: .utf8) {
+                return text
+            }
+        }
         Self.logger.error("Prompt resource missing: \(stem, privacy: .public).md")
         throw PromptLibraryError.resourceMissing(name: stem)
     }

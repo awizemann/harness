@@ -182,16 +182,23 @@ actor GeminiClient: LLMClient {
 
         // Current turn — image + instruction text. The retry hint is
         // ferried back to the model on parse-failure retries.
+        // Set-of-Mark annotation goes between the call-to-action and
+        // the image so the model can map intent → id by label.
         let currentText: String
+        let baseInstruction = "Current screen attached. Choose your next action by calling exactly one tool."
+        let annotation = request.screenshotAnnotation
+        let annotated = annotation.isEmpty
+            ? baseInstruction
+            : "\(baseInstruction)\n\n\(annotation)"
         if let hint = request.retryHint, !hint.isEmpty {
             currentText = """
             Your previous response was rejected: \(hint)
             Emit exactly one tool call.
 
-            Current screen attached. Choose your next action by calling exactly one tool.
+            \(annotated)
             """
         } else {
-            currentText = "Current screen attached. Choose your next action by calling exactly one tool."
+            currentText = annotated
         }
         contents.append([
             "role": "user",

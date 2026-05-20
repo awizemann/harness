@@ -49,6 +49,10 @@ Per-app setting: each Application declares its kind once at create time. The age
 
 > **Status:** v0.3.1 (alpha). All three platforms wired end-to-end; **per-Application credential storage + Set-of-Mark targeting on web** (numbered overlays on focusable elements; agent clicks by id, no pixel guessing — agent-only, never on disk); **multi-provider LLM support** (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5 + OpenAI GPT-5 Mini / GPT-4.1 Nano + Google Gemini 2.5 Flash / Flash Lite); per-provider Keychain storage; configurable per-model token budgets; unlimited-step option. macOS needs Screen Recording permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+## Unreleased
+
+- **Local Mac inference (Ollama / LM Studio).** New `Local Mac` provider runs a vision LLM on your Mac. Screenshots never leave the machine, runs cost $0, and you can work offline. Curated picker: **Qwen3-VL 8B** (GUI-trained, recommended), **Gemma 4 9B**, **Llama 3.2 Vision 11B**, plus a custom-model field. Settings → "Local Mac" card has a server reachability pill, base URL field, and copy-paste install commands. First-run wizard adds an "Or run fully local" card. Honest trade-offs surfaced in the per-run picker: 5-10× slower per step, lower friction-event quality. Reuses the OpenAI client under the hood — both Ollama and LM Studio speak OpenAI-compatible chat completions. See [`standards/07-ai-integration.md` §12](standards/07-ai-integration.md).
+
 ## What's new in 0.3.1
 
 - **Set-of-Mark badges no longer leak into human-visible surfaces.** The disk PNG is the **clean rendered page** — replay, friction reports, and exported screenshots show what a real user would see. The agent still receives the marked-up image (numbered green badges over focusable elements) via an in-memory `ScreenshotMetadata.markedImageData` channel; the on-disk artifact stays free of dev-tool clutter. Standard 14 §6 documents the new "no agent scaffolding on disk" invariant.

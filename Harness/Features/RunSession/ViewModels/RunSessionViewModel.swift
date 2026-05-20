@@ -30,6 +30,14 @@ final class RunSessionViewModel {
     var feed: [PreviewStep] = []
     var frictionFeed: [PreviewFrictionEvent] = []
     var pendingApproval: PendingApproval?
+    /// Live snapshot of the step currently being processed. Driven by
+    /// `RunEvent.stepProgress` ticks. Cleared once a real `toolProposed`
+    /// event lands (the completed StepFeedCell replaces the skeleton).
+    /// Surfaces the pending-step skeleton at the top of the step feed
+    /// so the user sees "what's happening right now" instead of staring
+    /// at a static "Running" pill — most visible on slow local-model
+    /// cold-starts but useful for every provider.
+    var pendingStep: PendingStepProgress?
     var elapsedSeconds: Int = 0
     var runError: String?
     /// Per-leg progress for chain runs. One entry per leg in declaration
@@ -103,6 +111,21 @@ final class RunSessionViewModel {
         case awaitingApproval
         case completed(Verdict)
         case failed
+    }
+
+    /// Snapshot of the step in flight — phase + when the phase started
+    /// + which model is processing it. The View consumes these to render
+    /// the pending-step skeleton with a live elapsed timer and
+    /// contextual sub-text (e.g. "First request — Ollama is loading the
+    /// model"). Equatable so SwiftUI can diff cleanly.
+    struct PendingStepProgress: Sendable, Equatable {
+        let stepIndex: Int
+        let phase: StepPhase
+        let phaseStartedAt: Date
+        let model: AgentModel
+        /// True when this is the first step of the run — used to surface
+        /// cold-start messaging for local models.
+        let isFirstStep: Bool
     }
 
     struct PendingApproval: Sendable, Equatable {
@@ -353,6 +376,38 @@ final class RunSessionViewModel {
             // initiated on the previous step is now visually committed.
             self.webIsLoading = false
 
+        case .previewSnapshot(let jpeg):
+            // Platform-driver-emitted UI-only mirror refresh. Currently
+            // the only source is `WebDriver.liveSnapshot()`; iOS uses
+            // the VM-side simulator poller, macOS has no live path yet.
+            // We update `liveImage` from these so the user sees the
+            // page evolve in real time during slow waits, instead of
+            // staring at a frozen capture from the last step's start.
+            if let img = NSImage(data: jpeg) {
+                self.liveImage = img
+            }
+
+        case .stepProgress(let step, let phase, let startedAt):
+            // Drive the pending-step skeleton card. Only the pre-decision
+            // phases (capturing → encoding → thinking) render through the
+            // skeleton — once the model returns a tool call, the real
+            // StepFeedCell is in the feed and showing the tool's input,
+            // so a skeleton on top of it would just be visual noise.
+            switch phase {
+            case .capturing, .encoding, .thinking:
+                guard let req = request else { break }
+                self.pendingStep = PendingStepProgress(
+                    stepIndex: step,
+                    phase: phase,
+                    phaseStartedAt: startedAt,
+                    model: req.model,
+                    isFirstStep: feed.isEmpty
+                )
+            case .executing:
+                // Real cell is already in the feed showing the tool call.
+                self.pendingStep = nil
+            }
+
         case .toolProposed(let step, let call):
             // Append a feed cell with no thumbnail (we don't ferry the
             // screenshot data to the cell yet).
@@ -442,6 +497,7 @@ final class RunSessionViewModel {
         case .runCompleted(let outcome):
             self.outcome = outcome
             self.status = .completed(outcome.verdict)
+            self.pendingStep = nil
             self.totalTokenUsage = TokenUsage(
                 inputTokens: outcome.tokensUsedInput,
                 outputTokens: outcome.tokensUsedOutput,

@@ -22,13 +22,26 @@ struct WebPlatformAdapter: PlatformAdapter {
     let kind: PlatformKind = .web
     let services: PlatformAdapterServices
 
-    /// Settle delay after the first navigation's `didFinish`. WKWebView
-    /// fires `didFinish` once the document parser is done, but lazy-loaded
-    /// images, web-fonts, and JS-driven layout shifts can land a little
-    /// later — without this wait the first screenshot regularly captures
-    /// a half-painted page. Subsequent navigates inside the run aren't
-    /// padded; the agent can always issue `wait` if it needs more time.
-    private static let firstLoadSettleDelay: Duration = .milliseconds(1500)
+    /// Initial-load settle envelope passed to
+    /// `WebDriver.awaitDOMSettled(idleMs:minMs:maxMs:)` after the first
+    /// navigation's `didFinish`. WKWebView fires `didFinish` once the
+    /// document parser is done, but SPA hydration, lazy-loaded images,
+    /// web fonts, and JS-driven layout shifts commonly land hundreds
+    /// of ms — sometimes many seconds — after that signal.
+    ///
+    /// Previous behaviour: a fixed 4000ms sleep. Fine for static
+    /// content sites but routinely caught client-side-rendered SPAs
+    /// mid-hydration, sending the model a screenshot with only the
+    /// shell rendered (nav + an empty body where job entries / blog
+    /// posts / etc. should be). The MutationObserver-backed gate in
+    /// `WebDriver.awaitDOMSettled` resolves as soon as the page goes
+    /// `idleMs` without DOM mutations, with `maxMs` as a hard ceiling.
+    ///
+    /// Mid-run navigations get the same treatment from
+    /// `WebDriver.settle(afterTool:)`.
+    private static let firstLoadIdleMs = 800
+    private static let firstLoadMinMs = 800
+    private static let firstLoadMaxMs = 10_000
 
     init(services: PlatformAdapterServices) {
         self.services = services
@@ -71,8 +84,27 @@ struct WebPlatformAdapter: PlatformAdapter {
         }
         let nav = await MainActor.run { controller.navigationDelegate }
         await nav.awaitNextLoad(timeout: .seconds(20))
-        // Give the page a moment to paint past `didFinish`. See note above.
-        try? await Task.sleep(for: Self.firstLoadSettleDelay)
+
+        // Construct the driver before the initial settle so we can use
+        // its MutationObserver-backed quietness gate (the same gate the
+        // per-tool settle path uses) instead of a fixed-duration sleep.
+        // The credential resolves in parallel — it's a cheap in-memory
+        // ModelActor lookup + one Keychain read, no need to await
+        // before kicking off the settle.
+        let credential = await services.resolveCredentialBinding(for: request)
+        let driver = WebDriver(
+            controller: controller,
+            startURL: startURL,
+            viewport: preferredViewport,
+            credential: credential
+        )
+
+        let waitedMs = await driver.awaitDOMSettled(
+            idleMs: Self.firstLoadIdleMs,
+            minMs: Self.firstLoadMinMs,
+            maxMs: Self.firstLoadMaxMs
+        )
+        Self.logger.info("Initial DOM settle waited \(waitedMs, privacy: .public)ms (idle=\(Self.firstLoadIdleMs, privacy: .public), max=\(Self.firstLoadMaxMs, privacy: .public))")
 
         // Synthesise a SimulatorRef so the existing UI events keep firing
         // — same trick MacOSPlatformAdapter uses.
@@ -84,14 +116,6 @@ struct WebPlatformAdapter: PlatformAdapter {
             scaleFactor: 1.0
         )
         continuation.yield(.simulatorReady(pseudoSim))
-
-        let credential = await services.resolveCredentialBinding(for: request)
-        let driver = WebDriver(
-            controller: controller,
-            startURL: startURL,
-            viewport: preferredViewport,
-            credential: credential
-        )
         // Publish the driver so the live mirror can call `resize` when
         // the canvas dimensions change.
         await MainActor.run { LiveWebMirror.activeDriver = driver }

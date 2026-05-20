@@ -19,8 +19,11 @@
 import Foundation
 import AppKit
 import WebKit
+import os
 
 actor WebDriver: UXDriving {
+
+    nonisolated private static let logger = Logger(subsystem: "com.harness.app", category: "WebDriver")
 
     private let controller: WebViewWindowController
     private let startURL: URL?
@@ -39,6 +42,33 @@ actor WebDriver: UXDriving {
     /// emitted a stale id, etc.) the dispatch throws and the loop's
     /// retry path surfaces the error to the model.
     private var lastMarks: [InteractiveMark] = []
+    /// Set by `dispatchClick` when the click changed `location.href`
+    /// (an SPA route push or a hard navigation). Consumed by the
+    /// next `settle(afterTool:)` to escalate to the navigation-class
+    /// quietness window — see the rationale on `settle(afterTool:)`.
+    /// Reset to `false` after each settle.
+    private var lastClickNavigated: Bool = false
+    /// Driver-side diagnostic text for the most recent `execute(_:)`
+    /// call. Surfaced into the next turn's `toolResultSummary` via
+    /// `lastExecutionDetail()` so the agent's prompt history sees
+    /// objective progress signals alongside the model's own text
+    /// observations. Today only `dispatchScroll` populates this;
+    /// other tools leave it nil and the coordinator falls back to
+    /// the bare "ok"/"fail" summary.
+    private var lastDriverDetail: String?
+    /// Count of consecutive `scroll` calls whose `scrollY` didn't
+    /// move (within `scrollNoProgressEpsilonPx`). Used by the
+    /// scroll-progress feedback path to surface a stronger signal
+    /// to the model ("you've scrolled here 2 times without moving;
+    /// try a different action") when the page can't scroll further
+    /// in the requested direction. Resets on any successful (delta)
+    /// scroll or on a different tool.
+    private var consecutiveNoProgressScrolls: Int = 0
+    /// Pixel threshold below which a scroll is considered to have
+    /// produced no progress. Set to 4 to tolerate sub-pixel rounding
+    /// and end-of-scroll bounce-back animations that briefly tick a
+    /// few pixels before settling back.
+    private static let scrollNoProgressEpsilonPx: Double = 4
 
     init(controller: WebViewWindowController, startURL: URL?, viewport: CGSize, credential: CredentialBinding? = nil) {
         self.controller = controller
@@ -67,6 +97,7 @@ actor WebDriver: UXDriving {
         // the agent can still call `tap(x, y)` with no scaffolding.
         let marks = (try? await probeInteractiveElements()) ?? []
         self.lastMarks = marks
+        Self.logger.info("screenshot probed \(marks.count, privacy: .public) interactive marks (viewport=\(Int(self.viewport.width), privacy: .public)×\(Int(self.viewport.height), privacy: .public))")
 
         let raw = try await captureSnapshot()
         // Save the **unmarked** snapshot to disk. Replay, friction
@@ -83,15 +114,62 @@ actor WebDriver: UXDriving {
         // to draw. The agent loop receives these bytes via
         // `ScreenshotMetadata.markedImageData`; everything else (disk,
         // replay, friction report) keeps using the unmarked PNG.
-        let markedData: Data? = marks.isEmpty
+        let markedImage: NSImage? = marks.isEmpty
             ? nil
-            : Self.pngData(from: Self.drawMarks(on: raw, marks: marks, viewport: viewport))
+            : Self.drawMarks(on: raw, marks: marks, viewport: viewport)
+        let markedData: Data? = markedImage.flatMap { Self.pngData(from: $0) }
+
+        // Dev-only: when `HARNESS_DUMP_MARKED=1` is set, also write the
+        // marked overlay to disk next to the unmarked PNG with a
+        // `-marked.png` suffix. Lets HarnessCLI users inspect exactly
+        // what the LLM sees (badge sizes, probe coverage, missing
+        // anchors) without instrumenting the binary further. Skipped
+        // for the GUI / shipping app — the env var is never set there.
+        if let markedData,
+           ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
+            let markedURL = url
+                .deletingPathExtension()
+                .appendingPathExtension("marked.png")
+            try? markedData.write(to: markedURL, options: .atomic)
+        }
+
+        let annotationText: String? = marks.isEmpty
+            ? nil
+            : Self.describeMarks(marks)
 
         return ScreenshotMetadata(
             pixelSize: raw.size,
             pointSize: viewport,
-            markedImageData: markedData
+            markedImageData: markedData,
+            markedAnnotationText: annotationText
         )
+    }
+
+    /// Render the Set-of-Mark cache into a compact text block the
+    /// agent loop injects into the per-turn user message. Each mark
+    /// gets one line of `id → "label" (role/inputType)` so the model
+    /// can map intent → id by label without re-reading the badge
+    /// numbers from the image. Crucial for small vision models —
+    /// without it they reliably anchor on stale ids ("id 6 must still
+    /// be Articles because it was Articles last turn") across page
+    /// transitions where the numbering shifts.
+    ///
+    /// Format is intentionally terse — typical pages produce 10-30
+    /// marks, capped at 80 by the probe. Even at the cap this lands
+    /// well under 2KB of extra prompt tokens.
+    nonisolated static func describeMarks(_ marks: [InteractiveMark]) -> String {
+        var lines: [String] = []
+        lines.reserveCapacity(marks.count + 2)
+        lines.append("Marks visible in this screenshot (use `tap_mark(id)` to click the element described — never reuse an id from an earlier turn):")
+        for mark in marks {
+            let roleHint: String = {
+                if let t = mark.inputType, !t.isEmpty { return "\(mark.role)/\(t)" }
+                return mark.role
+            }()
+            let label = mark.label.isEmpty ? "(no label)" : "\"\(mark.label)\""
+            lines.append("  \(mark.id) → \(label) (\(roleHint))")
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Read the WKWebView's current URL. Cheap; safe to poll. Used by the
@@ -102,6 +180,19 @@ actor WebDriver: UXDriving {
     }
 
     func execute(_ call: ToolCall) async throws {
+        // Clear the previous tool's diagnostic detail. Only
+        // `dispatchScroll` populates this today; other tools should
+        // surface bare "ok" in the agent's history. The non-scroll
+        // path's reset also ensures `consecutiveNoProgressScrolls`
+        // restarts whenever the agent does something other than
+        // scroll — a tap or wait between scrolls counts as a fresh
+        // start.
+        if case .scroll = call.input {
+            // Keep counter; `dispatchScroll` manages it.
+        } else {
+            consecutiveNoProgressScrolls = 0
+        }
+        lastDriverDetail = nil
         switch call.input {
         case .tap(let x, let y):
             try await dispatchClick(x: x, y: y, button: 0, count: 1)
@@ -157,10 +248,187 @@ actor WebDriver: UXDriving {
         }
     }
 
+    /// Live-preview snapshot for the UI mirror — driven by
+    /// `RunCoordinator`'s preview poller between `simulatorReady` and
+    /// `runCompleted`. Captures the current WKWebView contents and
+    /// returns JPEG bytes for display only (the LLM-bound step
+    /// screenshot goes through `screenshot(into:)` separately).
+    ///
+    /// Returns nil on any error so the poller can keep ticking without
+    /// noisy log spam — a transient capture failure is expected
+    /// during navigations and isn't a run-fatal condition.
+    func liveSnapshot() async -> Data? {
+        do {
+            let image = try await captureSnapshot()
+            // JPEG at 0.7 quality is plenty for an off-the-hot-path
+            // mirror — the LLM gets the higher-quality capture via
+            // `screenshot(into:)`. Reduces per-tick memory by ~5×
+            // versus PNG for typical web content.
+            return jpegData(from: image, quality: 0.7)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Compress an NSImage to JPEG. Pulled out as a small helper so
+    /// `liveSnapshot()` and any future capture path can share it.
+    private nonisolated func jpegData(from image: NSImage, quality: Double) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: NSNumber(value: quality)]
+        )
+    }
+
+    /// Per-tool settle delay, applied by `RunCoordinator` after the
+    /// tool finishes and before the next screenshot capture. Sites with
+    /// dynamic / lazy / JS-driven content commonly keep loading for
+    /// hundreds of ms after `didFinish` fires, and an immediate
+    /// screenshot can catch a half-painted page (the most visible
+    /// failure mode on local-model runs where the screenshot then
+    /// drives 30-second inference).
+    ///
+    /// Strategy: prefer a MutationObserver-backed quietness gate (the
+    /// page tells us when it's actually done hydrating / animating),
+    /// fall back to a fixed sleep if the JS bridge fails. Earlier
+    /// versions used hard-coded delays; SPAs whose hydration arrived
+    /// past the delay window left the agent reading sparse mid-render
+    /// screenshots that misled it about what content existed.
+    ///
+    /// **SPA route-transition special case**: when a click changed
+    /// `location.href` (set by `dispatchClick` via
+    /// `lastClickNavigatedURL`), we escalate to the navigation-class
+    /// settle window even for click-family tools. React's Suspense
+    /// keeps the old DOM visible while the new route's components
+    /// mount; the mutation observer sees no mutations during this
+    /// lull and resolves early. The result without escalation: a
+    /// screenshot of the old DOM at the new URL, which then drives
+    /// the model's next decision against a hallucinated page state.
+    /// Empirically verified against alanwizemann.com (Next.js App
+    /// Router) — clicks on `<Link>` anchors triggered route changes
+    /// but the post-click screenshot routinely caught the index page
+    /// at the article URL.
+    func settle(afterTool call: ToolCall) async {
+        let idleMs: Int
+        let minMs: Int
+        let maxMs: Int
+        switch call.input {
+        // Navigations re-render the whole page — give the most time.
+        // Wide idle window (600ms) plus a long ceiling rides out
+        // hydration + lazy image batches without spinning forever on
+        // pages with persistent low-rate background activity (analytics
+        // beacons, polling, etc.).
+        case .navigate, .back, .forward, .refresh:
+            idleMs = 600
+            minMs = 600
+            maxMs = 8000
+        // Click-family tools. Default to the tight quietness window;
+        // escalate to the navigation profile when the click triggered
+        // a URL change (Next.js / React Router / etc. push the new
+        // route via pushState inside the click handler, so by the
+        // time settle runs we can already tell whether navigation
+        // happened).
+        case .tap, .tapMark, .doubleTap, .rightClick,
+             .scroll, .type, .keyShortcut, .fillCredential:
+            if lastClickNavigated {
+                idleMs = 600
+                minMs = 800
+                maxMs = 8000
+            } else {
+                idleMs = 250
+                minMs = 250
+                maxMs = 2000
+            }
+        // Pure-read / state-emit tools never change the page; no settle.
+        case .wait, .readScreen, .noteFriction, .markGoalDone,
+             .swipe, .pressButton:
+            return
+        }
+        // Reset the navigation flag for the next tool — it only
+        // applies to the immediately-following settle.
+        lastClickNavigated = false
+        _ = await awaitDOMSettled(idleMs: idleMs, minMs: minMs, maxMs: maxMs)
+    }
+
+    /// Block until the DOM has gone `idleMs` without a mutation, with a
+    /// floor of `minMs` total wait and a ceiling of `maxMs`. Returns
+    /// the actual wall-clock time waited (ms) — useful for `os_log`
+    /// instrumentation when debugging "page wasn't ready" cases.
+    ///
+    /// Implementation: a single `callAsyncJavaScript` invocation
+    /// installs a `MutationObserver` on `document.documentElement`,
+    /// resolves when no callback fires within `idleMs` of the most
+    /// recent mutation, with the bounding box enforced in JS so we
+    /// only pay the JS-bridge cost once per call.
+    ///
+    /// Falls back to a fixed `minMs` sleep on JS bridge failure (the
+    /// most likely cause is the page being navigated away mid-call;
+    /// a fixed sleep is conservative).
+    func awaitDOMSettled(idleMs: Int, minMs: Int, maxMs: Int) async -> Int {
+        // Async-JS body. Receives `idleMs`, `minMs`, `maxMs` as locals
+        // via `arguments:` — `callAsyncJavaScript` wraps the body in an
+        // `async function (idleMs, minMs, maxMs) { ... }`.
+        let js = """
+        return await new Promise((resolve) => {
+          const startedAt = performance.now();
+          const target = document.documentElement || document.body;
+          if (!target) { resolve(0); return; }
+          let lastMut = startedAt;
+          const obs = new MutationObserver(() => { lastMut = performance.now(); });
+          obs.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+          const tick = () => {
+            const now = performance.now();
+            const sinceMut = now - lastMut;
+            const elapsed = now - startedAt;
+            if (elapsed >= maxMs) { obs.disconnect(); resolve(Math.round(elapsed)); return; }
+            if (elapsed >= minMs && sinceMut >= idleMs) { obs.disconnect(); resolve(Math.round(elapsed)); return; }
+            const next = Math.max(50, Math.min(150, idleMs / 4));
+            setTimeout(tick, next);
+          };
+          tick();
+        });
+        """
+        let waitedMs: Int = await Task { @MainActor in
+            do {
+                // WKWebView's async `callAsyncJavaScript` returns `Any?`
+                // — a Promise resolution from the JS body. The body
+                // returns an Int via `Math.round`, which bridges to
+                // NSNumber (cast as `Int` works), occasionally as
+                // `Double` depending on platform — handle both.
+                let value = try await self.controller.webView.callAsyncJavaScript(
+                    js,
+                    arguments: ["idleMs": idleMs, "minMs": minMs, "maxMs": maxMs],
+                    in: nil,
+                    contentWorld: .page
+                )
+                if let i = value as? Int { return i }
+                if let d = value as? Double { return Int(d) }
+                return 0
+            } catch {
+                Self.logger.warning("awaitDOMSettled JS bridge failed: \(error.localizedDescription, privacy: .public); falling back to fixed sleep")
+                return -1
+            }
+        }.value
+        if waitedMs < 0 {
+            try? await Task.sleep(for: .milliseconds(minMs))
+            return minMs
+        }
+        return waitedMs
+    }
+
     /// Adapter-only teardown hook — closes the off-screen window
     /// controller hosting the WebView.
     func closeUnderlyingWindow() async {
         await controller.close()
+    }
+
+    /// Surface the most recent tool's driver-side diagnostic detail so
+    /// `RunCoordinator` can fold it into the next turn's
+    /// `toolResultSummary`. Today only populated by `dispatchScroll`
+    /// — see the `lastDriverDetail` field's doc for rationale.
+    func lastExecutionDetail() async -> String? {
+        lastDriverDetail
     }
 
     // MARK: - WebKit primitives (run on the main actor)
@@ -182,44 +450,82 @@ actor WebDriver: UXDriving {
     }
 
     private func dispatchClick(x: Int, y: Int, button: Int, count: Int) async throws {
-        // Click events fire on the topmost element at (x, y); focus
-        // resolves separately because real-browser click→focus behaviour
-        // depends on what the click target IS:
+        // Click dispatch has two flavours:
         //
-        //   - <input>/<textarea>/<select>/[contenteditable]/[tabindex] →
-        //     focuses directly.
-        //   - <label> with `for=...` or containing an input → focuses
-        //     the associated input.
-        //   - Any other wrapper (<div>, <span>, an absolutely-positioned
-        //     placeholder overlay) → finds the nearest focusable input
-        //     descendant, then ancestor.
+        //   (a) Native HTMLElement.click() — for anchors, buttons, and
+        //       role-based interactive elements. This is the most
+        //       reliable path for SPAs (React Router, Next.js Link,
+        //       Vue Router, etc) because:
+        //         - For <a href="...">, the browser performs native
+        //           navigation regardless of isTrusted.
+        //         - For <button>, .click() fires a click event that
+        //           bubbles through React's delegated listeners
+        //           normally.
+        //         - Routers that check `event.isTrusted` to filter out
+        //           bot traffic will still see the trusted browser-
+        //           generated navigation when href is set.
+        //       Without this, runs on SPA sites loop forever clicking
+        //       a nav link that "looks tapped" in the screenshot but
+        //       never actually navigates — verified empirically on
+        //       Next.js sites with smooth-scroll anchor + router-
+        //       intercepted navigation.
         //
-        // Our synthetic `MouseEvent` doesn't trigger the browser's
-        // built-in focus routing, so we resolve the "best focus target"
-        // ourselves and call `.focus()` explicitly. Without this, eBay's
-        // sign-in form (and any modern React form with an input wrapped
-        // in a styled <div>) silently never focuses, and the next
-        // `type` / `fill_credential` writes to the wrong element.
+        //   (b) Synthetic MouseEvent dispatch — fallback for
+        //       non-interactive elements (custom widgets, plain divs
+        //       with attached onClick handlers, things React renders
+        //       without any role hint). Still uses bubbles:true so the
+        //       event reaches React's root-level synthetic listener.
+        //
+        // Focus routing happens after either path — same logic as
+        // before. We resolve the "best focus target" ourselves because
+        // synthetic clicks don't trigger the browser's built-in focus
+        // routing the way real clicks do.
         let js = """
         (() => {
           const x = \(x), y = \(y);
+          const button = \(button);
+          const count = \(count);
+          const beforeURL = location.href;
           const el = document.elementFromPoint(x, y);
-          if (!el) return false;
-          const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: \(button), buttons: \(button == 0 ? 1 : 2), view: window };
-          for (let i = 0; i < \(count); i++) {
-            el.dispatchEvent(new MouseEvent('mousedown', opts));
-            el.dispatchEvent(new MouseEvent('mouseup', opts));
-            el.dispatchEvent(new MouseEvent(\(button == 2 ? "'contextmenu'" : "'click'"), opts));
+          if (!el) return { ok: false, reason: 'no-element-at-point', urlChanged: false };
+
+          // Prefer native .click() on anchors/buttons/role-interactive
+          // elements (left-click only — right-clicks and double-clicks
+          // keep synthetic dispatch since native .click() doesn't model
+          // those well). Walks up the DOM in case the click landed on
+          // a child span/icon inside an interactive parent.
+          let interactiveTag = null;
+          let interactive = null;
+          if (button === 0) {
+            interactive = el.closest('a[href], button, input[type="button"], input[type="submit"], [role="button"], [role="link"], [role="menuitem"], [role="tab"]');
+            if (interactive) {
+              interactiveTag = interactive.tagName + (interactive.getAttribute('href') ? '[href=' + interactive.getAttribute('href') + ']' : '');
+            }
           }
-          // Focus routing — only for left-click (button 0).
-          if (\(button) === 0) {
+
+          if (interactive && interactive.click) {
+            for (let i = 0; i < count; i++) {
+              try { interactive.click(); } catch (e) {}
+            }
+          } else {
+            const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: button, buttons: (button === 0 ? 1 : 2), view: window };
+            for (let i = 0; i < count; i++) {
+              el.dispatchEvent(new MouseEvent('mousedown', opts));
+              el.dispatchEvent(new MouseEvent('mouseup', opts));
+              el.dispatchEvent(new MouseEvent(button === 2 ? 'contextmenu' : 'click', opts));
+            }
+          }
+
+          // Focus routing — only for left-click (button 0). Same logic
+          // as before; runs regardless of which dispatch path above
+          // fired so type/fill_credential after a click still lands
+          // on the right input.
+          if (button === 0) {
             const FOCUSABLE = 'input, textarea, select, [contenteditable=""], [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
             let target = null;
-            // 1. Direct match — clicked the input itself.
             if (el.matches && el.matches(FOCUSABLE)) {
               target = el;
             }
-            // 2. <label> click — follow `for` or contained input.
             if (!target && el.tagName === 'LABEL') {
               const htmlFor = el.getAttribute('for');
               if (htmlFor) {
@@ -229,9 +535,6 @@ actor WebDriver: UXDriving {
                 target = el.querySelector(FOCUSABLE);
               }
             }
-            // 3. Wrapper click — look inside, then up. Inside first
-            // because a button-shaped div around an input is more
-            // common than the reverse.
             if (!target && el.querySelector) {
               target = el.querySelector(FOCUSABLE);
             }
@@ -244,10 +547,35 @@ actor WebDriver: UXDriving {
               try { el.focus(); } catch (e) {}
             }
           }
-          return true;
+
+          return {
+            ok: true,
+            elementTag: el.tagName,
+            interactiveTag: interactiveTag,
+            url: location.href,
+            urlChanged: location.href !== beforeURL
+          };
         })();
         """
-        try await runJS(js)
+        // Capture the JS return value so we can log what was clicked
+        // and where the page ended up. Helps diagnose "model keeps
+        // tapping but page doesn't change" cases — if `interactiveTag`
+        // is null and the URL didn't change, we know the click hit a
+        // non-interactive element and a synthetic event was used.
+        let result = try await runJSAndReturn(js)
+        if let dict = result as? [String: Any] {
+            let element = (dict["elementTag"] as? String) ?? "?"
+            let interactive = (dict["interactiveTag"] as? String) ?? "none"
+            let url = (dict["url"] as? String) ?? ""
+            let urlChanged = (dict["urlChanged"] as? Bool) ?? false
+            self.lastClickNavigated = urlChanged
+            Self.logger.info("click (\(x, privacy: .public), \(y, privacy: .public)) → element=\(element, privacy: .public) interactive=\(interactive, privacy: .public) url=\(url, privacy: .public) urlChanged=\(urlChanged, privacy: .public)")
+            if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
+                let nav = urlChanged ? " [NAV]" : ""
+                let line = "[WebDriver]   → element=\(element) interactive=\(interactive) url=\(url)\(nav)\n"
+                FileHandle.standardError.write(Data(line.utf8))
+            }
+        }
     }
 
     private func dispatchScroll(x: Int, y: Int, dx: Int, dy: Int) async throws {
@@ -260,10 +588,14 @@ actor WebDriver: UXDriving {
         // to `window.scrollBy` if nothing in the ancestor chain is a
         // scroll container.
         //
-        // Also dispatches a wheel event AFTER the scroll so any
-        // page-level listeners (infinite-scroll triggers, fancy
-        // parallax) still get a signal that scrolling happened. The
-        // event is informational, not load-bearing.
+        // Returns enough metadata to build the agent-facing progress
+        // string: the actual delta the page moved (often smaller than
+        // requested `dy` near end-of-content), the scroller's post-scroll
+        // top, and the maximum scrollable extent. Local sub-10B vision
+        // models cannot reliably tell from a screenshot alone whether a
+        // scroll moved 0px or 400px on a long uniform body; this text
+        // signal is what stops the model from looping on identical-
+        // looking states.
         let js = """
         (() => {
           const x = \(x), y = \(y), dx = \(dx), dy = \(dy);
@@ -283,9 +615,16 @@ actor WebDriver: UXDriving {
             }
             el = el.parentElement;
           }
+          const usingWindow = !scroller;
+          const beforeY = usingWindow
+            ? (window.scrollY || document.documentElement.scrollTop || 0)
+            : scroller.scrollTop;
+          const beforeX = usingWindow
+            ? (window.scrollX || document.documentElement.scrollLeft || 0)
+            : scroller.scrollLeft;
           // Fall back to the document's scrolling element (window) when
           // no inner container handles the axis.
-          if (!scroller) {
+          if (usingWindow) {
             (window.scrollBy || (() => {})).call(window, dx, dy);
           } else {
             scroller.scrollBy(dx, dy);
@@ -301,10 +640,94 @@ actor WebDriver: UXDriving {
               deltaX: dx, deltaY: dy
             }));
           }
-          return true;
+          const afterY = usingWindow
+            ? (window.scrollY || document.documentElement.scrollTop || 0)
+            : scroller.scrollTop;
+          const afterX = usingWindow
+            ? (window.scrollX || document.documentElement.scrollLeft || 0)
+            : scroller.scrollLeft;
+          const maxY = usingWindow
+            ? Math.max(0, (document.documentElement.scrollHeight || 0) - (window.innerHeight || 0))
+            : Math.max(0, (scroller.scrollHeight || 0) - (scroller.clientHeight || 0));
+          const maxX = usingWindow
+            ? Math.max(0, (document.documentElement.scrollWidth || 0) - (window.innerWidth || 0))
+            : Math.max(0, (scroller.scrollWidth || 0) - (scroller.clientWidth || 0));
+          return {
+            beforeY: Math.round(beforeY),
+            beforeX: Math.round(beforeX),
+            afterY: Math.round(afterY),
+            afterX: Math.round(afterX),
+            maxY: Math.round(maxY),
+            maxX: Math.round(maxX),
+            scroller: usingWindow ? "window" : "inner"
+          };
         })();
         """
-        try await runJS(js)
+        let result = try await runJSAndReturn(js)
+        guard let dict = result as? [String: Any] else {
+            lastDriverDetail = nil
+            return
+        }
+        let beforeY = (dict["beforeY"] as? Double) ?? Double((dict["beforeY"] as? Int) ?? 0)
+        let afterY = (dict["afterY"] as? Double) ?? Double((dict["afterY"] as? Int) ?? 0)
+        let maxY = (dict["maxY"] as? Double) ?? Double((dict["maxY"] as? Int) ?? 0)
+        let beforeX = (dict["beforeX"] as? Double) ?? Double((dict["beforeX"] as? Int) ?? 0)
+        let afterX = (dict["afterX"] as? Double) ?? Double((dict["afterX"] as? Int) ?? 0)
+        let maxX = (dict["maxX"] as? Double) ?? Double((dict["maxX"] as? Int) ?? 0)
+        let scrollerKind = (dict["scroller"] as? String) ?? "window"
+
+        let deltaY = afterY - beforeY
+        let deltaX = afterX - beforeX
+        let intendedNonZero = (dy != 0 || dx != 0)
+        let movedMeaningfully =
+            abs(deltaY) >= Self.scrollNoProgressEpsilonPx ||
+            abs(deltaX) >= Self.scrollNoProgressEpsilonPx
+        if intendedNonZero && !movedMeaningfully {
+            consecutiveNoProgressScrolls += 1
+        } else {
+            consecutiveNoProgressScrolls = 0
+        }
+
+        // Build the agent-facing progress string. Two flavours:
+        //   - Successful scroll: "scrolled 800 → 1200 (delta 400), now at
+        //     47% of 2560 max scroll (window scroller)"
+        //   - No-progress scroll: "scroll requested dy=400 but page did
+        //     not move (already at end of scroll; consecutive 2 no-op
+        //     scrolls — try a different tool such as `tap_mark` to
+        //     navigate, or `mark_goal_done` if you've read enough)"
+        let detail: String
+        if intendedNonZero && !movedMeaningfully {
+            let direction = dy > 0 ? "down" : (dy < 0 ? "up" : (dx > 0 ? "right" : "left"))
+            let atEnd: String
+            if dy > 0 && afterY >= maxY - Self.scrollNoProgressEpsilonPx {
+                atEnd = "already at bottom of \(scrollerKind) scroller (scrollY=\(Int(afterY)) of \(Int(maxY)) max)"
+            } else if dy < 0 && afterY <= Self.scrollNoProgressEpsilonPx {
+                atEnd = "already at top of \(scrollerKind) scroller (scrollY=\(Int(afterY)))"
+            } else {
+                atEnd = "page did not move (scrollY=\(Int(afterY)))"
+            }
+            let nudge: String
+            if consecutiveNoProgressScrolls >= 2 {
+                nudge = " — \(consecutiveNoProgressScrolls) consecutive no-progress scrolls. Try a different tool: tap_mark on a link to navigate, or mark_goal_done if you have read enough."
+            } else {
+                nudge = ""
+            }
+            detail = "scroll \(direction) — \(atEnd)\(nudge)"
+        } else {
+            let percent: Int
+            if maxY > 0 {
+                percent = Int(((afterY / maxY) * 100).rounded())
+            } else {
+                percent = 100
+            }
+            detail = "scrolled to \(Int(afterY)) of \(Int(maxY)) (\(percent)% of \(scrollerKind) scroller, delta y=\(Int(deltaY)) x=\(Int(deltaX)))"
+        }
+        lastDriverDetail = detail
+        Self.logger.info("scroll dy=\(dy, privacy: .public) dx=\(dx, privacy: .public) → \(detail, privacy: .public)")
+        if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
+            let line = "[WebDriver] scroll → \(detail)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
     }
 
     private func dispatchType(_ text: String) async throws {
@@ -445,6 +868,34 @@ actor WebDriver: UXDriving {
         }
     }
 
+    /// Like `runJS` but surfaces the JS return value. Used by
+    /// `dispatchClick` to capture diagnostic info (which element was
+    /// clicked, whether the native or synthetic path fired, the URL
+    /// after the click) — useful for diagnosing "agent keeps tapping
+    /// but page doesn't change" failure modes that show up on SPA
+    /// sites with intercepted routing. Return type is `Any?` because
+    /// WKWebView's `evaluateJavaScript` returns dynamic JS — callers
+    /// downcast at the use site.
+    private func runJSAndReturn(_ js: String) async throws -> Any? {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSReturn, any Error>) in
+            Task { @MainActor in
+                self.controller.webView.evaluateJavaScript(js) { value, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume(returning: JSReturn(value: value))
+                    }
+                }
+            }
+        }.value
+    }
+
+    /// Sendable wrapper around a JS return value (which is `Any?` and
+    /// not itself Sendable). Confining cross-actor transport.
+    private struct JSReturn: @unchecked Sendable {
+        let value: Any?
+    }
+
     // MARK: - Set-of-Mark (V6)
 
     /// Run the JS probe that enumerates every visible interactive
@@ -471,9 +922,19 @@ actor WebDriver: UXDriving {
     private func probeInteractiveElements() async throws -> [InteractiveMark] {
         let js = """
         (() => {
-          // Targets where pixel precision matters. Plain <a> links and
-          // bare [tabindex] are deliberately excluded — they bloated
-          // the mark count without earning their visual cost.
+          // Targets where pixel precision matters. `a[href]` is included
+          // because nav links in SPAs (Next.js Link, React Router Link,
+          // etc.) all render as anchors — excluding them leaves the
+          // top-of-page navigation un-marked, forcing the agent to fall
+          // back to `tap(x, y)`. For local sub-10B vision models that
+          // see a downscaled screenshot, those raw coordinates frequently
+          // land on a neighbour nav item (verified with Qwen3-VL 8B at
+          // 768-wide vs 1280-wide viewport). Anchor inclusion is what
+          // makes `tap_mark` actually usable for navigation.
+          //
+          // Decorative anchors (empty href, anchor jumps, javascript:
+          // pseudo-protocols) stay excluded — they'd badge map markers
+          // and footer scroll-to-top arrows without buying real value.
           const SELECTOR = [
             'input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"])',
             'textarea',
@@ -482,6 +943,8 @@ actor WebDriver: UXDriving {
             'input[type="button"]',
             'input[type="submit"]',
             'input[type="reset"]',
+            'a[href]:not([href=""]):not([href="#"]):not([href^="javascript:"])',
+            '[role="link"]',
             '[role="button"]',
             '[role="checkbox"]',
             '[role="radio"]',
@@ -541,6 +1004,19 @@ actor WebDriver: UXDriving {
               || el.getAttribute('name')
               || '';
             label = String(label).trim().replace(/\\s+/g, ' ');
+            // Drop big, label-less interactive containers. They tend
+            // to be invisible wrapper "buttons" that span a section
+            // (e.g. a `<div role="button">` covering a whole hero
+            // card with no text or aria-label of its own). Marking
+            // them produces a badge floating over otherwise-empty
+            // page area, which small vision models then misread as
+            // "content I should click" — see the badge-11 misfire on
+            // alanwizemann.com that drove this filter in. Small
+            // label-less elements (icon buttons under 48×48) keep
+            // their badge; their position is meaningful even without
+            // a label and they're typically genuinely clickable.
+            const big = r.width >= 200 || r.height >= 100;
+            if (label.length === 0 && big) return;
             if (label.length > 80) label = label.slice(0, 77) + '…';
             const role = el.getAttribute('role') || el.tagName.toLowerCase();
             const inputType = el.getAttribute('type') || null;
@@ -560,7 +1036,15 @@ actor WebDriver: UXDriving {
           // agent's prompt assumes this, and it makes runs easier
           // to skim by ID.
           out.sort((a, b) => (a.y - b.y) || (a.x - b.x));
-          return out;
+          // Cap at 80 marks. With anchor inclusion (nav links, in-text
+          // links, footer link grids), an article-heavy page like a
+          // blog index can easily produce 200+ marks — past a point
+          // they overlap onto the same badge column and degrade legibility
+          // for the model. The cap keeps the most-likely-actionable
+          // elements (top-of-page nav + above-the-fold content) badged;
+          // anything below the fold gets badged once the agent scrolls.
+          const CAP = 80;
+          return out.length > CAP ? out.slice(0, CAP) : out;
         })();
         """
         // Need a return value from JS — switch off the side-effect-only
@@ -606,6 +1090,11 @@ actor WebDriver: UXDriving {
         }
         let cx = Int(mark.rect.midX.rounded())
         let cy = Int(mark.rect.midY.rounded())
+        Self.logger.info("tap_mark(\(id, privacy: .public)) → label=\"\(mark.label, privacy: .public)\" role=\(mark.role, privacy: .public) rect=(\(Int(mark.rect.minX), privacy: .public),\(Int(mark.rect.minY), privacy: .public),\(Int(mark.rect.width), privacy: .public),\(Int(mark.rect.height), privacy: .public)) → click(\(cx, privacy: .public),\(cy, privacy: .public))")
+        if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
+            let line = "[WebDriver] tap_mark(\(id)) label=\"\(mark.label)\" role=\(mark.role) rect=(\(Int(mark.rect.minX)),\(Int(mark.rect.minY)),\(Int(mark.rect.width)),\(Int(mark.rect.height))) → click(\(cx),\(cy))\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
         try await dispatchClick(x: cx, y: cy, button: 0, count: 1)
     }
 
@@ -658,23 +1147,55 @@ actor WebDriver: UXDriving {
             ctx.setLineWidth(2.0)
             ctx.stroke(outlineRect)
 
-            // Number badge anchored at the CSS-top-left of the element.
+            // Number badge floating just **above** the element so it
+            // doesn't obscure the element's first characters. Earlier
+            // we anchored at the top-left INSIDE the element's rect:
+            // for nav anchors that meant the badge covered the first
+            // 2-3 letters of the label, and the LLM saw "perience",
+            // "sjects", "icles" instead of "Experience", "Projects",
+            // "Articles" — verified empirically with Qwen3-VL 8B
+            // against alanwizemann.com. Floating the badge just above
+            // the element gives the model a clean read of both the
+            // badge number AND the label.
+            //
+            // Sizing: tuned for legibility after the LLM-side
+            // downscale. Local sub-10B vision models receive the image
+            // clamped to a 768pt long edge (see
+            // `AgentModel.screenshotMaxLongEdge`), so a 1280pt-wide
+            // viewport scales to 0.6×. A 22pt-bold badge becomes
+            // ~13pt — readable by Qwen3-VL and friends; the prior
+            // 13pt sizing collapsed to ~8pt and was effectively
+            // invisible. Cloud models receive the native-resolution
+            // image so the slightly chunkier badges cost nothing.
+            // Disk PNGs stay unmarked, so this overlay is invisible
+            // to humans reviewing replays.
             let labelText = "\(mark.id)"
-            let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+            let font = NSFont.systemFont(ofSize: 22, weight: .bold)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
                 .foregroundColor: badgeFG
             ]
             let textSize = (labelText as NSString).size(withAttributes: attrs)
-            let pad: CGFloat = 4
-            let badgeW = max(20, textSize.width + 2 * pad)
-            let badgeH: CGFloat = 18
-            // CSS-top → NSImage y = `size.height - css.minY`. Since the
-            // badge is drawn from its bottom-left, subtract `badgeH`
-            // so the badge's TOP edge lands at the CSS-top of the rect.
+            let pad: CGFloat = 6
+            let badgeW = max(32, textSize.width + 2 * pad)
+            let badgeH: CGFloat = 30
+            // Float the badge just above the element's CSS-top edge.
+            // CSS-top is at NSImage y = `size.height - css.minY`. A
+            // 4pt gap separates the badge bottom from the element's
+            // outline; the badge's TOP edge then lands at
+            // `size.height - css.minY + 4 + badgeH`, so the badge's
+            // BOTTOM (drawn from bottom-left in y-up CGContext) is at
+            // `size.height - css.minY + 4`. When the element is right
+            // at the top of the viewport (css.minY ≈ 0), the badge
+            // would clip off-screen — clamp y so badges always stay
+            // inside the image; for top-of-page nav this puts them
+            // INSIDE the element at the very top edge, where they
+            // overlap minimal label text.
+            let preferredY = size.height - css.minY + 4
+            let badgeY = min(preferredY, size.height - badgeH - 2)
             let badgeRect = CGRect(
                 x: css.minX,
-                y: size.height - css.minY - badgeH,
+                y: badgeY,
                 width: badgeW,
                 height: badgeH
             )

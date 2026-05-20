@@ -142,6 +142,84 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Harness.app/Contents/MacOS/Harness"
         PRODUCT_BUNDLE_IDENTIFIER: com.harness.tests
         GENERATE_INFOPLIST_FILE: YES
+  # HarnessCLI — development-time command-line driver. Same Harness/
+  # source root (minus the SwiftUI surface), produces a `harness-cli`
+  # binary that talks to `WebPlatformAdapter` directly. Used to iterate
+  # on the web agent loop without rebuilding the Mac app. See
+  # `HarnessCLI/Main.swift` for entry point.
+  HarnessCLI:
+    type: tool
+    platform: macOS
+    sources:
+      - path: HarnessCLI
+      - path: Harness
+        excludes:
+          # All SwiftUI views — not needed for headless runs.
+          - "Features/**"
+          # App-level wiring assumes a full SwiftUI app: AppContainer
+          # constructs every service, the @main entry point lives here,
+          # AppCoordinator/AppState/SidebarView are observable + view-
+          # rendering only. The CLI builds its own minimal graph in
+          # `HarnessRunner.swift`.
+          - "App/HarnessApp.swift"
+          - "App/AppContainer.swift"
+          - "App/AppCoordinator.swift"
+          - "App/AppState.swift"
+          - "App/FirstRunWizard.swift"
+          - "App/SidebarView.swift"
+          # ProjectPicker is a SwiftUI NSOpenPanel wrapper — the CLI
+          # takes URLs as command-line args.
+          - "Services/ProjectPicker.swift"
+          # Mappers bridges production types to HarnessDesign's Preview*
+          # types for the GUI's primitives. The CLI never touches the
+          # design package, so this file's references to PreviewToolCall
+          # / PreviewRun / PreviewStep / etc. would fail to resolve.
+          - "Domain/Mappers.swift"
+      - path: docs/PROMPTS
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_NAME: harness-cli
+        PRODUCT_BUNDLE_IDENTIFIER: com.harness.cli
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_ENTITLEMENTS: ""
+        SKIP_INSTALL: NO
+        INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
+    preBuildScripts:
+      # Same generated-stub bake as the Harness target — `HarnessPaths`
+      # references `HarnessGeneratedRepoRoot.path` and
+      # `HarnessGeneratedWDASnapshot.sha`, so both need to exist for
+      # this target's source list.
+      - name: Generate HarnessGeneratedRepoRoot.swift
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          DEST="$SRCROOT/Harness/Generated/HarnessGeneratedRepoRoot.swift"
+          mkdir -p "$(dirname "$DEST")"
+          NEW=$(printf '%s\n' \
+            '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+            'enum HarnessGeneratedRepoRoot {' \
+            "    static let path = \"$SRCROOT\"" \
+            '}')
+          if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
+            printf '%s\n' "$NEW" > "$DEST"
+          fi
+      - name: Generate HarnessGeneratedWDASnapshot.swift
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          DEST="$SRCROOT/Harness/Generated/HarnessGeneratedWDASnapshot.swift"
+          mkdir -p "$(dirname "$DEST")"
+          SHA="$(/usr/bin/git -C "$SRCROOT/vendor/WebDriverAgent" rev-parse HEAD 2>/dev/null || echo "")"
+          NEW=$(printf '%s\n' \
+            '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+            'enum HarnessGeneratedWDASnapshot {' \
+            "    static let sha = \"$SHA\"" \
+            '}')
+          if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
+            printf '%s\n' "$NEW" > "$DEST"
+          fi
 schemes:
   Harness:
     build:
@@ -159,3 +237,9 @@ schemes:
       config: Debug
     archive:
       config: Release
+  HarnessCLI:
+    build:
+      targets:
+        HarnessCLI: all
+    run:
+      config: Debug

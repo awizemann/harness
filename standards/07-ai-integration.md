@@ -12,9 +12,10 @@ This standard is the senior reference for anyone touching Claude calls in Harnes
 |---|---|---|
 | Production run (non-debug) | **Claude Opus 4.7** | User picker on goal input screen |
 | Cheap iteration | Claude Sonnet 4.6 | Same picker |
+| Privacy-only / offline | **Qwen3-VL 8B** via local Ollama (see §11) | User picker on goal input |
 | Replay-debug runs | Whatever the original used; `temperature: 0` for determinism | n/a |
 
-No automatic fallback (Opus → Sonnet) on failure. If the chosen model errors, the user sees the error; we don't silently downgrade.
+No automatic fallback (Opus → Sonnet, cloud → local, etc.) on failure. If the chosen model errors, the user sees the error; we don't silently downgrade.
 
 ---
 
@@ -107,8 +108,12 @@ The resolved value is then clamped to `AgentModel.maxTokenBudget` so a generous 
 | GPT-4.1 Nano | 2M | 10M | ~$0.20 |
 | Gemini 2.5 Flash | 2M | 10M | ~$0.60 |
 | Gemini 2.5 Flash Lite | 2M | 10M | ~$0.20 |
+| Qwen3-VL 8B (local) | 1M | 10M | $0 |
+| Gemma 4 9B (local) | 1M | 10M | $0 |
+| Llama 3.2 Vision 11B (local) | 1M | 10M | $0 |
+| Custom local model | 1M | 10M | $0 |
 
-(Prompt caching reduces effective spend substantially — see §3.)
+(Prompt caching reduces effective spend substantially — see §3. Local models cost nothing at the API level; the cap exists purely to bound JSONL size + RAM.)
 
 When the budget is exhausted, `AgentLoop` short-circuits with `mark_goal_done(verdict: .blocked, summary: "token budget exhausted at step N")`. This is logged as a friction event of kind `unexpected_state` so the user sees what happened.
 
@@ -170,11 +175,66 @@ protocol LLMClient: Sendable {
 }
 ```
 
-We don't plan to swap vendors today, but the protocol makes a future move (or a side-by-side comparison run) cheap. `MockLLMClient`, `RecordedLLMClient`, and `ClaudeClient` all conform.
+`MockLLMClient`, `RecordedLLMClient`, `ClaudeClient`, `OpenAIClient`, and `GeminiClient` all conform. The protocol made adding local Mac inference cheap — see §12.
 
 ---
 
-## 12. Audit checklist
+## 12. Local Mac inference (Ollama / LM Studio)
+
+`ModelProvider.local` runs a vision LLM on the user's Mac via an OpenAI-compatible HTTP server (Ollama at `http://127.0.0.1:11434`, LM Studio at `http://127.0.0.1:1234`). It exists for three reasons:
+
+1. **Privacy.** Screenshots and prompts never leave the Mac.
+2. **Cost.** $0 per run.
+3. **Offline.** No network dependency on Anthropic / OpenAI / Google.
+
+### Implementation shortcut
+
+Both Ollama and LM Studio serve OpenAI-compatible chat-completions at `/v1/chat/completions`. `OpenAIClient` already accepted an injectable `baseURL` (originally for tests), so the `.local` provider reuses it. The factory wires the base URL from `AppState.localBaseURL` and the auth path is relaxed when `baseURL.host != "api.openai.com"` (sends `Authorization: Bearer local` — Ollama tolerates any string; LM Studio ignores the header).
+
+```swift
+case .local:
+    return OpenAIClient(
+        keychain: keychain,
+        baseURL: localBaseURL ?? defaultLocalBaseURL,
+        modelNameOverride: modelNameOverride
+    )
+```
+
+`modelNameOverride` is only used when the picked `AgentModel` is `.customLocal` — the user-typed model tag (e.g. `qwen2.5-vl:7b`) lives in `AppState.localCustomModelName` and gets sent verbatim as the `model:` field instead of the enum's placeholder rawValue.
+
+### Curated models
+
+The picker lists four entries (`AgentModel`):
+- `.qwen3VL8B` (`qwen3-vl:8b`) — purpose-built "Visual Agent" for GUI: reads small UI text, recognizes UI elements, native tool calling. Recommended default for local runs.
+- `.gemma4Vision9B` (`gemma4:9b`) — Google, April 2026. Native vision + tool calling.
+- `.llama32Vision11B` (`llama3.2-vision:11b`) — Meta. Older but battle-tested in Ollama.
+- `.customLocal` — user-typed tag; escape hatch for experimentation.
+
+### Honest trade-offs (codified in UI copy)
+
+- **Quality.** Sub-10B vision models are meaningfully worse than Claude Opus 4.7 at nuanced UI reasoning. Friction-event quality drops.
+- **Speed.** ~1–5 tok/sec on M2/M3 vs. ~50 tok/sec cloud. 20-step runs go from ~3 min to ~30 min.
+- **Cold-start.** First request loads the model into RAM (~10–60s).
+- **Tool-call discipline.** Smaller models emit malformed JSON or hallucinate tool names more often. The existing `OpenAIClient.decodeResponse` parser tolerates this via the LoopRetry path.
+
+### What we do NOT do
+
+- **No auto-install.** Harness detects Ollama at `127.0.0.1:11434` and surfaces install commands; it does not run `brew install ollama` for the user. (The default URL uses IPv4 explicitly rather than `localhost` because Ollama's default config binds to IPv4 only — `localhost` resolves to both `127.0.0.1` and `::1`, and macOS URLSession's Happy Eyeballs tries IPv6 first, which then ECONNREFUSEs. The IPv4 literal sidesteps the race.)
+- **No bundled models.** Harness does not ship model weights. The user runs `ollama pull <model>`.
+- **No model discovery.** v1 picker is a static curated list + a custom field; we don't query Ollama's `/api/tags`. Future work if demand warrants.
+- **No fallback to cloud.** If the local server is unreachable, the run blocks at preflight; we never silently call Anthropic/OpenAI/Google instead.
+
+### Preflight contract
+
+The Compose Run start button is gated on `authReady(for: model)`. For local that means: the last `refreshLocalServer()` probe found the server reachable, AND if model is `.customLocal`, `localCustomModelName` is non-empty. The probe runs at app launch, on Settings open, when the user switches the provider picker to Local, and on any "Re-check" tap.
+
+### Network audit invariant
+
+A run with `provider == .local` must produce zero outbound network connections to any cloud LLM endpoint (`*.anthropic.com`, `*.openai.com`, `*.googleapis.com`). The only LLM traffic should be loopback to `AppState.localBaseURL`. This is checkable manually via Activity Monitor → Network during a run; a future regression test should assert this with a mock URLSession.
+
+---
+
+## 13. Audit checklist
 
 When reviewing AI integration code:
 
@@ -186,3 +246,4 @@ When reviewing AI integration code:
 - [ ] Is the prompt-injection defense regression test still green?
 - [ ] Are errors mapped to typed `ClaudeError` cases (not raw URLError) before reaching the view-model?
 - [ ] Does the loop emit `friction` events for `unexpected_state` (token budget hit, parse error retry, etc.)?
+- [ ] For local provider work: does the change preserve the "no cloud connections when provider is `.local`" invariant?

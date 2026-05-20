@@ -304,13 +304,31 @@ struct GoalInputView: View {
                         sublabel: "Override the workspace default.",
                         showsInherits: !vm.overrideDefaults
                     ) {
-                        SegmentedToggle(
-                            options: AgentModel.allCases
-                                .filter { $0.provider == vm.model.provider }
-                                .map { .init($0, $0.displayName) },
-                            selection: $bvm.model
-                        )
-                        .onChange(of: vm.model) { _, _ in vm.overrideDefaults = true }
+                        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
+                            SegmentedToggle(
+                                options: AgentModel.allCases
+                                    .filter { $0.provider == vm.model.provider }
+                                    .map { .init($0, $0.displayName) },
+                                selection: $bvm.model
+                            )
+                            .onChange(of: vm.model) { _, _ in vm.overrideDefaults = true }
+
+                            // Local-specific warning: set expectations
+                            // before the user spends 30 minutes on a
+                            // run that would have taken 3 minutes on
+                            // Claude. Tasteful — caption-sized, muted.
+                            if vm.model.provider == .local {
+                                HStack(alignment: .top, spacing: Theme.spacing.xs) {
+                                    Image(systemName: "info.circle")
+                                        .foregroundStyle(Color.harnessText3)
+                                    Text(localModelHint(for: vm.model))
+                                        .font(.caption)
+                                        .foregroundStyle(Color.harnessText3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .padding(.top, Theme.spacing.xs)
+                            }
+                        }
                     }
                     Divider().background(Color.harnessLineSoft)
 
@@ -407,7 +425,7 @@ struct GoalInputView: View {
                 }
             }
             .buttonStyle(AccentButtonStyle())
-            .disabled(!vm.canStart || !state.apiKeyPresent(for: vm.model.provider))
+            .disabled(!vm.canStart || !authReady(for: vm.model))
             .keyboardShortcut(.return, modifiers: .command)
         }
         .padding(.horizontal, Theme.spacing.l)
@@ -475,7 +493,10 @@ struct GoalInputView: View {
 
     /// Read/write binding over `vm.model.provider`. Setting the provider
     /// snaps `vm.model` to that provider's first model so the model
-    /// SegmentedToggle below stays in a valid state.
+    /// SegmentedToggle below stays in a valid state. Also kicks off a
+    /// fresh local-server probe when the user switches to Local so the
+    /// status chip and Start-Run gate reflect reality without forcing a
+    /// trip through Settings.
     private func providerBinding(vm: GoalInputViewModel) -> Binding<ModelProvider> {
         Binding<ModelProvider>(
             get: { vm.model.provider },
@@ -484,6 +505,9 @@ struct GoalInputView: View {
                 if let first = AgentModel.allCases.first(where: { $0.provider == newProvider }) {
                     vm.model = first
                     vm.overrideDefaults = true
+                }
+                if newProvider == .local {
+                    Task { await state.refreshLocalServer() }
                 }
             }
         )
@@ -510,14 +534,19 @@ struct GoalInputView: View {
         var apiKey: Bool
         var simulator: Bool
         var tooling: Bool
-        /// User-facing provider name (e.g. "Anthropic", "OpenAI") so
-        /// the missing-key prompt can name the right service.
+        /// User-facing provider name (e.g. "Anthropic", "OpenAI",
+        /// "Local Mac") so the missing-auth prompt can name the right
+        /// service.
         var providerName: String
         var allOK: Bool { apiKey && simulator && tooling }
 
+        /// True when the auth failure is for the local provider —
+        /// drives wording (missing server vs missing key).
+        var isLocal: Bool { providerName == ModelProvider.local.displayName }
+
         var label: String {
             if allOK { return "preflight ok" }
-            if !apiKey { return "\(providerName) key missing" }
+            if !apiKey { return isLocal ? "local server unreachable" : "\(providerName) key missing" }
             if !tooling { return "xcodebuild missing" }
             if !simulator { return "no simulator" }
             return "preflight"
@@ -526,7 +555,13 @@ struct GoalInputView: View {
         var fullCopy: String {
             if allOK { return "Build is fresh · Simulator booted · API key valid" }
             var problems: [String] = []
-            if !apiKey { problems.append("Add \(providerName) API key in Settings") }
+            if !apiKey {
+                if isLocal {
+                    problems.append("Local server unreachable — start Ollama or set the URL in Settings")
+                } else {
+                    problems.append("Add \(providerName) API key in Settings")
+                }
+            }
             if !tooling { problems.append("xcodebuild not found") }
             if !simulator { problems.append("no simulator selected") }
             return problems.joined(separator: " · ")
@@ -536,9 +571,11 @@ struct GoalInputView: View {
     private func preflightStatus(vm: GoalInputViewModel) -> Preflight {
         // Per-platform preflight: iOS still cares about a booted
         // simulator + xcodebuild; macOS / web only need the API key.
-        // The API-key check is per-provider — a run that picked GPT-5
-        // Mini wants the OpenAI key, not Anthropic.
-        let apiKeyOK = state.apiKeyPresent(for: vm.model.provider)
+        // The auth check is per-provider — a run that picked GPT-5
+        // Mini wants the OpenAI key, not Anthropic. For `.local` the
+        // gate is server reachability (no API key); for `.customLocal`
+        // we additionally require the user to have typed a model tag.
+        let apiKeyOK = authReady(for: vm.model)
         switch vm.platformKind {
         case .iosSimulator:
             return Preflight(
@@ -554,6 +591,46 @@ struct GoalInputView: View {
                 tooling: true,           // ditto
                 providerName: vm.model.provider.displayName
             )
+        }
+    }
+
+    /// Caption shown beneath the model row when the user picks a local
+    /// model. Goal is to set expectations (slower, lower quality) and
+    /// nudge the user toward Settings when something's not configured
+    /// — without nagging.
+    private func localModelHint(for model: AgentModel) -> String {
+        let base = "Runs on your Mac. Steps are ~5–10× slower than cloud; tool-calling reliability varies by model."
+        if model == .customLocal {
+            let trimmed = state.localCustomModelName
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return "Set a custom model tag in Settings → Local Mac before starting (e.g. `qwen2.5-vl:7b`)."
+            }
+            return "Using `\(trimmed)`. " + base
+        }
+        if !state.localServerReachable {
+            return "Local server not reachable at \(state.localBaseURL). Start Ollama (`brew services start ollama`) or fix the URL in Settings."
+        }
+        return base
+    }
+
+    /// True when the picked model's provider is configured enough to
+    /// start a run. Cloud providers: a Keychain key is present. Local:
+    /// the OpenAI-compatible server at `AppState.localBaseURL` answered
+    /// our last reachability probe. `.customLocal` additionally requires
+    /// a non-empty tag in Settings → Local Mac.
+    private func authReady(for model: AgentModel) -> Bool {
+        switch model.provider {
+        case .anthropic, .openai, .google:
+            return state.apiKeyPresent(for: model.provider)
+        case .local:
+            let serverOK = state.localServerReachable
+            if model == .customLocal {
+                let hasName = !state.localCustomModelName
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                return serverOK && hasName
+            }
+            return serverOK
         }
     }
 

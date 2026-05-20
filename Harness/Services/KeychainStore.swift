@@ -135,6 +135,12 @@ extension KeychainStoring {
         case .anthropic: return "com.harness.anthropic"
         case .openai:    return "com.harness.openai"
         case .google:    return "com.harness.google"
+        // Local has no API key — this service id is vestigial. The
+        // `refreshAPIKeyPresence` loop walks every provider; for
+        // `.local` it harmlessly fetches nothing and reports false.
+        // The Settings UI hides the API-key row for `.local` and
+        // shows the Local Mac card instead.
+        case .local:     return "com.harness.local"
         }
     }
 

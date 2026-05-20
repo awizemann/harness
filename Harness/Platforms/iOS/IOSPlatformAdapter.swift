@@ -157,4 +157,22 @@ struct IOSSimDriver: UXDriving {
         try await simulatorDriver.install(appBundle, on: ref)
         try await simulatorDriver.launch(bundleID: bundleIdentifier, on: ref)
     }
+
+    /// Brief post-action settle so the next screenshot captures the
+    /// committed UI state, not a mid-animation frame. iOS animations
+    /// (push transitions, modals, tab swaps) commonly take 250–400ms,
+    /// but a small 150ms wait covers the visible-paint case for taps
+    /// while keeping run latency low. Long animations (push nav) will
+    /// still occasionally need an `wait` tool call from the agent — we
+    /// don't try to autodetect transition length here.
+    func settle(afterTool call: ToolCall) async {
+        switch call.input {
+        case .tap, .doubleTap, .swipe, .pressButton, .fillCredential:
+            try? await Task.sleep(for: .milliseconds(150))
+        case .type, .wait, .readScreen, .noteFriction, .markGoalDone,
+             .rightClick, .keyShortcut, .scroll, .navigate,
+             .back, .forward, .refresh, .tapMark:
+            return
+        }
+    }
 }

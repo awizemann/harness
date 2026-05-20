@@ -35,6 +35,10 @@ Carthage/Build/
 # Local Harness data (lives outside repo, but defensively ignored)
 runs/
 *.harness-run
+# HarnessCLI per-run outputs land in CWD-local directories — keep them
+# out of the repo (typical pattern: `--output ./test-run-foo`).
+test-run/
+test-run-*/
 
 # WebDriverAgent build artifacts (the submodule is checked in; build outputs aren't).
 vendor/WebDriverAgent/build/

@@ -42,6 +42,14 @@ struct AgentLoopState: Sendable {
     /// password is **never** part of this string; only `label` and
     /// `username` from the staged credential ever surface.
     let credentialBlock: String
+    /// Text describing the scaffolding rendered on the current
+    /// screenshot. Web's Set-of-Mark probe populates this with the
+    /// id → label table for every visible interactive element; iOS /
+    /// macOS leave it empty today. Injected into the per-turn user
+    /// message just above the image so the agent matches its intent
+    /// to a mark by **label**, not by remembered visual position.
+    /// Empty string means no scaffolding text to inject.
+    let screenshotAnnotation: String
 
     init(
         request: RunRequest,
@@ -52,7 +60,8 @@ struct AgentLoopState: Sendable {
         sessionPointSize: CGSize? = nil,
         platformContext: String = "",
         deviceName: String = "iPhone Simulator",
-        credentialBlock: String = ""
+        credentialBlock: String = "",
+        screenshotAnnotation: String = ""
     ) {
         self.request = request
         self.stepIndex = stepIndex
@@ -65,6 +74,7 @@ struct AgentLoopState: Sendable {
         self.platformContext = platformContext
         self.deviceName = deviceName
         self.credentialBlock = credentialBlock
+        self.screenshotAnnotation = screenshotAnnotation
     }
 }
 
@@ -126,8 +136,23 @@ actor AgentLoop: AgentLooping {
 
     // MARK: Tuning
 
-    /// Last-N turns retained with full reasoning + screenshot.
+    /// Last-N turns retained with full reasoning + screenshot for cloud
+    /// models. Cloud providers (Anthropic, OpenAI, Google) handle large
+    /// context windows efficiently — 6 turns of screenshots is well
+    /// within the prompt-cache sweet spot.
     static let recentTurnsKept = 6
+
+    /// Last-N turns retained with full reasoning + screenshot for local
+    /// models (Qwen3-VL, Gemma 4 Vision, Llama 3.2 Vision via Ollama).
+    /// Local 8-11B vision models slow dramatically as the image-token
+    /// count grows — empirically a Qwen3-VL run that finished step 13
+    /// in ~90s timed out (600s ceiling) on step 14 with 6 full turns
+    /// of accumulated context. Trimming to the last 3 turns drops
+    /// roughly half the per-call image tokens at the cost of
+    /// slightly-staler reasoning history; in practice the older turns
+    /// were already being summarized to text-only anyway, so the
+    /// quality loss is small.
+    static let recentTurnsKeptLocal = 3
     /// Hard input-token ceiling per call (history compaction enforces this).
     static let perCallInputTokenCap = 30_000
     /// Parse-failure retries per step.
@@ -197,13 +222,19 @@ actor AgentLoop: AgentLooping {
             }
         }
 
-        // History compaction: keep last `recentTurnsKept` turns full; drop
-        // older screenshots; collapse older reasoning to one-line summaries.
-        // The wire-side compaction (turning summarized turns back into LLMTurn
-        // shapes) is handled here by reshaping `history` before send.
+        // History compaction: keep last N turns full; drop older
+        // screenshots; collapse older reasoning to one-line summaries.
+        // Local models use a tighter window (`recentTurnsKeptLocal`)
+        // because their per-call latency scales nonlinearly with the
+        // image-token count — see the constants' doc comments for
+        // empirical motivation. Cloud models stay on the wider window
+        // to get the prompt-cache hit rate.
+        let keepFull = state.request.model.screenshotMaxLongEdge == nil
+            ? Self.recentTurnsKept
+            : Self.recentTurnsKeptLocal
         let compacted = HistoryCompactor.compact(
             state.history,
-            keepFullTurns: Self.recentTurnsKept
+            keepFullTurns: keepFull
         )
 
         var attempt = 0
@@ -230,7 +261,8 @@ actor AgentLoop: AgentLooping {
                     deviceName: state.deviceName,
                     platformKind: state.request.platformKind,
                     credentialBlock: state.credentialBlock,
-                    retryHint: retryHint
+                    retryHint: retryHint,
+                    screenshotAnnotation: state.screenshotAnnotation
                 ))
                 return AgentDecision(
                     toolCall: response.toolCall,

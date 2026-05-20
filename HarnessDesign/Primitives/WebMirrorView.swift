@@ -137,9 +137,25 @@ struct WebMirrorView: View {
             ZStack {
                 Color.harnessBg2
                 if let image {
+                    // `.aspectRatio(contentMode: .fit)` is load-bearing.
+                    // Without it, the snapshot stretches to fill the canvas
+                    // whenever the WKWebView's viewport aspect doesn't
+                    // match the display rect — most visibly during the
+                    // brief window between `WebPlatformAdapter.prepare()`
+                    // (which constructs the WKWebView at the configured
+                    // viewport, e.g. 1280×1600) and the first
+                    // `onCanvasMeasured` callback (which resizes the
+                    // WKWebView to match the canvas). For fast cloud runs
+                    // that window closes in 2–3 seconds; for slow local
+                    // runs (Qwen3-VL 8B cold-start = 30–60s) the user
+                    // would otherwise stare at a stretched preview the
+                    // whole time. Letterboxing here is the right
+                    // fallback — proper page proportions trump filling
+                    // every pixel.
                     Image(nsImage: image)
                         .resizable()
                         .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
                 } else {
                     ZStack {
                         Color(red: 0.98, green: 0.97, blue: 0.95)

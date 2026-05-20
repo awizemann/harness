@@ -181,6 +181,27 @@ actor RunCoordinator {
             await windowController.hide()
         }
 
+        // Preview poller — drives the UI mirror's live update for
+        // platforms that opt in via `driver.liveSnapshot()`. iOS / macOS
+        // return nil (the iOS path uses the VM-side simulator poller
+        // for now), so this is effectively web-only today. Without it,
+        // web runs freeze the mirror on whatever was captured at the
+        // last step start — painful during slow local-model waits where
+        // a single step is 1–2 minutes.
+        //
+        // 333ms tick matches the iOS poller cadence (3fps). Errors
+        // inside `liveSnapshot()` collapse to nil and we just skip the
+        // tick rather than spamming logs.
+        let previewPollerTask = Task { [continuation] in
+            while !Task.isCancelled {
+                if let jpeg = await session.driver.liveSnapshot() {
+                    continuation.yield(.previewSnapshot(jpeg: jpeg))
+                }
+                try? await Task.sleep(for: .milliseconds(333))
+            }
+        }
+        defer { previewPollerTask.cancel() }
+
         // From here down, the platform's input session is live. Whatever
         // happens — success, failure, cancellation — `teardown` must run
         // before we return.
@@ -614,6 +635,17 @@ actor RunCoordinator {
             // route those bytes to the LLM only via `screenshotForLLM`.
             // Drivers without scaffolding (iOS/macOS today) leave
             // `markedImageData` nil and both paths share the disk bytes.
+            //
+            // Phase event flow per step:
+            //   .capturing  → driver.screenshot()
+            //   .encoding   → targetPointSize + downscaleJPEG
+            //   .thinking   → agent.step() (this is where the user waits)
+            //   .executing  → driver dispatches the tool call
+            // The pending-step UI in RunSessionView reads these to render
+            // skeleton + phase label + "what's slow" sub-text.
+            continuation.yield(.stepProgress(
+                step: stepIndex, phase: .capturing, startedAt: Date()
+            ))
             let screenshotURL: URL
             let screenshotForLLM: Data
             let captureMetadata: ScreenshotMetadata
@@ -650,14 +682,33 @@ actor RunCoordinator {
             // uses the captured window's logical size; web uses CSS
             // pixels — the platform driver returned the right value
             // via `ScreenshotMetadata.pointSize`.
+            //
+            // For models with a `screenshotMaxLongEdge` (local sub-10B
+            // vision models — Qwen3-VL, Gemma 4 Vision, Llama 3.2
+            // Vision, custom local) we additionally clamp the resulting
+            // target size so the long edge doesn't exceed the model's
+            // declared cap, preserving aspect ratio. This trades a bit
+            // of UI text legibility for a 3–5× reduction in image-token
+            // count, which on slow local inference is the difference
+            // between a 30-second step and a 120-second timeout.
+            continuation.yield(.stepProgress(
+                step: stepIndex, phase: .encoding, startedAt: Date()
+            ))
+            let targetSize = Self.targetPointSize(
+                rawPointSize: captureMetadata.pointSize,
+                maxLongEdge: legRequest.model.screenshotMaxLongEdge
+            )
             let jpegForLLM = Self.downscaleJPEG(screenshotForLLM,
-                                                 toPointSize: captureMetadata.pointSize)
+                                                 toPointSize: targetSize)
                 ?? screenshotForLLM
 
             // Decision. The agent loop sees the leg's `goal` via the
             // `legRequest` shadow — every other field is the run-level
             // value. Step index passed in is global so the agent can
             // contextualize its rolling history.
+            continuation.yield(.stepProgress(
+                step: stepIndex, phase: .thinking, startedAt: Date()
+            ))
             let decision: AgentDecision
             do {
                 decision = try await agent.step(state: AgentLoopState(
@@ -672,7 +723,8 @@ actor RunCoordinator {
                     credentialBlock: CredentialPromptBlock.render(
                         label: session.credentialLabel,
                         username: session.credentialUsername
-                    )
+                    ),
+                    screenshotAnnotation: captureMetadata.markedAnnotationText ?? ""
                 ))
             } catch let e as AgentLoopError {
                 // Loop-internal failure → emit `agent_blocked` friction and end the leg.
@@ -732,6 +784,9 @@ actor RunCoordinator {
             // Execute (or skip) the tool.
             var executionSuccess = true
             var executionError: String?
+            continuation.yield(.stepProgress(
+                step: stepIndex, phase: .executing, startedAt: Date()
+            ))
             let execStart = ContinuousClock().now
 
             if userDecision == .approved {
@@ -765,6 +820,16 @@ actor RunCoordinator {
                 userNote: result.userNote
             )))
             continuation.yield(.toolExecuted(step: stepIndex, toolCall: decision.toolCall, result: result))
+
+            // Per-platform post-tool settle. Web waits for dynamic
+            // content / lazy images / hydration; iOS waits for animation
+            // settle on taps. No-op default for any driver that
+            // doesn't override. Lives here (between executing the
+            // current tool and capturing the next screenshot) so the
+            // model sees the committed UI state.
+            if executionSuccess {
+                await session.driver.settle(afterTool: decision.toolCall)
+            }
 
             // Inline friction (note_friction in the same turn).
             if case .noteFriction(let kind, let detail) = decision.toolCall.input {
@@ -801,7 +866,18 @@ actor RunCoordinator {
 
             stepsExecuted = stepInLeg
 
-            // Append to history for the next iteration.
+            // Append to history for the next iteration. The driver's
+            // optional `lastExecutionDetail()` text (today: web's scroll
+            // progress + end-of-content detection) gets folded into the
+            // result summary so the model sees an objective post-tool
+            // signal in its history — crucial for tools whose outcome
+            // isn't legible from the screenshot alone.
+            let driverDetail = await session.driver.lastExecutionDetail()
+            let baseResult = result.success ? "ok" : (result.error ?? "fail")
+            let summaryText: String = {
+                guard let driverDetail, !driverDetail.isEmpty else { return baseResult }
+                return "\(baseResult) — \(driverDetail)"
+            }()
             let inputJSON = (try? LogRow.toolInputJSONString(decision.toolCall.input)) ?? "{}"
             history.append(LLMTurn(
                 observation: decision.toolCall.observation,
@@ -809,7 +885,7 @@ actor RunCoordinator {
                 toolName: decision.toolCall.tool.rawValue,
                 toolInputJSON: Data(inputJSON.utf8),
                 screenshotJPEG: jpegForLLM,
-                toolResultSummary: result.success ? "ok" : (result.error ?? "fail")
+                toolResultSummary: summaryText
             ))
 
             // Terminal tool: mark_goal_done. This ends *the current leg*,
@@ -888,6 +964,21 @@ actor RunCoordinator {
     /// resolutions max out at ~956 on the long edge, so we stay under that
     /// cap and the image isn't resized again on Anthropic's end. Bonus: ~3×
     /// cheaper per image vs the prior 1024-wide downsample.
+    /// Apply an optional long-edge cap to the raw capture's point size,
+    /// preserving aspect ratio. When `maxLongEdge` is nil, the raw size
+    /// passes through unchanged (cloud-provider behaviour). Returned
+    /// size has integer dimensions ≥ 1 so the bitmap representation
+    /// doesn't trap on rounding artifacts.
+    static func targetPointSize(rawPointSize: CGSize, maxLongEdge: Int?) -> CGSize {
+        guard let maxLongEdge, maxLongEdge > 0 else { return rawPointSize }
+        let longEdge = max(rawPointSize.width, rawPointSize.height)
+        guard longEdge > CGFloat(maxLongEdge) else { return rawPointSize }
+        let scale = CGFloat(maxLongEdge) / longEdge
+        let w = max(1, (rawPointSize.width * scale).rounded())
+        let h = max(1, (rawPointSize.height * scale).rounded())
+        return CGSize(width: w, height: h)
+    }
+
     static func downscaleJPEG(_ data: Data, toPointSize pointSize: CGSize) -> Data? {
         #if canImport(AppKit)
         guard let image = NSImage(data: data) else { return nil }

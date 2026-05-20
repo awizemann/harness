@@ -106,6 +106,16 @@ struct LLMStepRequest: Sendable {
     /// (GPT-4.1 Nano, Gemini Flash Lite) loop on the same mistake without
     /// this nudge.
     let retryHint: String?
+    /// Optional text describing scaffolding on the current screenshot
+    /// (web's Set-of-Mark id → label table; future: iOS/macOS
+    /// accessibility-tree summaries). Clients inject this into the
+    /// per-turn user message immediately above the image content
+    /// block. Empty string means no annotation to inject.
+    ///
+    /// Per-turn rather than cached because the marks refresh with
+    /// every screenshot — never substitute one turn's annotation
+    /// into another's prompt.
+    let screenshotAnnotation: String
 
     init(
         model: AgentModel,
@@ -121,7 +131,8 @@ struct LLMStepRequest: Sendable {
         deviceName: String = "iPhone Simulator",
         platformKind: PlatformKind = .iosSimulator,
         credentialBlock: String = "",
-        retryHint: String? = nil
+        retryHint: String? = nil,
+        screenshotAnnotation: String = ""
     ) {
         self.model = model
         self.systemPrompt = systemPrompt
@@ -137,6 +148,7 @@ struct LLMStepRequest: Sendable {
         self.platformKind = platformKind
         self.credentialBlock = credentialBlock
         self.retryHint = retryHint
+        self.screenshotAnnotation = screenshotAnnotation
     }
 }
 
@@ -388,15 +400,20 @@ actor ClaudeClient: LLMClient {
         // loop is retrying after a parse failure, prepend the corrective
         // hint so the model sees what went wrong on the prior attempt.
         let currentText: String
+        let baseInstruction = "Current screen attached. Choose your next action by calling exactly one tool."
+        let annotation = request.screenshotAnnotation
+        let annotated = annotation.isEmpty
+            ? baseInstruction
+            : "\(baseInstruction)\n\n\(annotation)"
         if let hint = request.retryHint, !hint.isEmpty {
             currentText = """
             Your previous response was rejected: \(hint)
             Emit exactly one tool call.
 
-            Current screen attached. Choose your next action by calling exactly one tool.
+            \(annotated)
             """
         } else {
-            currentText = "Current screen attached. Choose your next action by calling exactly one tool."
+            currentText = annotated
         }
         let currentContent: [[String: Any]] = [
             [

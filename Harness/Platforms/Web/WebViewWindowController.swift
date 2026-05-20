@@ -26,6 +26,30 @@ final class WebViewWindowController: NSWindowController {
     init(viewport: CGSize) {
         let cfg = WKWebViewConfiguration()
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
+
+        // **Non-persistent website data store.** Every run starts with
+        // a clean slate: no cookies, no localStorage, no IndexedDB, no
+        // service-worker registrations. Two reasons this matters:
+        //
+        //  1. **Reproducibility.** SPAs that store theme / locale /
+        //     dismissed-banner state in localStorage will render
+        //     differently across runs depending on what the previous
+        //     run did. Persistent state diverges between the CLI
+        //     (`com.harness.cli`) and the GUI (`com.harness.app`)
+        //     because each binary has its own data-store directory —
+        //     producing different first-load renders even on the same
+        //     machine. Non-persistent removes the variance entirely.
+        //  2. **"What a fresh user sees."** Harness is a UX testing
+        //     tool. The agent's screenshots are most informative when
+        //     they reflect a first-time-visitor's experience. Stored
+        //     auth tokens, dismissed CTAs, and persisted theme choices
+        //     hide failure modes a new user would hit.
+        //
+        // Logged-in flows are handled per-run via
+        // `fill_credential(field:)`; nothing in the credential path
+        // depends on persistent storage.
+        cfg.websiteDataStore = .nonPersistent()
+
         // Inspectable in dev builds — useful when authoring web personas
         // and debugging element targeting.
         if #available(macOS 13.3, *) {
@@ -56,6 +80,35 @@ final class WebViewWindowController: NSWindowController {
         window.contentView = web
         window.isReleasedWhenClosed = false
         window.titleVisibility = .hidden
+
+        // Bind the window's NSAppearance to the **user's system Dark Mode
+        // preference**, not the host app's appearance. WKWebView inherits
+        // its window's appearance and uses it to resolve
+        // `prefers-color-scheme` for the loaded page.
+        //
+        // Why not just inherit from NSApp:
+        //   - In the GUI binary, the host app may render itself in a
+        //     different mode than the user's system (e.g. an app that
+        //     forces .aqua for branding while macOS is in Dark). The
+        //     agent would then test the page's light variant even
+        //     though every real user with Dark Mode on sees the dark
+        //     variant. We want the agent's screenshots to match what
+        //     a real user with the user's settings sees.
+        //   - In the CLI binary, NSApp has no appearance set
+        //     (`.prohibited` activation policy, no Info.plist
+        //     `NSRequiresAquaSystemAppearance`), so it defaults to
+        //     system anyway — this code path produces the same result
+        //     there.
+        //
+        // `AppleInterfaceStyle` is the canonical user default for the
+        // system-wide Dark Mode toggle (System Settings → Appearance).
+        // It's absent ("nil") for Light, "Dark" for Dark. Reading it
+        // via UserDefaults.standard cascades through NSGlobalDomain,
+        // so it reflects the user's system choice regardless of the
+        // host app's own preference.
+        let appleInterfaceStyle = UserDefaults.standard.string(forKey: "AppleInterfaceStyle")
+        let systemIsDark = appleInterfaceStyle == "Dark"
+        window.appearance = NSAppearance(named: systemIsDark ? .darkAqua : .aqua)
 
         super.init(window: window)
         // Make the window visible so layout pipelines run; off-screen

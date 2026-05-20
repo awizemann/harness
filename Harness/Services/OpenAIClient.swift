@@ -46,18 +46,31 @@ actor OpenAIClient: LLMClient {
     private let keychain: any KeychainStoring
     private let session: URLSession
     private let baseURL: URL
+    /// Override the `model:` field sent in the request body. Used by the
+    /// `.local` + `.customLocal` combo where the `AgentModel` enum's
+    /// rawValue is a placeholder (`custom-local`) and the real model tag
+    /// lives in `AppState.localCustomModelName`. Nil for every other call
+    /// site — request.model.rawValue is used verbatim.
+    private let modelNameOverride: String?
 
     private(set) var tokensUsedThisRun: TokenUsage = .zero
 
-    /// `baseURL` is overridable for tests. Production hits `https://api.openai.com`.
+    /// `baseURL` is overridable for both tests and the `.local` provider
+    /// (Ollama at `http://127.0.0.1:11434`, LM Studio at
+    /// `http://127.0.0.1:1234`). Production OpenAI hits
+    /// `https://api.openai.com`. The local defaults intentionally use
+    /// `127.0.0.1` rather than `localhost` to sidestep IPv4/IPv6
+    /// dual-stack resolution (Ollama binds IPv4-only by default).
     init(
         keychain: any KeychainStoring = KeychainStore(),
         session: URLSession = .shared,
-        baseURL: URL = URL(string: "https://api.openai.com")!
+        baseURL: URL = URL(string: "https://api.openai.com")!,
+        modelNameOverride: String? = nil
     ) {
         self.keychain = keychain
         self.session = session
         self.baseURL = baseURL
+        self.modelNameOverride = modelNameOverride
     }
 
     func reset() {
@@ -67,8 +80,26 @@ actor OpenAIClient: LLMClient {
     func step(_ request: LLMStepRequest) async throws -> LLMStepResponse {
         try Task.checkCancellation()
 
-        guard let apiKey = try keychain.readKey(for: .openai), !apiKey.isEmpty else {
-            throw LLMError.missingAPIKey
+        // Auth carve-out for local OpenAI-compatible servers (Ollama, LM
+        // Studio). When the base URL is api.openai.com we require a real
+        // Keychain key; for anything else we send `Bearer local` as a
+        // placeholder — Ollama accepts any non-empty Bearer string and
+        // LM Studio ignores the header entirely. This lets the existing
+        // OpenAI request/response code drive `ModelProvider.local`
+        // without a parallel client implementation.
+        let isOpenAIHost = (baseURL.host?.lowercased() == "api.openai.com")
+        let apiKey: String
+        if isOpenAIHost {
+            guard let key = try keychain.readKey(for: .openai), !key.isEmpty else {
+                throw LLMError.missingAPIKey
+            }
+            apiKey = key
+        } else {
+            // Local server — Bearer header value is irrelevant to Ollama
+            // and LM Studio. Don't reach into the Keychain at all; sending
+            // the user's real OpenAI key to a localhost process would be a
+            // minor footgun for no benefit.
+            apiKey = "local"
         }
 
         let url = baseURL.appendingPathComponent("v1/chat/completions")
@@ -76,9 +107,22 @@ actor OpenAIClient: LLMClient {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        urlRequest.timeoutInterval = 120
+        // Cloud OpenAI responds in seconds; 120s is more than enough.
+        // Local Ollama / LM Studio is dominated by (a) the first-request
+        // model-load cost (5–30s loading 6 GB of weights into RAM) and
+        // (b) sub-10B vision inference on Apple Silicon (~1–5 input
+        // tok/sec, screenshot is the heavy payload). 300s comfortably
+        // covers cold-start + first decode; subsequent warm requests
+        // settle under 60s once the screenshot downscale (see
+        // `AgentModel.screenshotMaxLongEdge`) kicks the per-image token
+        // count down. The shorter cloud timeout stays in force so a
+        // misconfigured cloud key doesn't make the run feel hung.
+        urlRequest.timeoutInterval = isOpenAIHost ? 120 : 300
 
-        let body = Self.buildRequestBody(request)
+        let body = Self.buildRequestBody(
+            request,
+            modelNameOverride: modelNameOverride
+        )
         urlRequest.httpBody = body
 
         let (data, response): (Data, URLResponse)
@@ -149,7 +193,10 @@ actor OpenAIClient: LLMClient {
 
     // MARK: Request body
 
-    private static func buildRequestBody(_ request: LLMStepRequest) -> Data {
+    private static func buildRequestBody(
+        _ request: LLMStepRequest,
+        modelNameOverride: String? = nil
+    ) -> Data {
         let system = assembleSystem(
             request.systemPrompt,
             persona: request.persona,
@@ -201,17 +248,24 @@ actor OpenAIClient: LLMClient {
         }
 
         // Current turn. On retries the loop sets `retryHint` so the model
-        // sees what went wrong on the prior attempt.
+        // sees what went wrong on the prior attempt. Set-of-Mark
+        // annotation goes between the call-to-action and the image so
+        // the model can map intent → id by label.
         let currentText: String
+        let baseInstruction = "Current screen attached. Choose your next action by calling exactly one tool."
+        let annotation = request.screenshotAnnotation
+        let annotated = annotation.isEmpty
+            ? baseInstruction
+            : "\(baseInstruction)\n\n\(annotation)"
         if let hint = request.retryHint, !hint.isEmpty {
             currentText = """
             Your previous response was rejected: \(hint)
             Emit exactly one tool call.
 
-            Current screen attached. Choose your next action by calling exactly one tool.
+            \(annotated)
             """
         } else {
-            currentText = "Current screen attached. Choose your next action by calling exactly one tool."
+            currentText = annotated
         }
         let currentContent: [[String: Any]] = [
             [
@@ -231,7 +285,10 @@ actor OpenAIClient: LLMClient {
         ])
 
         var top: [String: Any] = [
-            "model": request.model.rawValue,
+            // `modelNameOverride` is set only for `.local` + `.customLocal`
+            // (the user-typed Ollama tag, e.g. `qwen2.5-vl:7b`). For every
+            // other path the request's enum rawValue IS the model tag.
+            "model": modelNameOverride ?? request.model.rawValue,
             "messages": messages,
             "max_completion_tokens": request.maxOutputTokens,
             "tools": ToolSchema.openAIShape(
@@ -247,6 +304,19 @@ actor OpenAIClient: LLMClient {
             top["temperature"] = 0
             top["top_p"] = 1.0
         }
+
+        // Note: we previously tried `top["options"] = ["num_ctx": 16384]`
+        // here to bump Ollama's context window per-request, but Ollama's
+        // OpenAI-compatible `/v1/chat/completions` endpoint silently
+        // drops the `options` field (confirmed: load logs show
+        // `KvSize:4096` regardless). The path forward is either
+        // (a) the user sets `OLLAMA_CONTEXT_LENGTH=16384` in the env
+        // before starting Ollama — surfaced as a hint in the Settings
+        // Local Mac card — or (b) Harness switches the local provider
+        // to Ollama's native `/api/chat` endpoint. Until then we keep
+        // local screenshot resolution small enough
+        // (`AgentModel.screenshotMaxLongEdge = 512`) that the request
+        // fits in the default 4096-token context without truncation.
 
         return (try? JSONSerialization.data(withJSONObject: top, options: [])) ?? Data()
     }

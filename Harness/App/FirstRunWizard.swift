@@ -52,6 +52,7 @@ struct FirstRunWizard: View {
     private var contentBody: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.l) {
             apiKeySection
+            localSection
             toolingSection
             simulatorSection
         }
@@ -88,6 +89,53 @@ struct FirstRunWizard: View {
                         }
                         .buttonStyle(.borderless)
                     }
+                }
+            }
+        }
+    }
+
+    // MARK: Local Mac (alternative to cloud API key)
+
+    /// Optional second card showing the local-inference path. Users who
+    /// pick "Set Local as default" can skip the Anthropic key entry
+    /// above entirely — local needs no key. Doesn't force a choice: the
+    /// wizard's Done button still works even if nothing is configured.
+    private var localSection: some View {
+        WizardCard(
+            title: "Or run fully local",
+            subtitle: "Drive Harness with a vision LLM on your Mac. No API key, no cost per run, no network calls. Slower and lower-quality than cloud models, but private by construction."
+        ) {
+            VStack(alignment: .leading, spacing: Theme.spacing.s) {
+                StatusLine(
+                    ok: state.localServerReachable,
+                    label: state.localServerReachable
+                        ? "Local server reachable at \(state.localBaseURL)"
+                        : "Local server not detected"
+                )
+                if !state.localServerReachable {
+                    Text("Install Ollama and pull a vision-capable model:")
+                        .font(.callout).foregroundStyle(.secondary)
+                    InstallHint(text: "1. Install:", command: "brew install ollama")
+                    InstallHint(text: "2. Pull a vision model (≈6 GB):", command: "ollama pull qwen3-vl:8b")
+                    Text("Ollama runs as a launchd service after `brew install`. Click Re-check below to confirm.")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                HStack {
+                    Button("Re-check") {
+                        Task { await state.refreshLocalServer() }
+                    }
+                    .buttonStyle(.borderless)
+                    Spacer()
+                    Button("Set Local as default") {
+                        state.defaultProvider = .local
+                        state.defaultModel = .qwen3VL8B
+                        Task {
+                            await state.persistSettings()
+                            await state.refreshLocalServer()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.defaultProvider == .local && state.defaultModel == .qwen3VL8B)
                 }
             }
         }

@@ -93,6 +93,20 @@ extension AgentModel {
                 cacheReadPerMTok: 0.025,
                 cacheCreationPerMTok: 0.0
             )
+        case .qwen3VL8B,
+             .gemma4Vision9B,
+             .llama32Vision11B,
+             .customLocal:
+            // Local Mac inference is free at the API level. Electricity
+            // and the user's RAM aren't tracked here; the cost panel in
+            // replay shows "Local (free)" by virtue of every rate being
+            // zero (`RunCost.total == 0`).
+            return PricingRate(
+                inputPerMTok: 0.0,
+                outputPerMTok: 0.0,
+                cacheReadPerMTok: 0.0,
+                cacheCreationPerMTok: 0.0
+            )
         }
     }
 }

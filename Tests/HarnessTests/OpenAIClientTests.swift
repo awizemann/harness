@@ -301,4 +301,104 @@ struct OpenAIClientRequestShapeTests {
         let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String ?? ""
         #expect(text.contains("you must call exactly one tool"))
     }
+
+    // MARK: - Local provider (Ollama / LM Studio) carve-out
+
+    /// When the base URL is not `api.openai.com`, `OpenAIClient` must
+    /// proceed without an API key in the Keychain and send
+    /// `Authorization: Bearer local` so Ollama / LM Studio accept the
+    /// request. This is the load-bearing relaxation that lets
+    /// `ModelProvider.local` reuse this client.
+    @Test("local base URL: no key required, Bearer header is `local`")
+    func localBaseURLNoKeyRequired() async throws {
+        final class Recorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var seen: URLRequest?
+            func record(_ r: URLRequest) { lock.lock(); defer { lock.unlock() }; seen = r }
+            func captured() -> URLRequest? { lock.lock(); defer { lock.unlock() }; return seen }
+        }
+        let recorder = Recorder()
+
+        let install = WDAStubProtocol.install { request in
+            recorder.record(request)
+            return WDAStubProtocol.Response(status: 200, body: """
+            {
+              "choices": [{
+                "message": {
+                  "tool_calls": [{
+                    "id":"c1","type":"function",
+                    "function":{"name":"tap","arguments":"{\\"x\\":1,\\"y\\":2,\\"observation\\":\\"\\",\\"intent\\":\\"\\"}"}
+                  }]
+                }
+              }],
+              "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            }
+            """)
+        }
+        defer { install.uninstall() }
+
+        // Empty in-memory keychain — no OpenAI key stored. The cloud
+        // path would throw `LLMError.missingAPIKey`; the local-base-URL
+        // path must proceed.
+        let emptyKeychain = InMemoryKeychain(InMemoryKeychain.KeyStore())
+        let client = OpenAIClient(
+            keychain: emptyKeychain,
+            session: WDAStubProtocol.session(),
+            baseURL: URL(string: "http://localhost:11434")!
+        )
+        _ = try await client.step(sampleRequest())
+
+        let captured = recorder.captured()
+        #expect(captured != nil)
+        // The Bearer placeholder Ollama tolerates / LM Studio ignores.
+        #expect(captured?.value(forHTTPHeaderField: "Authorization") == "Bearer local")
+        // URL must be the local one, not the OpenAI cloud endpoint.
+        #expect(captured?.url?.absoluteString == "http://localhost:11434/v1/chat/completions")
+    }
+
+    /// `modelNameOverride` replaces the request's enum rawValue in the
+    /// outgoing `model:` field. Used by the factory only for the
+    /// `.local` + `.customLocal` combination (the enum rawValue
+    /// `custom-local` is a placeholder; the real model tag lives in
+    /// `AppState.localCustomModelName`).
+    @Test("modelNameOverride wins over request.model.rawValue in the body")
+    func modelNameOverrideAppliesToBody() async throws {
+        final class Recorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var seen: URLRequest?
+            func record(_ r: URLRequest) { lock.lock(); defer { lock.unlock() }; seen = r }
+            func captured() -> URLRequest? { lock.lock(); defer { lock.unlock() }; return seen }
+        }
+        let recorder = Recorder()
+        let install = WDAStubProtocol.install { request in
+            recorder.record(request)
+            return WDAStubProtocol.Response(status: 200, body: """
+            {
+              "choices": [{
+                "message": {
+                  "tool_calls": [{
+                    "id":"c1","type":"function",
+                    "function":{"name":"tap","arguments":"{\\"x\\":1,\\"y\\":2,\\"observation\\":\\"\\",\\"intent\\":\\"\\"}"}
+                  }]
+                }
+              }],
+              "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            }
+            """)
+        }
+        defer { install.uninstall() }
+
+        let client = OpenAIClient(
+            keychain: InMemoryKeychain(InMemoryKeychain.KeyStore()),
+            session: WDAStubProtocol.session(),
+            baseURL: URL(string: "http://localhost:11434")!,
+            modelNameOverride: "qwen2.5-vl:7b"
+        )
+        // sampleRequest() picks .gpt5Mini (rawValue "gpt-5-mini"). With
+        // the override, the body's `model` field must read "qwen2.5-vl:7b".
+        _ = try await client.step(sampleRequest())
+
+        let body = WDAStubProtocol.bodyJSON(of: recorder.captured()!)
+        #expect((body["model"] as? String) == "qwen2.5-vl:7b")
+    }
 }

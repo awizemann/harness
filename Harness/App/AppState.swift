@@ -93,6 +93,54 @@ final class AppState {
     /// resolves in the store.
     var selectedApplicationID: UUID?
 
+    // MARK: Local Mac URL normalization
+
+    /// Parse the user's persisted local-base-URL string into a usable
+    /// `URL`, transparently rewriting `localhost` to `127.0.0.1`. Ollama
+    /// binds to IPv4 only by default; `localhost` on macOS resolves to
+    /// both `127.0.0.1` and `::1`, and `URLSession`'s Happy Eyeballs
+    /// implementation tries IPv6 first — which then `ECONNREFUSE`s
+    /// because nothing's listening on `::1:11434`. Forcing IPv4 here
+    /// makes existing `http://localhost:11434` configs Just Work without
+    /// forcing users to re-open Settings.
+    ///
+    /// Power users who genuinely run something on `::1` can put a
+    /// non-`localhost` hostname in the field and we won't touch it.
+    static func normalizedLocalURL(_ raw: String) -> URL? {
+        guard var components = URLComponents(string: raw) else { return nil }
+        if components.host?.lowercased() == "localhost" {
+            components.host = "127.0.0.1"
+        }
+        return components.url
+    }
+
+    // MARK: Local Mac inference
+
+    /// Base URL for the local OpenAI-compatible server. Default Ollama
+    /// (`http://localhost:11434`). LM Studio users change this to
+    /// `http://localhost:1234`. Persisted in `settings.json`.
+    // Default is `127.0.0.1` (IPv4 loopback) not `localhost` on purpose.
+    // macOS's getaddrinfo returns both `::1` (IPv6) and `127.0.0.1` for
+    // `localhost`, and URLSession's Happy Eyeballs implementation tries
+    // IPv6 first. Ollama's default config binds to IPv4 only — so the
+    // IPv6 attempt gets `ECONNREFUSED` and (depending on timing) the
+    // probe can report unreachable even when Ollama is fine. Hardcoding
+    // IPv4 here sidesteps the dual-stack ambiguity entirely. LM Studio
+    // users can change this to `http://127.0.0.1:1234` in Settings.
+    var localBaseURL: String = "http://127.0.0.1:11434"
+
+    /// Model tag sent verbatim to the local server when the picked
+    /// `AgentModel` is `.customLocal`. Empty by default — the Compose
+    /// Run preflight blocks the run if `.customLocal` is picked with no
+    /// name set. Persisted in `settings.json`.
+    var localCustomModelName: String = ""
+
+    /// Last-probed health of the local server. Refreshed by
+    /// `refreshLocalServer()`. Drives the status pill in Settings and
+    /// the preflight gate on Compose Run. Not persisted — it's a
+    /// runtime probe.
+    var localServerReachable: Bool = false
+
     // MARK: Dependencies
 
     private let keychain: any KeychainStoring
@@ -203,12 +251,40 @@ final class AppState {
         await refreshWDA()
     }
 
+    /// Probe the local OpenAI-compatible server (Ollama / LM Studio) for
+    /// reachability. Cheap; 2s timeout so a missing server doesn't stall
+    /// the UI. Sets `localServerReachable` based on whether
+    /// `GET <localBaseURL>/v1/models` returns 2xx.
+    func refreshLocalServer() async {
+        guard let url = AppState.normalizedLocalURL(localBaseURL)?
+                .appendingPathComponent("v1/models") else {
+            self.localServerReachable = false
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 2
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                self.localServerReachable = true
+            } else {
+                self.localServerReachable = false
+            }
+        } catch {
+            // Connection refused / timeout / DNS — all expected when the
+            // user hasn't started Ollama yet. Don't log as error.
+            self.localServerReachable = false
+        }
+    }
+
     /// Run all refreshes in parallel. Safe to call from app launch and from
     /// the first-run wizard.
     func refreshAll() async {
         async let api: Void = refreshAPIKeyPresence()
         async let tools: Void = refreshTooling()
-        _ = await (api, tools)
+        async let local: Void = refreshLocalServer()
+        _ = await (api, tools, local)
         // Simulator listing depends on xcrun, so run after tooling resolves.
         await refreshSimulators()
         // WDA readiness depends on which simulator is selected.
@@ -255,6 +331,12 @@ final class AppState {
         if let v = payload.keepSimulatorVisible {
             self.keepSimulatorVisible = v
         }
+        if let url = payload.localBaseURL, !url.isEmpty {
+            self.localBaseURL = url
+        }
+        if let name = payload.localCustomModelName {
+            self.localCustomModelName = name
+        }
     }
 
     /// Persist current settings to `settings.json`. Idempotent; safe to
@@ -268,7 +350,9 @@ final class AppState {
             defaultModeRaw: defaultMode.rawValue,
             defaultStepBudget: defaultStepBudget,
             defaultTokenBudget: defaultTokenBudget,
-            keepSimulatorVisible: keepSimulatorVisible
+            keepSimulatorVisible: keepSimulatorVisible,
+            localBaseURL: localBaseURL,
+            localCustomModelName: localCustomModelName
         )
         let url = HarnessPaths.settingsFile
         await Task.detached(priority: .utility) {
@@ -304,6 +388,16 @@ struct PersistedSettings: Codable, Sendable {
     /// would mean "no tokens allowed", which is meaningless.
     let defaultTokenBudget: Int?
     let keepSimulatorVisible: Bool?
+    /// Base URL for the local OpenAI-compatible server (Ollama / LM
+    /// Studio). Optional in the encoded shape so files written before
+    /// the local provider shipped decode cleanly — the default
+    /// (`http://127.0.0.1:11434`) kicks in when absent.
+    let localBaseURL: String?
+    /// User-typed model tag for the `.customLocal` AgentModel. Optional
+    /// for the same back-compat reason. Empty string is preserved as-is
+    /// (it means "no custom model set"; the preflight gate blocks the
+    /// run).
+    let localCustomModelName: String?
 
     init(
         selectedApplicationID: UUID?,
@@ -312,7 +406,9 @@ struct PersistedSettings: Codable, Sendable {
         defaultModeRaw: String? = nil,
         defaultStepBudget: Int? = nil,
         defaultTokenBudget: Int? = nil,
-        keepSimulatorVisible: Bool? = nil
+        keepSimulatorVisible: Bool? = nil,
+        localBaseURL: String? = nil,
+        localCustomModelName: String? = nil
     ) {
         self.selectedApplicationID = selectedApplicationID
         self.defaultModelRaw = defaultModelRaw
@@ -321,5 +417,7 @@ struct PersistedSettings: Codable, Sendable {
         self.defaultStepBudget = defaultStepBudget
         self.defaultTokenBudget = defaultTokenBudget
         self.keepSimulatorVisible = keepSimulatorVisible
+        self.localBaseURL = localBaseURL
+        self.localCustomModelName = localCustomModelName
     }
 }

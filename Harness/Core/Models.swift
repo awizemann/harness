@@ -181,6 +181,52 @@ extension AgentModel {
         case .gpt41Nano:         return 2_000_000    // ≤ ~$0.20 raw
         case .gemini25Flash:     return 2_000_000    // ≤ ~$0.60 raw
         case .gemini25FlashLite: return 2_000_000    // ≤ ~$0.20 raw
+        // Local models run on the user's Mac; cost is $0 and the
+        // ceiling here exists mostly to bound RAM growth and the
+        // per-run step count. 8B-class vision models have effective
+        // working contexts well under 1M; a 1M cap is plenty of
+        // runway without inviting absurd JSONL sizes.
+        case .qwen3VL8B,
+             .gemma4Vision9B,
+             .llama32Vision11B,
+             .customLocal:
+            return 1_000_000
+        }
+    }
+
+    /// Long-edge cap (in points) applied to the screenshot before it's
+    /// sent to the LLM. `nil` means "use the platform's reported point
+    /// size as-is" (the historical behavior for cloud providers).
+    ///
+    /// Local sub-10B vision models pay an image-token cost: at 28×28
+    /// patches, a 1280×880 screenshot is ~1500 image tokens and at
+    /// ~50 input-tok/sec on M2 that's 30s of input processing per
+    /// step. We trim that down by capping the long edge, but the cap
+    /// has to balance against legibility — Harness is a USER TEST
+    /// tool. A model that can't read the page's links and labels
+    /// can't run the test.
+    ///
+    /// **768pt** is the floor where Qwen3-VL can still read typical
+    /// web UI text (links ~16px CSS, button labels ~14-16px) and most
+    /// iOS chrome cleanly. Lower than this and the model starts
+    /// guessing at link text and missing dense rows. The old 4096-
+    /// context Ollama default (forced via the OpenAI-compat endpoint
+    /// silently dropping `options.num_ctx`) used to push us to 512pt
+    /// here; now that `OllamaClient` uses the native `/api/chat` API
+    /// and gets `num_ctx: 16384` properly honoured, we can afford the
+    /// fuller resolution.
+    ///
+    /// Cloud providers (Anthropic / OpenAI / Google) have orders-of-
+    /// magnitude faster vision pipelines AND much larger context
+    /// windows, so they get the platform's native resolution.
+    var screenshotMaxLongEdge: Int? {
+        switch self {
+        case .qwen3VL8B, .gemma4Vision9B, .llama32Vision11B, .customLocal:
+            return 768
+        case .opus47, .sonnet46, .haiku45,
+             .gpt5Mini, .gpt41Nano,
+             .gemini25Flash, .gemini25FlashLite:
+            return nil
         }
     }
 
@@ -195,6 +241,12 @@ extension AgentModel {
              .gpt5Mini, .gpt41Nano,
              .gemini25Flash, .gemini25FlashLite:
             return 10_000_000                         // ≤ ~$3 raw on the most expensive of these
+        case .qwen3VL8B,
+             .gemma4Vision9B,
+             .llama32Vision11B,
+             .customLocal:
+            // Local: free. Cap is purely about JSONL size + RAM.
+            return 10_000_000
         }
     }
 }
@@ -291,12 +343,20 @@ enum ModelProvider: String, Sendable, Hashable, Codable, CaseIterable {
     case anthropic
     case openai
     case google
+    /// Local Mac inference via an OpenAI-compatible HTTP server (Ollama,
+    /// LM Studio). No API key; the base URL lives in `AppState.localBaseURL`.
+    /// Screenshots and prompts never leave the user's Mac. See
+    /// `OpenAIClient` — when its `baseURL.host` is not `api.openai.com` the
+    /// Bearer-token guard is relaxed and `Authorization: Bearer local` is
+    /// sent (Ollama tolerates any string; LM Studio ignores the header).
+    case local
 
     var displayName: String {
         switch self {
         case .anthropic: return "Anthropic"
         case .openai:    return "OpenAI"
         case .google:    return "Google"
+        case .local:     return "Local Mac"
         }
     }
 }
@@ -312,6 +372,24 @@ enum AgentModel: String, Sendable, Hashable, Codable, CaseIterable {
     // Google
     case gemini25Flash     = "gemini-2.5-flash"
     case gemini25FlashLite = "gemini-2.5-flash-lite"
+    // Local Mac (Ollama / LM Studio — OpenAI-compatible HTTP).
+    // Raw values match the Ollama model tags so they're sent verbatim to
+    // `model:` in the chat-completions body. Pull with `ollama pull <raw>`.
+    /// Qwen3-VL 8B — purpose-built "Visual Agent" for GUI: reads UI text
+    /// down to ~11px, recognizes buttons/dropdowns/checkboxes/icons,
+    /// native tool calling. The closest single match for what Harness
+    /// does. Recommended local default.
+    case qwen3VL8B         = "qwen3-vl:8b"
+    /// Gemma 4 9B (Google, April 2026) — native vision + native tool
+    /// calling trained into the weights. Solid generalist fallback.
+    case gemma4Vision9B    = "gemma4:9b"
+    /// Llama 3.2 Vision 11B (Meta) — older but battle-tested in Ollama.
+    case llama32Vision11B  = "llama3.2-vision:11b"
+    /// Escape hatch for experimentation. The actual model tag sent to
+    /// the local server comes from `AppState.localCustomModelName`, not
+    /// this rawValue (which is just an enum stable id). Set the field in
+    /// Settings → Local Mac.
+    case customLocal       = "custom-local"
 
     var displayName: String {
         switch self {
@@ -322,6 +400,10 @@ enum AgentModel: String, Sendable, Hashable, Codable, CaseIterable {
         case .gpt41Nano:         return "GPT-4.1 Nano"
         case .gemini25Flash:     return "Gemini 2.5 Flash"
         case .gemini25FlashLite: return "Gemini 2.5 Flash Lite"
+        case .qwen3VL8B:         return "Qwen3-VL 8B (vision + GUI)"
+        case .gemma4Vision9B:    return "Gemma 4 9B (vision)"
+        case .llama32Vision11B:  return "Llama 3.2 Vision 11B"
+        case .customLocal:       return "Custom local model…"
         }
     }
 
@@ -332,6 +414,8 @@ enum AgentModel: String, Sendable, Hashable, Codable, CaseIterable {
         case .opus47, .sonnet46, .haiku45:           return .anthropic
         case .gpt5Mini, .gpt41Nano:                   return .openai
         case .gemini25Flash, .gemini25FlashLite:      return .google
+        case .qwen3VL8B, .gemma4Vision9B,
+             .llama32Vision11B, .customLocal:         return .local
         }
     }
 }
@@ -676,6 +760,29 @@ struct RunOutcome: Sendable, Hashable, Codable {
 
 // MARK: - Run events (internal stream type)
 
+/// Lifecycle phase the pending step is currently in. Emitted by
+/// `RunCoordinator` (and indirectly by the LLM client via `AgentLoop`)
+/// so the UI can render a non-trivial "what's happening right now"
+/// indicator instead of a static "Running" pill plus a long elapsed
+/// timer. The four phases match the perceptually distinct stages of
+/// the per-step pipeline:
+///
+/// - `capturing` — driver is taking a screenshot from the simulator /
+///   macOS window / WKWebView.
+/// - `encoding` — bytes returned, downscale + JPEG compression.
+/// - `thinking` — request in flight to the LLM; the model is processing
+///   the screenshot + tool schema + history and generating a tool call.
+///   This is the perceptually long phase, especially on local sub-10B
+///   vision models (~30–90s cold-start, ~10–30s warm).
+/// - `executing` — model returned; the tool call is being dispatched
+///   to the platform driver (tap, type, swipe, navigate, etc).
+enum StepPhase: String, Sendable, Hashable, Codable {
+    case capturing
+    case encoding
+    case thinking
+    case executing
+}
+
 /// What `RunCoordinator.run(_:)` emits on its `AsyncThrowingStream`.
 /// Maps onto JSONL row kinds, but typed for in-process consumers.
 enum RunEvent: Sendable {
@@ -688,6 +795,21 @@ enum RunEvent: Sendable {
     /// downstream consumers can treat every run as having ≥1 leg.
     case legStarted(index: Int, actionName: String, goal: String, preservesState: Bool)
     case stepStarted(step: Int, screenshotPath: String, screenshot: URL)
+    /// Fine-grained progress within a step. Fires at each phase boundary
+    /// in `RunCoordinator`'s per-step pipeline. UI consumes this to
+    /// render the pending-step skeleton card; it is NOT persisted to
+    /// the JSONL log (the on-disk format only records terminal step
+    /// state, not in-flight phase ticks).
+    case stepProgress(step: Int, phase: StepPhase, startedAt: Date)
+    /// Low-latency UI-only mirror refresh. Fired by the platform driver
+    /// (currently web, future macOS) at a few hundred ms cadence
+    /// between `simulatorReady` and `runCompleted` so the on-screen
+    /// preview reflects the current page/app state — NOT the frozen
+    /// LLM-bound screenshot from the last step's start. Crucial during
+    /// slow local-model runs where steps are minutes apart. Not
+    /// persisted to JSONL; the bytes are transient JPEG suitable for
+    /// `NSImage(data:)`.
+    case previewSnapshot(jpeg: Data)
     case toolProposed(step: Int, toolCall: ToolCall)
     case awaitingApproval(step: Int, toolCall: ToolCall)
     case toolExecuted(step: Int, toolCall: ToolCall, result: ToolResult)

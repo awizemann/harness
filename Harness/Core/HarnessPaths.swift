@@ -32,7 +32,27 @@ enum HarnessPaths {
     }()
 
     /// `<App Support>/Harness/runs/`
-    static var runsDir: URL { appSupport.appendingPathComponent("runs", isDirectory: true) }
+    ///
+    /// When `runsRootOverride` is set, returns that URL instead — used
+    /// exclusively by HarnessCLI to write per-run artifacts to a
+    /// CWD-local directory (e.g. `./test-run/`) without polluting the
+    /// GUI app's run history. The GUI never sets the override, so its
+    /// path is unchanged.
+    static var runsDir: URL {
+        if let override = runsRootOverride { return override }
+        return appSupport.appendingPathComponent("runs", isDirectory: true)
+    }
+
+    /// Override for `runsDir`. When non-nil, every per-run path
+    /// (`runDir`, `eventsLog`, `metaFile`, `screenshot`, `buildDir`,
+    /// `derivedData`, `buildLog`) resolves under this URL instead of
+    /// `~/Library/Application Support/Harness/runs/`.
+    ///
+    /// `nonisolated(unsafe)` because Swift 6 won't otherwise let a
+    /// non-Sendable `URL?` participate as a mutable static; in practice
+    /// the CLI sets this once at startup before any concurrent access,
+    /// and the GUI never touches it.
+    nonisolated(unsafe) static var runsRootOverride: URL?
 
     /// `<App Support>/Harness/settings.json`
     static var settingsFile: URL { appSupport.appendingPathComponent("settings.json") }
@@ -83,8 +103,18 @@ enum HarnessPaths {
     // MARK: Per-run paths
 
     /// `<App Support>/Harness/runs/<run-id>/`
+    ///
+    /// When `runsRootOverride` is set, the per-run UUID nesting is
+    /// dropped so all artifacts (events.jsonl, step-NNN.png, meta.json,
+    /// build/) land directly in the override directory. The CLI runs
+    /// one goal per invocation and the user already disambiguates by
+    /// passing `--output ./run-a` vs `--output ./run-b`, so the UUID
+    /// subdirectory would only add an extra `cd` to inspect outputs.
     static func runDir(for runID: UUID) -> URL {
-        runsDir.appendingPathComponent(runID.uuidString, isDirectory: true)
+        if runsRootOverride != nil {
+            return runsDir
+        }
+        return runsDir.appendingPathComponent(runID.uuidString, isDirectory: true)
     }
 
     /// `<run-dir>/events.jsonl`
