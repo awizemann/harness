@@ -181,6 +181,7 @@ enum ToolSchema {
 
     static let iOSToolNames: [String] = [
         ToolKind.tap.rawValue,
+        ToolKind.tapMark.rawValue,
         ToolKind.doubleTap.rawValue,
         ToolKind.swipe.rawValue,
         ToolKind.type.rawValue,
@@ -229,7 +230,8 @@ enum ToolSchema {
 
     private static func iOSCanonical() -> [CanonicalTool] {
         [
-            tap(description: "Tap a single point on the screen. Coordinates in screen points, top-left origin."),
+            tap(description: "Tap a single point on the screen. Coordinates in screen points, top-left origin. Prefer `tap_mark(id)` whenever the target has a numbered mark — coordinates are for unmarked positions only (scroll regions, image areas)."),
+            tapMark(),
             doubleTap(description: "Tap twice quickly at one point."),
             swipe(),
             type(),

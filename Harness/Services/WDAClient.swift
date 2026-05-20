@@ -70,6 +70,14 @@ protocol WDAClienting: Sendable {
     func swipe(from: CGPoint, to: CGPoint, duration: Duration) async throws
     func type(_ text: String) async throws
     func pressButton(_ button: SimulatorButton) async throws
+
+    /// Probe the AX tree for visible, enabled, actionable elements
+    /// and return them as a numbered list of `InteractiveMark`s in
+    /// reading order (top-to-bottom, then left-to-right). The 1-based
+    /// `id` matches the badge text rendered onto the screenshot by
+    /// `MarkRenderer.draw(...)`. Capped at 80 to keep the prompt
+    /// scaffolding under control on dense screens.
+    func probeInteractiveElements() async throws -> [InteractiveMark]
 }
 
 // MARK: - Implementation
@@ -210,6 +218,196 @@ actor WDAClient: WDAClienting {
             path: "/session/\(sid)/wda/pressButton",
             body: ["name": button.rawValue]
         )
+    }
+
+    // MARK: Set-of-Mark probe
+
+    /// WDA's `/source?format=json` returns the entire app's AX tree.
+    /// The session-scoped path is preferred (returns the live tree
+    /// for the running app), but if no session is open we fall back
+    /// to the global `/source` which uses WDA's default session.
+    ///
+    /// Returns the parsed root JSON object (already unwrapped from
+    /// the `{"value": ...}` envelope WDA wraps everything in).
+    private func source() async throws -> [String: Any] {
+        let path: String
+        if let sid = sessionID {
+            path = "/session/\(sid)/source?format=json"
+        } else {
+            path = "/source?format=json"
+        }
+        let json = try await requestJSON(method: "GET", path: path, body: nil)
+        if let value = json["value"] as? [String: Any] {
+            return value
+        }
+        return json
+    }
+
+    /// AX element types we treat as actionable. Subset of XCUI's full
+    /// type vocabulary — picked for iOS UIs that real users navigate.
+    /// Static text + image are intentionally excluded (too many; mostly
+    /// decorative) unless they're nested inside a cell/button, in
+    /// which case the cell/button is what gets the mark.
+    private static let actionableIOSRoles: Set<String> = [
+        "XCUIElementTypeButton",
+        "XCUIElementTypeLink",
+        "XCUIElementTypeTextField",
+        "XCUIElementTypeSecureTextField",
+        "XCUIElementTypeSearchField",
+        "XCUIElementTypeTextView",
+        "XCUIElementTypeSwitch",
+        "XCUIElementTypeSlider",
+        "XCUIElementTypeStepper",
+        "XCUIElementTypeCell",
+        "XCUIElementTypeMenuItem",
+        "XCUIElementTypeMenuButton",
+        "XCUIElementTypeSegmentedControl",
+        "XCUIElementTypeTab",
+        "XCUIElementTypeTabBar",
+        "XCUIElementTypeNavigationBar",
+        "XCUIElementTypeToolbar",
+        "XCUIElementTypePicker",
+        "XCUIElementTypePickerWheel",
+        "XCUIElementTypeCheckBox",
+        "XCUIElementTypeRadioButton",
+        "XCUIElementTypeDatePicker",
+        "XCUIElementTypeKey"
+    ]
+
+    /// Maximum marks to render per screenshot. Mirrors the web probe's
+    /// cap so badge density stays manageable on dense screens (e.g.,
+    /// settings tables, mail inboxes).
+    private static let maxMarks = 80
+
+    /// Hard floor — sub-this elements are filtered as decorative.
+    private static let minTapSizePt: CGFloat = 16
+
+    func probeInteractiveElements() async throws -> [InteractiveMark] {
+        let root = try await source()
+        var candidates: [(rect: CGRect, role: String, label: String)] = []
+        Self.walk(node: root, into: &candidates)
+        // Reading order: top-to-bottom, then left-to-right.
+        candidates.sort { (a, b) in
+            if abs(a.rect.minY - b.rect.minY) < 1 {
+                return a.rect.minX < b.rect.minX
+            }
+            return a.rect.minY < b.rect.minY
+        }
+        // Cap at maxMarks. Elements past the cap stay un-badged; the
+        // agent can scroll to bring more into view (the next probe
+        // will pick up newly-visible ones).
+        let capped = candidates.prefix(Self.maxMarks)
+        var marks: [InteractiveMark] = []
+        marks.reserveCapacity(capped.count)
+        for (i, entry) in capped.enumerated() {
+            marks.append(InteractiveMark(
+                id: i + 1,
+                rect: entry.rect,
+                role: Self.shortRole(entry.role),
+                inputType: nil,
+                label: entry.label
+            ))
+        }
+        return marks
+    }
+
+    /// Recursively walk an AX node and collect actionable descendants.
+    /// Nested actionable elements (cell containing a button) collapse
+    /// to the outermost actionable ancestor — the cell — to avoid
+    /// double-marking. Visibility, enabled state, and minimum size are
+    /// gated here.
+    nonisolated private static func walk(
+        node: [String: Any],
+        into out: inout [(rect: CGRect, role: String, label: String)]
+    ) {
+        // Defensively pull fields; WDA's JSON shapes have shifted
+        // between versions but the field names are stable.
+        let typeRaw = (node["type"] as? String) ?? ""
+        let isVisible = (node["visible"] as? Bool) ?? true
+        let isEnabled = (node["enabled"] as? Bool) ?? true
+        let isAccessible = (node["accessible"] as? Bool) ?? true
+
+        // If this node is itself actionable and visible + enabled,
+        // collect it AND skip recursing into descendants (avoids the
+        // cell-containing-button double-mark).
+        if actionableIOSRoles.contains(typeRaw),
+           isVisible, isEnabled, isAccessible,
+           let rect = parseRect(node["rect"]) {
+            let bigEnough = rect.width >= minTapSizePt && rect.height >= minTapSizePt
+            // Some toolbars / tab bars return rects matching the
+            // whole screen — those are containers, not tap targets.
+            // Skip when role is a container AND rect is very tall
+            // (heuristic; refined as needed).
+            let isJumboContainer = (typeRaw == "XCUIElementTypeNavigationBar" ||
+                                    typeRaw == "XCUIElementTypeTabBar" ||
+                                    typeRaw == "XCUIElementTypeToolbar")
+            if bigEnough && !isJumboContainer {
+                let label = resolveLabel(node)
+                out.append((rect, typeRaw, label))
+                return
+            }
+            // Container — fall through and recurse to mark its
+            // children individually (e.g., individual tabs in a tab
+            // bar).
+        }
+
+        // Recurse into children.
+        guard let children = node["children"] as? [[String: Any]] else { return }
+        for child in children {
+            walk(node: child, into: &out)
+        }
+    }
+
+    nonisolated private static func parseRect(_ raw: Any?) -> CGRect? {
+        guard let dict = raw as? [String: Any] else { return nil }
+        // WDA returns `{x, y, width, height}` with values that may be
+        // Int, Double, or NSNumber depending on the JSON parser.
+        let x = numericValue(dict["x"])
+        let y = numericValue(dict["y"])
+        let w = numericValue(dict["width"])
+        let h = numericValue(dict["height"])
+        guard let x, let y, let w, let h else { return nil }
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    nonisolated private static func numericValue(_ any: Any?) -> CGFloat? {
+        if let d = any as? Double { return CGFloat(d) }
+        if let i = any as? Int { return CGFloat(i) }
+        if let n = any as? NSNumber { return CGFloat(truncating: n) }
+        if let s = any as? String, let d = Double(s) { return CGFloat(d) }
+        return nil
+    }
+
+    /// Resolve a human-readable label from an AX node. Tries `label`
+    /// first (most user-visible), falls back to `name` (the AX
+    /// identifier or accessibility label), then `value` (current
+    /// content of text fields, etc.). Empty when none resolve.
+    nonisolated private static func resolveLabel(_ node: [String: Any]) -> String {
+        let candidates = [
+            node["label"] as? String,
+            node["name"] as? String,
+            node["value"] as? String
+        ]
+        for c in candidates {
+            if let s = c?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty {
+                return s.count > 80 ? String(s.prefix(77)) + "…" : s
+            }
+        }
+        return ""
+    }
+
+    /// Short, agent-friendly role name. Maps `XCUIElementTypeButton`
+    /// → `button`, etc. Falls back to the raw type when no shortening
+    /// applies, so new XCUI types surface visibly in the annotation.
+    nonisolated private static func shortRole(_ raw: String) -> String {
+        let prefix = "XCUIElementType"
+        if raw.hasPrefix(prefix) {
+            let tail = String(raw.dropFirst(prefix.count))
+            // Lowercase the first character for natural reading.
+            guard let first = tail.first else { return tail }
+            return first.lowercased() + tail.dropFirst()
+        }
+        return raw
     }
 
     // MARK: Internals

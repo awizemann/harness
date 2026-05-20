@@ -142,4 +142,23 @@ actor FakeSimulatorDriver: SimulatorDriving {
     func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws { swipes.append((from, to)) }
     func type(_ text: String, on ref: SimulatorRef) async throws { typed.append(text) }
     func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws { }
+
+    // V0.3.2 — Set-of-Mark probe + dispatch. Tests don't exercise iOS
+    // tap_mark today; defaulting to "no marks" keeps behaviour
+    // unchanged while satisfying the protocol.
+    private(set) var probeCalls = 0
+    private(set) var markTaps: [Int] = []
+    var nextMarks: [InteractiveMark] = []
+    func probeInteractiveElements(_ ref: SimulatorRef) async -> [InteractiveMark] {
+        probeCalls += 1
+        return nextMarks
+    }
+    func tapMark(id: Int, on ref: SimulatorRef) async throws {
+        markTaps.append(id)
+        // Emulate the real driver: if the id maps to a cached mark,
+        // tap its midpoint; otherwise no-op.
+        if let mark = nextMarks.first(where: { $0.id == id }) {
+            taps.append(CGPoint(x: mark.rect.midX, y: mark.rect.midY))
+        }
+    }
 }

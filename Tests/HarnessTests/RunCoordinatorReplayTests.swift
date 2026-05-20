@@ -334,6 +334,8 @@ struct RunCoordinatorReplayTests {
         func startInputSession(_ ref: SimulatorRef) async throws {}
         func endInputSession() async { endInputSessionCalls += 1 }
         func cleanupWDA(udid: String) async {}
+        func probeInteractiveElements(_ ref: SimulatorRef) async -> [InteractiveMark] { [] }
+        func tapMark(id: Int, on ref: SimulatorRef) async throws { throw Boom() }
     }
 
     // MARK: Helper

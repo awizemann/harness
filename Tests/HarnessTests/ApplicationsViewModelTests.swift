@@ -180,6 +180,8 @@ private actor NoopSimulatorDriver: SimulatorDriving {
     func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws {}
     func type(_ text: String, on ref: SimulatorRef) async throws {}
     func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws {}
+    func probeInteractiveElements(_ ref: SimulatorRef) async -> [InteractiveMark] { [] }
+    func tapMark(id: Int, on ref: SimulatorRef) async throws {}
 }
 
 private actor NoopWDABuilder: WDABuilding {

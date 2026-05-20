@@ -92,6 +92,20 @@ protocol SimulatorDriving: Sendable {
     /// at run start so a stale runner from a prior crash doesn't intercept
     /// our session.
     func cleanupWDA(udid: String) async
+
+    /// V0.3.2 — probe the AX tree for actionable elements and return
+    /// them as 1-indexed `InteractiveMark`s in reading order. Used by
+    /// the iOS `screenshot(into:)` pipeline to build the Set-of-Mark
+    /// scaffolding the LLM sees. Empty on probe failure / no session.
+    func probeInteractiveElements(_ ref: SimulatorRef) async -> [InteractiveMark]
+
+    /// V0.3.2 — dispatch a tap to the **center of the visible portion**
+    /// of the mark with `id`'s bounding rect, after clipping the rect
+    /// to the simulator's viewport so a partly-off-screen mark still
+    /// clicks the right element. Throws when `id` isn't in the most
+    /// recent probe's cache (stale-id case the model should recover
+    /// from on the next turn's fresh probe).
+    func tapMark(id: Int, on ref: SimulatorRef) async throws
 }
 
 // MARK: - Implementation
@@ -321,6 +335,65 @@ actor SimulatorDriver: SimulatorDriving {
 
     nonisolated func cleanupWDA(udid: String) async {
         await wdaRunner.cleanupOrphans(udid: udid)
+    }
+
+    // MARK: Set-of-Mark
+
+    /// Per-UDID cache of the most recent probe's marks. Refreshed on
+    /// each `probeInteractiveElements(_:)` call so the next `tapMark`
+    /// resolves against the same DOM state the model just saw.
+    /// Keyed by UDID so a multi-sim run keeps each device's marks
+    /// straight; in practice we run one simulator per coordinator.
+    private var lastMarks: [String: [InteractiveMark]] = [:]
+
+    func probeInteractiveElements(_ ref: SimulatorRef) async -> [InteractiveMark] {
+        do {
+            let marks = try await wdaClient.probeInteractiveElements()
+            lastMarks[ref.udid] = marks
+            return marks
+        } catch {
+            // Probe failure isn't run-fatal — the agent can still call
+            // `tap(x, y)` with no scaffolding. Log + fall through with
+            // empty marks.
+            Self.logger.warning("WDA SoM probe failed: \(error.localizedDescription, privacy: .public)")
+            lastMarks[ref.udid] = []
+            return []
+        }
+    }
+
+    func tapMark(id: Int, on ref: SimulatorRef) async throws {
+        guard let mark = (lastMarks[ref.udid] ?? []).first(where: { $0.id == id }) else {
+            throw SimulatorError.actionFailed(
+                action: "tapMark",
+                detail: "id \(id) wasn't in the latest screenshot's mark set. The page may have changed; the next screenshot will refresh the marks."
+            )
+        }
+        // Clip the mark rect to the visible viewport (same logic as
+        // the web driver — see `WebDriver.dispatchMarkClick`). The
+        // clamp guarantees the tap coordinate sits on a hit-testable
+        // pixel even when the element extends past the screen.
+        let inset: CGFloat = 4
+        let viewportW = ref.pointSize.width
+        let viewportH = ref.pointSize.height
+        let visibleMinX = max(mark.rect.minX, 0) + inset
+        let visibleMinY = max(mark.rect.minY, 0) + inset
+        let visibleMaxX = min(mark.rect.maxX, viewportW) - inset
+        let visibleMaxY = min(mark.rect.maxY, viewportH) - inset
+        let cx: CGFloat
+        let cy: CGFloat
+        if visibleMaxX > visibleMinX && visibleMaxY > visibleMinY {
+            cx = (visibleMinX + visibleMaxX) / 2
+            cy = (visibleMinY + visibleMaxY) / 2
+        } else {
+            cx = mark.rect.midX
+            cy = mark.rect.midY
+        }
+        Self.logger.info("tap_mark(\(id, privacy: .public)) → label=\"\(mark.label, privacy: .public)\" role=\(mark.role, privacy: .public) rect=(\(Int(mark.rect.minX), privacy: .public),\(Int(mark.rect.minY), privacy: .public),\(Int(mark.rect.width), privacy: .public),\(Int(mark.rect.height), privacy: .public)) → tap(\(Int(cx), privacy: .public),\(Int(cy), privacy: .public))")
+        if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
+            let line = "[WDA] tap_mark(\(id)) label=\"\(mark.label)\" role=\(mark.role) rect=(\(Int(mark.rect.minX)),\(Int(mark.rect.minY)),\(Int(mark.rect.width)),\(Int(mark.rect.height))) → tap(\(Int(cx)),\(Int(cy)))\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        try await wdaClient.tap(at: CGPoint(x: cx, y: cy))
     }
 
     // MARK: Tool resolution

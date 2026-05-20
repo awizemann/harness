@@ -102,12 +102,57 @@ struct IOSSimDriver: UXDriving {
     let credential: CredentialBinding?
 
     func screenshot(into url: URL) async throws -> ScreenshotMetadata {
+        // Probe BEFORE the snapshot so marks reflect the same UI
+        // state the snapshot captures. Same invariant the web driver
+        // enforces. Probe failure is treated as "no marks today"
+        // and the agent can still call coordinate-based tools.
+        let marks = await simulatorDriver.probeInteractiveElements(ref)
+
+        // Native simctl capture writes PNG at pixel resolution to
+        // `url`. Reuse the disk file for the marked overlay so the
+        // marked image stays in PNG byte-for-byte with the unmarked
+        // one when no marks exist.
         _ = try await simulatorDriver.screenshot(ref, into: url)
-        // PNG is at pixel resolution per the iOS coordinate-space rule
-        // (see SimulatorDriver.swift header). Compute pixel size from
-        // the pointSize × scaleFactor relationship.
         let pixel = ref.pixelSize
-        return ScreenshotMetadata(pixelSize: pixel, pointSize: ref.pointSize)
+
+        // No marks → return early. Disk PNG is already in place.
+        guard !marks.isEmpty else {
+            return ScreenshotMetadata(pixelSize: pixel, pointSize: ref.pointSize)
+        }
+
+        // Load the unmarked PNG, composite badges, encode in-memory.
+        // The disk PNG stays unmarked — replay / friction reports
+        // see the clean rendering, the LLM-bound copy carries the
+        // overlay.
+        guard let rawData = try? Data(contentsOf: url),
+              let raw = NSImage(data: rawData) else {
+            return ScreenshotMetadata(pixelSize: pixel, pointSize: ref.pointSize)
+        }
+        // `MarkRenderer.draw` handles the point→pixel rect scaling
+        // — the source `mark.rect` is in simulator points; the image
+        // is at pixel resolution (= points × scaleFactor).
+        let marked = MarkRenderer.draw(on: raw, marks: marks, markSpaceSize: ref.pointSize)
+        let markedData = MarkRenderer.pngData(from: marked)
+
+        // Dev-only: when `HARNESS_DUMP_MARKED=1`, also write the
+        // marked overlay to disk next to the unmarked PNG with a
+        // `.marked.png` suffix. Lets HarnessCLI users inspect what
+        // the LLM actually saw without instrumenting the binary.
+        if let markedData,
+           ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
+            let markedURL = url
+                .deletingPathExtension()
+                .appendingPathExtension("marked.png")
+            try? markedData.write(to: markedURL, options: .atomic)
+        }
+
+        let annotation = MarkRenderer.describe(marks)
+        return ScreenshotMetadata(
+            pixelSize: pixel,
+            pointSize: ref.pointSize,
+            markedImageData: markedData,
+            markedAnnotationText: annotation
+        )
     }
 
     func execute(_ call: ToolCall) async throws {
@@ -141,13 +186,12 @@ struct IOSSimDriver: UXDriving {
             guard let credential else { return }
             let text = field == .username ? credential.username : credential.password
             try await simulatorDriver.type(text, on: ref)
-        case .rightClick, .keyShortcut, .scroll, .navigate, .back, .forward, .refresh, .tapMark:
+        case .tapMark(let id):
+            try await simulatorDriver.tapMark(id: id, on: ref)
+        case .rightClick, .keyShortcut, .scroll, .navigate, .back, .forward, .refresh:
             // These tool variants belong to other platforms. The iOS
             // adapter never advertises them via toolDefinitions, so an
             // emission here is a contract bug — surface it loudly.
-            // (`tap_mark` ships on web only today; iOS gets it via a
-            // follow-up that wires the WDA accessibility tree as the
-            // probe — see wiki Roadmap.)
             throw UXDriverError.unsupportedTool(name: call.tool.rawValue, platform: .iosSimulator)
         }
     }
@@ -167,11 +211,11 @@ struct IOSSimDriver: UXDriving {
     /// don't try to autodetect transition length here.
     func settle(afterTool call: ToolCall) async {
         switch call.input {
-        case .tap, .doubleTap, .swipe, .pressButton, .fillCredential:
+        case .tap, .doubleTap, .tapMark, .swipe, .pressButton, .fillCredential:
             try? await Task.sleep(for: .milliseconds(150))
         case .type, .wait, .readScreen, .noteFriction, .markGoalDone,
              .rightClick, .keyShortcut, .scroll, .navigate,
-             .back, .forward, .refresh, .tapMark:
+             .back, .forward, .refresh:
             return
         }
     }

@@ -105,7 +105,7 @@ actor WebDriver: UXDriving {
         // it clean means the green numbered overlay (which is agent
         // scaffolding, not part of the page) never leaks into surfaces
         // a human reviewer sees.
-        guard let rawPNG = Self.pngData(from: raw) else {
+        guard let rawPNG = MarkRenderer.pngData(from: raw) else {
             throw WebDriverError.captureFailed
         }
         try rawPNG.write(to: url, options: .atomic)
@@ -116,8 +116,8 @@ actor WebDriver: UXDriving {
         // replay, friction report) keeps using the unmarked PNG.
         let markedImage: NSImage? = marks.isEmpty
             ? nil
-            : Self.drawMarks(on: raw, marks: marks, viewport: viewport)
-        let markedData: Data? = markedImage.flatMap { Self.pngData(from: $0) }
+            : MarkRenderer.draw(on: raw, marks: marks, markSpaceSize: viewport)
+        let markedData: Data? = markedImage.flatMap { MarkRenderer.pngData(from: $0) }
 
         // Dev-only: when `HARNESS_DUMP_MARKED=1` is set, also write the
         // marked overlay to disk next to the unmarked PNG with a
@@ -135,7 +135,7 @@ actor WebDriver: UXDriving {
 
         let annotationText: String? = marks.isEmpty
             ? nil
-            : Self.describeMarks(marks)
+            : MarkRenderer.describe(marks)
 
         return ScreenshotMetadata(
             pixelSize: raw.size,
@@ -143,33 +143,6 @@ actor WebDriver: UXDriving {
             markedImageData: markedData,
             markedAnnotationText: annotationText
         )
-    }
-
-    /// Render the Set-of-Mark cache into a compact text block the
-    /// agent loop injects into the per-turn user message. Each mark
-    /// gets one line of `id → "label" (role/inputType)` so the model
-    /// can map intent → id by label without re-reading the badge
-    /// numbers from the image. Crucial for small vision models —
-    /// without it they reliably anchor on stale ids ("id 6 must still
-    /// be Articles because it was Articles last turn") across page
-    /// transitions where the numbering shifts.
-    ///
-    /// Format is intentionally terse — typical pages produce 10-30
-    /// marks, capped at 80 by the probe. Even at the cap this lands
-    /// well under 2KB of extra prompt tokens.
-    nonisolated static func describeMarks(_ marks: [InteractiveMark]) -> String {
-        var lines: [String] = []
-        lines.reserveCapacity(marks.count + 2)
-        lines.append("MARKS — you MUST call `tap_mark(id)` using one of the ids below to click any of these elements. Never invent or remember an id from a prior turn — these ids are valid ONLY for the screenshot attached to THIS turn:")
-        for mark in marks {
-            let roleHint: String = {
-                if let t = mark.inputType, !t.isEmpty { return "\(mark.role)/\(t)" }
-                return mark.role
-            }()
-            let label = mark.label.isEmpty ? "(no label)" : "\"\(mark.label)\""
-            lines.append("  \(mark.id) → \(label) (\(roleHint))")
-        }
-        return lines.joined(separator: "\n")
     }
 
     /// Read the WKWebView's current URL. Cheap; safe to poll. Used by the
@@ -1220,132 +1193,6 @@ actor WebDriver: UXDriving {
         try await dispatchClick(x: cx, y: cy, button: 0, count: 1)
     }
 
-    /// Draw numbered badges over every mark's bounding rect on a copy
-    /// of `image`. The output is what we save to disk and send to the
-    /// model — agents and human reviewers both see the same scaffolding.
-    ///
-    /// **Coordinate-system note.** Mark rects come from
-    /// `getBoundingClientRect()` — CSS pixels with **top-left origin**
-    /// (y increases downward). `NSImage.lockFocus()` exposes a
-    /// `CGContext` whose default coordinate system is **bottom-left
-    /// origin** (y increases upward). Drawing CSS rects directly into
-    /// that context puts every mark at `imageHeight - cssY` instead of
-    /// `cssY` — i.e. flipped to the bottom of the image. We translate
-    /// each rect into NSImage coordinates explicitly here so marks land
-    /// on the elements they label.
-    nonisolated private static func drawMarks(
-        on image: NSImage,
-        marks: [InteractiveMark],
-        viewport: CGSize
-    ) -> NSImage {
-        guard !marks.isEmpty else { return image }
-        let size = image.size
-        let result = NSImage(size: size)
-        result.lockFocus()
-        defer { result.unlockFocus() }
-        // Base layer: the original snapshot. NSImage.draw handles its
-        // own orientation, so this lands the page right-side-up.
-        image.draw(at: .zero, from: NSRect(origin: .zero, size: size), operation: .copy, fraction: 1.0)
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return result }
-        // The accent + supporting colors come from HarnessDesign so the
-        // overlay reads as part of the app rather than dev-tool clutter.
-        let accent = NSColor(red: 0.07, green: 0.58, blue: 0.42, alpha: 1.0)   // harnessAccent (light)
-        let badgeBG = accent.cgColor
-        let badgeFG = NSColor.white
-        let outline = accent.withAlphaComponent(0.85).cgColor
-        for mark in marks {
-            let css = mark.rect
-            // Translate CSS (y-down) to NSImage (y-up). The element's
-            // CSS top-edge is at NSImage y = `size.height - css.minY`;
-            // CGRect's origin is its bottom-left, so the rect's NSImage
-            // y is `size.height - css.maxY`.
-            let outlineRect = CGRect(
-                x: css.minX,
-                y: size.height - css.maxY,
-                width: css.width,
-                height: css.height
-            )
-            ctx.setStrokeColor(outline)
-            ctx.setLineWidth(2.0)
-            ctx.stroke(outlineRect)
-
-            // Number badge floating just **above** the element so it
-            // doesn't obscure the element's first characters. Earlier
-            // we anchored at the top-left INSIDE the element's rect:
-            // for nav anchors that meant the badge covered the first
-            // 2-3 letters of the label, and the LLM saw "perience",
-            // "sjects", "icles" instead of "Experience", "Projects",
-            // "Articles" — verified empirically with Qwen3-VL 8B
-            // against alanwizemann.com. Floating the badge just above
-            // the element gives the model a clean read of both the
-            // badge number AND the label.
-            //
-            // Sizing: tuned for legibility after the LLM-side
-            // downscale. Local sub-10B vision models receive the image
-            // clamped to a 768pt long edge (see
-            // `AgentModel.screenshotMaxLongEdge`), so a 1280pt-wide
-            // viewport scales to 0.6×. A 22pt-bold badge becomes
-            // ~13pt — readable by Qwen3-VL and friends; the prior
-            // 13pt sizing collapsed to ~8pt and was effectively
-            // invisible. Cloud models receive the native-resolution
-            // image so the slightly chunkier badges cost nothing.
-            // Disk PNGs stay unmarked, so this overlay is invisible
-            // to humans reviewing replays.
-            let labelText = "\(mark.id)"
-            let font = NSFont.systemFont(ofSize: 22, weight: .bold)
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: badgeFG
-            ]
-            let textSize = (labelText as NSString).size(withAttributes: attrs)
-            let pad: CGFloat = 6
-            let badgeW = max(32, textSize.width + 2 * pad)
-            let badgeH: CGFloat = 30
-            // Float the badge just above the element's CSS-top edge.
-            // CSS-top is at NSImage y = `size.height - css.minY`. A
-            // 4pt gap separates the badge bottom from the element's
-            // outline; the badge's TOP edge then lands at
-            // `size.height - css.minY + 4 + badgeH`, so the badge's
-            // BOTTOM (drawn from bottom-left in y-up CGContext) is at
-            // `size.height - css.minY + 4`. When the element is right
-            // at the top of the viewport (css.minY ≈ 0), the badge
-            // would clip off-screen — clamp y so badges always stay
-            // inside the image; for top-of-page nav this puts them
-            // INSIDE the element at the very top edge, where they
-            // overlap minimal label text.
-            let preferredY = size.height - css.minY + 4
-            let badgeY = min(preferredY, size.height - badgeH - 2)
-            let badgeRect = CGRect(
-                x: css.minX,
-                y: badgeY,
-                width: badgeW,
-                height: badgeH
-            )
-            ctx.setFillColor(badgeBG)
-            ctx.fill(badgeRect)
-            // The CGContext is unflipped here, so `NSString.draw(at:)`
-            // treats the point as the text's lower-left in y-up space.
-            // Centring the text inside the badge then means a small
-            // upward offset from the badge's bottom.
-            let textPoint = CGPoint(
-                x: badgeRect.minX + pad,
-                y: badgeRect.minY + (badgeH - textSize.height) / 2
-            )
-            (labelText as NSString).draw(at: textPoint, withAttributes: attrs)
-        }
-        _ = viewport  // reserved for future viewport-clamp checks
-        return result
-    }
-
-    /// PNG-encode an `NSImage` via the same TIFF→bitmap path the
-    /// snapshot pipeline used before the marks split, so disk writes and
-    /// in-memory marked copies share one encoding routine.
-    nonisolated private static func pngData(from image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff) else { return nil }
-        return rep.representation(using: .png, properties: [:])
-    }
-
     /// Escape a string for safe interpolation into a JS source literal.
     private static func jsEscape(_ s: String) -> String {
         var out = ""
@@ -1383,14 +1230,3 @@ enum WebDriverError: Error, Sendable, LocalizedError {
     }
 }
 
-/// One numbered Set-of-Mark entry. Built per-screenshot by the WebDriver
-/// JS probe, kept on the actor for the duration of the next tool call,
-/// and looked up by id when the agent emits `tap_mark(id:)`. CSS-pixel
-/// rect; `id` is 1-based to match the badge text drawn on the snapshot.
-struct InteractiveMark: Sendable, Equatable {
-    let id: Int
-    let rect: CGRect
-    let role: String
-    let inputType: String?
-    let label: String
-}
