@@ -2,19 +2,24 @@
 //  EnvKeychain.swift
 //  HarnessCLI
 //
-//  In-memory `KeychainStoring` shim that reads provider API keys from
-//  environment variables instead of the macOS Keychain. The cloud LLM
-//  clients (`ClaudeClient`, `OpenAIClient`, `GeminiClient`) only need
-//  read access — they fetch the key once on first `step(_:)` — so writes
-//  and deletes are no-ops here.
+//  `KeychainStoring` shim used by HarnessCLI. Reads provider API keys
+//  from environment variables FIRST, then falls back to the real
+//  macOS Keychain (the same store the GUI app writes via its Settings
+//  UI) for any provider whose env var isn't set.
 //
-//  Why not just use `KeychainStore`?
-//  - The Keychain is per-app-signature; the CLI binary has a different
-//    code-signing identity than the GUI app, so a key the user has
-//    already stored via the Settings UI is invisible to the CLI without
-//    re-entry. Env vars are zero-friction in a shell-based dev loop.
-//  - Headless dev runs in CI / under tmux are spared the security
-//    prompt the Keychain pops up.
+//  Why both:
+//  - **Env vars** are zero-friction in headless / CI / tmux contexts
+//    and let the user override what's stored in the Keychain on a
+//    per-invocation basis (handy for testing with a throwaway key).
+//  - **Keychain fallback** so dev iteration doesn't require the user
+//    to duplicate keys they've already stored via the GUI app's
+//    Settings. The first read by the CLI binary prompts macOS for
+//    permission to access the Keychain item; once granted, the item's
+//    ACL remembers the CLI binary and subsequent reads are silent.
+//
+//  Writes and deletes are no-ops here — the CLI is read-only against
+//  credentials. The GUI app remains the one place that writes keys
+//  to the Keychain.
 //
 
 import Foundation
@@ -25,17 +30,20 @@ struct EnvKeychain: KeychainStoring, Sendable {
     /// (one per provider) are populated; per-Application credential reads
     /// always return nil so `WebDriver.fill_credential` cleanly degrades
     /// to "no credential staged."
-    private let keys: [String: Data]
+    private let envKeys: [String: Data]
+    /// Real macOS Keychain — consulted when the env-var path didn't
+    /// have an entry for the requested `(service, account)`. nil means
+    /// "skip the fallback entirely" (used by tests / CI).
+    private let systemFallback: KeychainStore?
 
-    init(keys: [String: Data]) {
-        self.keys = keys
+    init(envKeys: [String: Data], systemFallback: KeychainStore? = KeychainStore()) {
+        self.envKeys = envKeys
+        self.systemFallback = systemFallback
     }
 
-    /// Build a fresh keychain by reading the three provider env vars.
-    /// Missing/empty vars are silently dropped — they'll surface as
-    /// `LLMError.missingAPIKey` from the matching client when the run
-    /// actually starts, with a tighter error message than this layer
-    /// could produce.
+    /// Build the env half of the keychain by reading the three provider
+    /// env vars. The Keychain fallback is added unconditionally — the
+    /// CLI lets `KeychainStore` decide whether an entry exists.
     static func fromEnvironment() -> EnvKeychain {
         let env = ProcessInfo.processInfo.environment
         var keys: [String: Data] = [:]
@@ -54,11 +62,19 @@ struct EnvKeychain: KeychainStoring, Sendable {
             let account = KeychainStore.keychainAccount
             keys["\(service)|\(account)"] = data
         }
-        return EnvKeychain(keys: keys)
+        return EnvKeychain(envKeys: keys)
     }
 
     func read(service: String, account: String) throws -> Data? {
-        keys["\(service)|\(account)"]
+        if let env = envKeys["\(service)|\(account)"] {
+            return env
+        }
+        // Fall back to the real macOS Keychain. macOS prompts the user
+        // the first time this CLI binary tries to access an item; once
+        // granted, the item's ACL remembers the binary and subsequent
+        // reads are silent. Errors from the Keychain (entry missing,
+        // user denied permission, etc.) propagate as the caller expects.
+        return try systemFallback?.read(service: service, account: account)
     }
 
     func write(_ data: Data, service: String, account: String) throws {
