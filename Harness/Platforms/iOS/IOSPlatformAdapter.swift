@@ -202,21 +202,92 @@ struct IOSSimDriver: UXDriving {
         try await simulatorDriver.launch(bundleID: bundleIdentifier, on: ref)
     }
 
-    /// Brief post-action settle so the next screenshot captures the
-    /// committed UI state, not a mid-animation frame. iOS animations
-    /// (push transitions, modals, tab swaps) commonly take 250–400ms,
-    /// but a small 150ms wait covers the visible-paint case for taps
-    /// while keeping run latency low. Long animations (push nav) will
-    /// still occasionally need an `wait` tool call from the agent — we
-    /// don't try to autodetect transition length here.
+    /// Post-action settle so the next screenshot captures committed
+    /// UI state, not a mid-animation frame. iOS has no DOM-mutation
+    /// observer; the equivalent is **screenshot dHash stability** —
+    /// poll captures at a fixed cadence and resolve when two
+    /// consecutive captures are visually equivalent (dHash Hamming
+    /// distance ≤ threshold), or `maxMs` elapsed.
+    ///
+    /// Pure-paint tools (tap, switch toggles, type cursor movements)
+    /// converge fast: 2-3 polls. Push transitions / modal
+    /// presentations / tab swaps run 250-400ms and benefit from the
+    /// longer ceiling. The settle stays out of the way of long
+    /// animations — agents can still issue `wait` when they know
+    /// something slow is coming (a network-backed list refresh).
+    ///
+    /// Falls back to a fixed `minMs` sleep when capture itself
+    /// fails — a transient simctl capture error shouldn't take down
+    /// the run.
     func settle(afterTool call: ToolCall) async {
+        let idleMs: Int
+        let minMs: Int
+        let maxMs: Int
         switch call.input {
-        case .tap, .doubleTap, .tapMark, .swipe, .pressButton, .fillCredential:
-            try? await Task.sleep(for: .milliseconds(150))
-        case .type, .wait, .readScreen, .noteFriction, .markGoalDone,
+        case .tap, .doubleTap, .tapMark, .pressButton, .fillCredential:
+            // Most taps converge in ≤400ms. Allow up to 2s for modal
+            // present / push transitions.
+            idleMs = 250
+            minMs = 250
+            maxMs = 2000
+        case .swipe:
+            // Swipes drive scroll views — content reflows + deceleration
+            // ramp commonly runs 600-900ms.
+            idleMs = 400
+            minMs = 400
+            maxMs = 3000
+        case .type:
+            // Native text-field input echos as you type; no extra
+            // animation worth gating on.
+            return
+        case .wait, .readScreen, .noteFriction, .markGoalDone,
              .rightClick, .keyShortcut, .scroll, .navigate,
              .back, .forward, .refresh:
             return
+        }
+        await awaitScreenshotStable(idleMs: idleMs, minMs: minMs, maxMs: maxMs)
+    }
+
+    /// Poll `simctl io screenshot` at ~150ms cadence, compute a dHash
+    /// per capture, and resolve when two consecutive captures land
+    /// within the cycle-detector's Hamming distance threshold (same
+    /// rule the agent loop uses elsewhere).
+    ///
+    /// `minMs` floors the wait — even if the first two captures match
+    /// (very fast animation), give the runtime at least this long to
+    /// commit a re-layout that races with our poll. `maxMs` caps the
+    /// wait to keep an unbounded animation (looping spinner) from
+    /// holding the run.
+    private func awaitScreenshotStable(idleMs: Int, minMs: Int, maxMs: Int) async {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let deadline = start.advanced(by: .milliseconds(maxMs))
+        let floor = start.advanced(by: .milliseconds(minMs))
+        let pollInterval: Duration = .milliseconds(150)
+
+        var lastHash: UInt64?
+        // Capture into a temp URL we can re-overwrite each poll. Using
+        // an `inMemoryOnly: true`-style buffer would be nicer but
+        // `simctl io screenshot` writes to a file path.
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("harness-ios-settle-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        while clock.now < deadline {
+            try? await Task.sleep(for: pollInterval)
+            // simctl screenshot failures aren't run-fatal here; the
+            // settle just gives up at maxMs.
+            guard (try? await simulatorDriver.screenshot(ref, into: tmp)) != nil,
+                  let data = try? Data(contentsOf: tmp) else {
+                continue
+            }
+            let hash = ScreenshotHasher.dHash(jpeg: data)
+            if let prev = lastHash,
+               ScreenshotHasher.hammingDistance(hash, prev) <= AgentLoop.cycleHashThreshold,
+               clock.now >= floor {
+                return
+            }
+            lastHash = hash
         }
     }
 }
