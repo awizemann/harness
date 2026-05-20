@@ -400,11 +400,10 @@ actor ClaudeClient: LLMClient {
         // loop is retrying after a parse failure, prepend the corrective
         // hint so the model sees what went wrong on the prior attempt.
         let currentText: String
-        let baseInstruction = "Current screen attached. Choose your next action by calling exactly one tool."
-        let annotation = request.screenshotAnnotation
-        let annotated = annotation.isEmpty
-            ? baseInstruction
-            : "\(baseInstruction)\n\n\(annotation)"
+        let baseInstruction = LLMShared.currentTurnInstruction(
+            annotation: request.screenshotAnnotation
+        )
+        let annotated = baseInstruction
         if let hint = request.retryHint, !hint.isEmpty {
             currentText = """
             Your previous response was rejected: \(hint)

@@ -326,7 +326,8 @@ actor AgentLoop: AgentLooping {
         guard a.tool == b.tool else { return false }
         switch (a.input, b.input) {
         case let (.tap(ax, ay), .tap(bx, by)),
-             let (.doubleTap(ax, ay), .doubleTap(bx, by)):
+             let (.doubleTap(ax, ay), .doubleTap(bx, by)),
+             let (.rightClick(ax, ay), .rightClick(bx, by)):
             return abs(ax - bx) <= cycleCoordinateThreshold &&
                    abs(ay - by) <= cycleCoordinateThreshold
         case let (.swipe(ax1, ay1, ax2, ay2, _), .swipe(bx1, by1, bx2, by2, _)):
@@ -334,14 +335,45 @@ actor AgentLoop: AgentLooping {
                    abs(ay1 - by1) <= cycleCoordinateThreshold &&
                    abs(ax2 - bx2) <= cycleCoordinateThreshold &&
                    abs(ay2 - by2) <= cycleCoordinateThreshold
+        case let (.scroll(ax, ay, adx, ady), .scroll(bx, by, bdx, bdy)):
+            // Scroll cycles often manifest as identical (dx, dy) deltas
+            // at slightly different anchor points — the agent re-emits
+            // the same scroll instruction every turn, just with the
+            // anchor wandering by a few pixels as it re-reads the
+            // screenshot. Compare both the anchor and the delta with
+            // the same coordinate threshold so the detector catches
+            // "scrolling at the bottom of a long article" loops.
+            return abs(ax - bx) <= cycleCoordinateThreshold &&
+                   abs(ay - by) <= cycleCoordinateThreshold &&
+                   abs(adx - bdx) <= cycleCoordinateThreshold &&
+                   abs(ady - bdy) <= cycleCoordinateThreshold
+        case let (.tapMark(aid), .tapMark(bid)):
+            // Mark ids refresh every screenshot, so by design they
+            // shouldn't be reused across turns. When they ARE — same
+            // id three turns in a row — it's almost certainly the
+            // model hallucinating a stable mapping. Cycle on it.
+            return aid == bid
         case let (.type(ta), .type(tb)):
             return ta == tb
+        case let (.keyShortcut(ka), .keyShortcut(kb)):
+            return ka == kb
         case let (.pressButton(ba), .pressButton(bb)):
             return ba == bb
         case let (.wait(ma), .wait(mb)):
             return ma == mb
+        case let (.navigate(ua), .navigate(ub)):
+            return ua == ub
+        case (.back, .back), (.forward, .forward), (.refresh, .refresh):
+            return true
+        case let (.fillCredential(fa), .fillCredential(fb)):
+            return fa == fb
         case (.readScreen, .readScreen):
             return true
+        // The non-action emit tools (`noteFriction`, `markGoalDone`)
+        // and any future input variants intentionally fall through:
+        // a model that emits `mark_goal_done` three turns in a row
+        // is buggy in a way the cycle detector doesn't need to
+        // diagnose.
         default:
             return false
         }

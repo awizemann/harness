@@ -119,4 +119,35 @@ enum LLMShared {
         return nil
     }
 
+    /// Builds the text portion of the **current turn**'s user message —
+    /// shared across all four `LLMClient` implementations so the
+    /// instruction the model receives is identical regardless of provider.
+    ///
+    /// Composition:
+    ///   1. Bolded call-to-action (one tool call this turn).
+    ///   2. **Behavior reminders** — short bullet list that addresses
+    ///      the failure modes we've seen empirically on small local
+    ///      vision models. These read as duplicates of what the system
+    ///      prompt covers, intentionally: local 8B models respond
+    ///      much better to repeated immediate prompts than to a single
+    ///      mention buried in the system prompt cached from earlier
+    ///      turns. The list intentionally stays short — three bullets,
+    ///      each one a specific failure mode the run logs revealed.
+    ///   3. Screenshot annotation (when provided by the platform —
+    ///      web's Set-of-Mark id→label table).
+    static func currentTurnInstruction(annotation: String) -> String {
+        let header = """
+            Current screen attached. Choose your next action by calling exactly one tool.
+
+            Reminders before responding:
+            - When an element has a numbered mark badge, you MUST call `tap_mark(id)` — never `tap(x, y)` — and the id MUST be one you can see in the marks list below for THIS screenshot. Never reuse a remembered id from a prior turn; mark ids re-number every turn.
+            - When the previous result said "page did not move" or "click was effectively a no-op", do not repeat that tool. Try a different tool (a different `tap_mark` id, or `mark_goal_done` if you have read enough).
+            - If two consecutive screenshots look the same, the action did not have an effect — pick a different action.
+            """
+        if annotation.isEmpty {
+            return header
+        }
+        return "\(header)\n\n\(annotation)"
+    }
+
 }

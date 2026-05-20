@@ -160,7 +160,7 @@ actor WebDriver: UXDriving {
     nonisolated static func describeMarks(_ marks: [InteractiveMark]) -> String {
         var lines: [String] = []
         lines.reserveCapacity(marks.count + 2)
-        lines.append("Marks visible in this screenshot (use `tap_mark(id)` to click the element described — never reuse an id from an earlier turn):")
+        lines.append("MARKS — you MUST call `tap_mark(id)` using one of the ids below to click any of these elements. Never invent or remember an id from a prior turn — these ids are valid ONLY for the screenshot attached to THIS turn:")
         for mark in marks {
             let roleHint: String = {
                 if let t = mark.inputType, !t.isEmpty { return "\(mark.role)/\(t)" }
@@ -313,28 +313,39 @@ actor WebDriver: UXDriving {
         let idleMs: Int
         let minMs: Int
         let maxMs: Int
+        var requireChildListMutation = false
         switch call.input {
         // Navigations re-render the whole page — give the most time.
         // Wide idle window (600ms) plus a long ceiling rides out
         // hydration + lazy image batches without spinning forever on
         // pages with persistent low-rate background activity (analytics
-        // beacons, polling, etc.).
+        // beacons, polling, etc.). Hard navigations always require a
+        // childList mutation before resolving — a quiet observer
+        // during the brief window between unmount-old-tree and
+        // mount-new-tree shouldn't be mistaken for "page settled".
         case .navigate, .back, .forward, .refresh:
             idleMs = 600
             minMs = 600
             maxMs = 8000
+            requireChildListMutation = true
         // Click-family tools. Default to the tight quietness window;
         // escalate to the navigation profile when the click triggered
         // a URL change (Next.js / React Router / etc. push the new
         // route via pushState inside the click handler, so by the
         // time settle runs we can already tell whether navigation
-        // happened).
+        // happened). SPA route transitions also require a childList
+        // mutation — the original failure mode was the observer
+        // catching a Suspense lull and resolving while React kept
+        // the previous route's DOM mounted; requiring one structural
+        // mutation guarantees the new component tree has begun
+        // rendering before we accept idle.
         case .tap, .tapMark, .doubleTap, .rightClick,
              .scroll, .type, .keyShortcut, .fillCredential:
             if lastClickNavigated {
                 idleMs = 600
                 minMs = 800
                 maxMs = 8000
+                requireChildListMutation = true
             } else {
                 idleMs = 250
                 minMs = 250
@@ -348,7 +359,12 @@ actor WebDriver: UXDriving {
         // Reset the navigation flag for the next tool — it only
         // applies to the immediately-following settle.
         lastClickNavigated = false
-        _ = await awaitDOMSettled(idleMs: idleMs, minMs: minMs, maxMs: maxMs)
+        _ = await awaitDOMSettled(
+            idleMs: idleMs,
+            minMs: minMs,
+            maxMs: maxMs,
+            requireChildListMutation: requireChildListMutation
+        )
     }
 
     /// Block until the DOM has gone `idleMs` without a mutation, with a
@@ -362,27 +378,57 @@ actor WebDriver: UXDriving {
     /// recent mutation, with the bounding box enforced in JS so we
     /// only pay the JS-bridge cost once per call.
     ///
+    /// When `requireChildListMutation == true`, the gate additionally
+    /// refuses to resolve until at least one `childList` mutation has
+    /// been observed since the start of the wait. This is the route-
+    /// transition guard: a `MutationObserver` watching `document
+    /// .documentElement` sees zero mutations during React's Suspense
+    /// lull (the old tree is still mounted, no DOM changes occurring),
+    /// which lets the idle window fire while the new route hasn't yet
+    /// rendered. Requiring a `childList` mutation guarantees the new
+    /// route's component tree has begun mounting before we accept
+    /// idle as "settled" — attribute / characterData mutations alone
+    /// (animations, cursor blinks) aren't enough. Verified against
+    /// alanwizemann.com — settles that previously caught the homepage
+    /// at `/articles` URL now wait for the index to actually render.
+    ///
     /// Falls back to a fixed `minMs` sleep on JS bridge failure (the
     /// most likely cause is the page being navigated away mid-call;
     /// a fixed sleep is conservative).
-    func awaitDOMSettled(idleMs: Int, minMs: Int, maxMs: Int) async -> Int {
-        // Async-JS body. Receives `idleMs`, `minMs`, `maxMs` as locals
-        // via `arguments:` — `callAsyncJavaScript` wraps the body in an
-        // `async function (idleMs, minMs, maxMs) { ... }`.
+    func awaitDOMSettled(idleMs: Int, minMs: Int, maxMs: Int, requireChildListMutation: Bool = false) async -> Int {
+        // Async-JS body. Receives `idleMs`, `minMs`, `maxMs`,
+        // `requireChildList` as locals via `arguments:` —
+        // `callAsyncJavaScript` wraps the body in an
+        // `async function (idleMs, minMs, maxMs, requireChildList) { ... }`.
         let js = """
         return await new Promise((resolve) => {
           const startedAt = performance.now();
           const target = document.documentElement || document.body;
           if (!target) { resolve(0); return; }
           let lastMut = startedAt;
-          const obs = new MutationObserver(() => { lastMut = performance.now(); });
+          let childListSeen = false;
+          const obs = new MutationObserver((records) => {
+            lastMut = performance.now();
+            if (!childListSeen) {
+              for (const r of records) {
+                if (r.type === 'childList' && (r.addedNodes.length > 0 || r.removedNodes.length > 0)) {
+                  childListSeen = true;
+                  break;
+                }
+              }
+            }
+          });
           obs.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
           const tick = () => {
             const now = performance.now();
             const sinceMut = now - lastMut;
             const elapsed = now - startedAt;
             if (elapsed >= maxMs) { obs.disconnect(); resolve(Math.round(elapsed)); return; }
-            if (elapsed >= minMs && sinceMut >= idleMs) { obs.disconnect(); resolve(Math.round(elapsed)); return; }
+            if (elapsed >= minMs && sinceMut >= idleMs && (!requireChildList || childListSeen)) {
+              obs.disconnect();
+              resolve(Math.round(elapsed));
+              return;
+            }
             const next = Math.max(50, Math.min(150, idleMs / 4));
             setTimeout(tick, next);
           };
@@ -398,7 +444,12 @@ actor WebDriver: UXDriving {
                 // `Double` depending on platform — handle both.
                 let value = try await self.controller.webView.callAsyncJavaScript(
                     js,
-                    arguments: ["idleMs": idleMs, "minMs": minMs, "maxMs": maxMs],
+                    arguments: [
+                        "idleMs": idleMs,
+                        "minMs": minMs,
+                        "maxMs": maxMs,
+                        "requireChildList": requireChildListMutation
+                    ],
                     in: nil,
                     contentWorld: .page
                 )
@@ -564,11 +615,44 @@ actor WebDriver: UXDriving {
         // non-interactive element and a synthetic event was used.
         let result = try await runJSAndReturn(js)
         if let dict = result as? [String: Any] {
+            let ok = (dict["ok"] as? Bool) ?? true
             let element = (dict["elementTag"] as? String) ?? "?"
             let interactive = (dict["interactiveTag"] as? String) ?? "none"
+            let reason = (dict["reason"] as? String) ?? ""
             let url = (dict["url"] as? String) ?? ""
             let urlChanged = (dict["urlChanged"] as? Bool) ?? false
             self.lastClickNavigated = urlChanged
+
+            // Surface the click's actual outcome to the agent through
+            // `toolResultSummary` (via `lastDriverDetail`). Three cases
+            // worth flagging — silently-ok clicks that didn't actually
+            // do anything are the dominant "model loops on the same
+            // tap" failure mode:
+            //
+            //   1. `no-element-at-point`: elementFromPoint returned
+            //      null (point outside viewport, document not yet
+            //      attached, etc.). Click was a hard no-op.
+            //   2. `interactive=none` + URL unchanged: click landed on
+            //      a non-interactive element (decorative span, image,
+            //      whitespace). React onClick on a non-interactive
+            //      parent may or may not have fired; the page didn't
+            //      navigate either way. Worth telling the model so it
+            //      doesn't re-click the same spot.
+            //   3. Normal success: clicked an interactive element OR
+            //      the URL changed (SPA route push). The agent gets
+            //      "ok" with no additional detail.
+            let detail: String?
+            if !ok {
+                detail = "click did not land on any element — \(reason.isEmpty ? "elementFromPoint returned null" : reason). Try a different tool or tap_mark id."
+            } else if interactive == "none" && !urlChanged {
+                detail = "click landed on <\(element)> but no interactive ancestor was found and the URL did not change. Click was effectively a no-op — try a different tool or tap_mark id."
+            } else {
+                detail = nil
+            }
+            if let detail {
+                self.lastDriverDetail = detail
+            }
+
             Self.logger.info("click (\(x, privacy: .public), \(y, privacy: .public)) → element=\(element, privacy: .public) interactive=\(interactive, privacy: .public) url=\(url, privacy: .public) urlChanged=\(urlChanged, privacy: .public)")
             if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
                 let nav = urlChanged ? " [NAV]" : ""
@@ -1081,15 +1165,53 @@ actor WebDriver: UXDriving {
     }
 
     /// Click the element associated with `id` from the most recent
-    /// screenshot's mark cache. Resolves to the rect's center, then
-    /// runs the same `dispatchClick` path as `tap` — so focus routing,
+    /// screenshot's mark cache. Resolves to a click point inside the
+    /// rect's **visible-in-viewport** portion, then runs the same
+    /// `dispatchClick` path as `tap` — so focus routing,
     /// label-resolution, etc. all work the same way.
+    ///
+    /// **Viewport clipping**: when the mark's rect extends past the
+    /// viewport bottom (a common case for "Related Content" cards or
+    /// long article cards on the index page), the geometric midpoint
+    /// can land outside the visible area. `document.elementFromPoint`
+    /// returns `null` for points outside the viewport, so the click
+    /// is silently a no-op. Clipping the rect to the viewport BEFORE
+    /// computing the midpoint guarantees the click lands on a hit-
+    /// testable pixel. The element is still the same React anchor —
+    /// we're just picking a click coordinate that the browser will
+    /// route to it.
+    ///
+    /// Inset margins (4pt) keep the click point off the absolute
+    /// edges, which can hit borders or scrollbar handles on some
+    /// pages.
     private func dispatchMarkClick(id: Int) async throws {
         guard let mark = lastMarks.first(where: { $0.id == id }) else {
             throw WebDriverError.unknownMark(id: id)
         }
-        let cx = Int(mark.rect.midX.rounded())
-        let cy = Int(mark.rect.midY.rounded())
+        let inset: CGFloat = 4
+        let viewportW = viewport.width
+        let viewportH = viewport.height
+        // Intersect mark.rect with the visible viewport (0,0,vw,vh).
+        let visibleMinX = max(mark.rect.minX, 0) + inset
+        let visibleMinY = max(mark.rect.minY, 0) + inset
+        let visibleMaxX = min(mark.rect.maxX, viewportW) - inset
+        let visibleMaxY = min(mark.rect.maxY, viewportH) - inset
+        let clampedCenterX: CGFloat
+        let clampedCenterY: CGFloat
+        if visibleMaxX > visibleMinX && visibleMaxY > visibleMinY {
+            clampedCenterX = (visibleMinX + visibleMaxX) / 2
+            clampedCenterY = (visibleMinY + visibleMaxY) / 2
+        } else {
+            // Edge case: rect is entirely off-screen (probe filter
+            // bug, or page scrolled between probe and dispatch).
+            // Fall back to the un-clipped midpoint — `dispatchClick`
+            // will report `no-element-at-point` and the model gets
+            // an honest signal.
+            clampedCenterX = mark.rect.midX
+            clampedCenterY = mark.rect.midY
+        }
+        let cx = Int(clampedCenterX.rounded())
+        let cy = Int(clampedCenterY.rounded())
         Self.logger.info("tap_mark(\(id, privacy: .public)) → label=\"\(mark.label, privacy: .public)\" role=\(mark.role, privacy: .public) rect=(\(Int(mark.rect.minX), privacy: .public),\(Int(mark.rect.minY), privacy: .public),\(Int(mark.rect.width), privacy: .public),\(Int(mark.rect.height), privacy: .public)) → click(\(cx, privacy: .public),\(cy, privacy: .public))")
         if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
             let line = "[WebDriver] tap_mark(\(id)) label=\"\(mark.label)\" role=\(mark.role) rect=(\(Int(mark.rect.minX)),\(Int(mark.rect.minY)),\(Int(mark.rect.width)),\(Int(mark.rect.height))) → click(\(cx),\(cy))\n"

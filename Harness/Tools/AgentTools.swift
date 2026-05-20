@@ -368,8 +368,13 @@ enum ToolSchema {
             and won't miss by a few pixels. \
             Use `tap_mark` whenever the target HAS a mark. Use `tap(x, y)` only for unmarked \
             content (scrolling targets, image regions, page-level positions). \
-            If the element you want isn't marked, scroll until it comes into view; the next \
-            screenshot's marks will include it.
+            \
+            CRITICAL — never reuse an id from an earlier turn. Mark ids re-number on every \
+            screenshot, so the id that was "Articles" two turns ago might be "Speaking" now. \
+            Always read the marks list provided alongside this turn's screenshot to find the \
+            id whose label matches what you want to click. If the id you want isn't in the \
+            CURRENT turn's marks, scroll until the target comes into view; the next screenshot's \
+            marks will include it.
             """,
             jsonSchema: [
                 "type": "object",
