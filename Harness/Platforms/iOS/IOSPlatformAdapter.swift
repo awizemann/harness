@@ -79,12 +79,36 @@ struct IOSPlatformAdapter: PlatformAdapter {
     func toolNames() -> [String] { ToolSchema.iOSToolNames }
 
     func systemPromptContext(deviceLabel: String) async throws -> String {
-        // The existing system prompt is iOS-flavoured already. For iOS,
-        // there's nothing extra to inject — return empty so the prompt
-        // assembler skips the prefix. macOS / web adapters return real
-        // override blocks.
-        return ""
+        // Load the iOS platform context. Identical resolution path to
+        // web's: ask the PromptLibrary for the platform-specific
+        // override; fall back to the inline default below if the
+        // bundle resource is missing (which only happens in pre-V6
+        // ships and unit-test bundles that don't include the docs/
+        // tree).
+        if let library = services.promptLibrary as? PromptLibrary {
+            if let bundleURL = library.bundle.url(forResource: "ios", withExtension: "md", subdirectory: "PROMPTS/platforms"),
+               let text = try? String(contentsOf: bundleURL, encoding: .utf8) {
+                return text
+            }
+            if let repoRoot = HarnessPaths.repoRoot {
+                let onDisk = repoRoot
+                    .appendingPathComponent("docs", isDirectory: true)
+                    .appendingPathComponent("PROMPTS", isDirectory: true)
+                    .appendingPathComponent("platforms", isDirectory: true)
+                    .appendingPathComponent("ios.md")
+                if let text = try? String(contentsOf: onDisk, encoding: .utf8) {
+                    return text
+                }
+            }
+        }
+        return Self.fallbackContext
     }
+
+    private static let fallbackContext = """
+    OVERRIDE — PLATFORM CONTEXT.
+
+    You are testing an iOS app in the iOS Simulator. Coordinates are screen points (top-left origin). Every screenshot has numbered Set-of-Mark badges over actionable elements — prefer `tap_mark(id)` over `tap(x, y)`. To type into a text field, you MUST `tap_mark` it first to focus it; `type` writes to whatever is currently focused and is a silent no-op when nothing is.
+    """
 }
 
 /// `UXDriving` wrapper around the iOS `SimulatorDriving` actor. Carries the

@@ -9,6 +9,8 @@
 //
 
 import AppKit
+import ApplicationServices
+import CoreGraphics
 import Foundation
 
 enum HarnessRunner {
@@ -204,6 +206,15 @@ enum HarnessRunner {
                 FileHandle.standardError.write(Data("Missing --app-path. See --help.\n".utf8))
                 return 2
             }
+
+            // Pre-flight the two macOS-specific permissions. Both
+            // are per-binary in macOS's privacy model — the GUI app
+            // having them granted doesn't help the CLI. When either
+            // is missing, surface a friendly explanation BEFORE
+            // starting the run so the user knows what dialog to
+            // expect (and which Privacy & Security pane to open if
+            // they want to grant manually).
+            Self.checkMacPermissions()
             let bundleURL = URL(fileURLWithPath: bundlePath)
             // Synthesise a SimulatorRef so the existing RunRequest
             // shape carries the run's display label / viewport. The
@@ -280,6 +291,56 @@ enum HarnessRunner {
         } catch {
             FileHandle.standardError.write(Data("Run failed: \(error.localizedDescription)\n".utf8))
             return 1
+        }
+    }
+
+    /// Friendly pre-flight for the two macOS permissions a macOS run
+    /// depends on. Both are tied to the CLI binary's signature, NOT
+    /// to the Harness GUI — even if the user has granted them to the
+    /// .app, the CLI binary still needs its own grant. We print a
+    /// short heads-up when either is missing so the user knows what
+    /// dialog will pop up (or where to grant manually). Doesn't
+    /// throw — the macOS permission dialogs appear on first attempt
+    /// to capture / probe regardless, so blocking the run here
+    /// would prevent the prompts from firing.
+    static func checkMacPermissions() {
+        let stderr = FileHandle.standardError
+        // Screen Recording: required for CGWindowListCreateImage.
+        // CGPreflightScreenCaptureAccess returns true when granted,
+        // false when not; safe to call without triggering a prompt.
+        if !CGPreflightScreenCaptureAccess() {
+            let msg = """
+                ⚠  Screen Recording permission isn't granted to this binary yet.
+                   macOS will pop a permission dialog on first window capture; click Allow.
+                   If you don't see the dialog or want to grant in advance, open:
+                     System Settings → Privacy & Security → Screen & System Audio Recording
+                   and enable `harness-cli`.
+
+                """
+            stderr.write(Data(msg.utf8))
+            // Request — actually does nothing on its own if a prompt
+            // was already dismissed once, but is a no-op if granted.
+            _ = CGRequestScreenCaptureAccess()
+        }
+        // Accessibility: required for AXUIElementCopyAttributeValue.
+        // AXIsProcessTrustedWithOptions with the prompt option set
+        // to true pops the system dialog when the process isn't yet
+        // trusted; pass true once at startup so the user gets a
+        // single, expected prompt rather than one mid-step.
+        let key = "AXTrustedCheckOptionPrompt" as CFString
+        let opts = [key: true] as CFDictionary
+        if !AXIsProcessTrustedWithOptions(opts) {
+            let msg = """
+                ⚠  Accessibility permission isn't granted to this binary yet.
+                   macOS will pop a permission dialog so you can enable AX access
+                   for `harness-cli`. The dialog says you'll need to quit and
+                   restart the app once granted — that's expected; re-run the
+                   same harness-cli command after granting.
+                   Or grant in advance: System Settings → Privacy & Security
+                     → Accessibility → enable `harness-cli`.
+
+                """
+            stderr.write(Data(msg.utf8))
         }
     }
 }
