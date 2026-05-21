@@ -46,7 +46,15 @@
       "name": "Which AI models does Harness support?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Harness supports vision tool-use models from Anthropic, OpenAI, and Google. Today that's Claude Opus 4.7, Sonnet 4.6, and Haiku 4.5; OpenAI GPT-5 Mini and GPT-4.1 Nano; and Google Gemini 2.5 Flash and Flash Lite. You bring your own API key for whichever provider you pick — keys are stored in the macOS Keychain. The Compose Run form has a per-run provider+model picker so you can trade speed for capability without leaving the app."
+        "text": "Cloud — Anthropic (Claude Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5 Mini, GPT-4.1 Nano), Google (Gemini 2.5 Flash, Flash Lite). Local — vision LLMs running on your own Mac via Ollama: Qwen3-VL 8B (recommended), Gemma 4 Vision 9B, Llama 3.2 Vision 11B, plus a custom-model field that's sent verbatim to Ollama. You bring your own API key for cloud providers (stored in the macOS Keychain, one entry per provider); local needs no key and no internet. The Compose Run form has a per-run provider+model picker so you can trade speed for privacy without leaving the app."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I run Harness fully local, without sending screenshots to a cloud provider?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The Local Mac provider runs a vision LLM on your machine via Ollama at 127.0.0.1:11434. Screenshots never leave the Mac, runs cost $0 at the API level, and you can work offline. Curated picker: Qwen3-VL 8B (recommended), Gemma 4 Vision 9B, Llama 3.2 Vision 11B, plus a custom-model field. Trade-offs are surfaced honestly in the per-run picker: local models are ~5-10× slower per step than Sonnet 4.6 and produce lower-quality friction-event summaries; for an 8-step run that's minutes versus seconds. The Settings → Local Mac card includes a server reachability pill, the base URL field, and copy-paste Ollama install commands."
       }
     },
     {
@@ -78,7 +86,7 @@
       "name": "Does my data leave my Mac?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Screenshots and step events are sent to whichever provider you picked — Anthropic, OpenAI, or Google — that's the inference path that drives the agent. Run logs (JSONL plus screenshots) live on disk in ~/Library/Application Support/Harness/runs/. Nothing else phones home — no analytics, no telemetry, no remote logging."
+        "text": "Only if you pick a cloud provider. Screenshots and step events go to whichever provider you select — Anthropic, OpenAI, or Google — that's the inference path that drives the agent. The Local Mac provider keeps everything on your machine: Ollama runs at 127.0.0.1, no internet required, no data leaves the box. Either way, run logs (JSONL plus screenshots) live on disk in ~/Library/Application Support/Harness/runs/. Nothing else phones home — no analytics, no telemetry, no remote logging."
       }
     },
     {
@@ -129,7 +137,7 @@
       <div class="hero-copy">
         <p class="eyebrow"><span class="dot" aria-hidden="true"></span> v{{VERSION}} · macOS · open source</p>
         <h1>AI-driven user testing for iOS, macOS, and the web.</h1>
-        <p class="lede">Write a goal in plain English. Pick a persona. Harness drives your target — iOS Simulator, macOS app, or a URL in an embedded browser — while an LLM agent reads each screen, taps and types its way through, and flags UX friction the way a real person would.</p>
+        <p class="lede">Write a goal in plain English. Pick a persona. Harness drives your target — iOS Simulator, macOS app, or a URL in an embedded browser — while an LLM agent reads each screen, taps and types its way through, and flags UX friction the way a real person would. Run on a cloud model — Claude, GPT, Gemini — or fully local on your own Mac.</p>
         <div class="cta-row">
           <a class="btn btn-primary btn-download" href="https://github.com/awizemann/harness/releases/download/v{{VERSION}}/Harness-v{{VERSION}}-Universal.zip" download>
             <svg class="btn-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -159,10 +167,10 @@
     <ul class="wrap">
       <li>Native macOS</li>
       <li>Drives iOS, macOS &amp; Web</li>
+      <li>Cloud or fully-local models</li>
       <li>Replayable runs</li>
       <li>Friction-typed events</li>
       <li>MIT licensed</li>
-      <li>Vision-grounded — no a11y IDs needed</li>
     </ul>
   </aside>
 
@@ -431,13 +439,28 @@ open Harness.xcodeproj</code></pre>
         <details>
           <summary>Which AI models does Harness support?</summary>
           <div>
-            <p>Harness supports vision tool-use models from <strong>Anthropic, OpenAI, and Google</strong>. Today that's:</p>
+            <p>Cloud (vision tool-use):</p>
             <ul class="bullets">
               <li><strong>Anthropic</strong> — Claude Opus 4.7, Sonnet 4.6, Haiku 4.5</li>
               <li><strong>OpenAI</strong> — GPT-5 Mini, GPT-4.1 Nano</li>
               <li><strong>Google</strong> — Gemini 2.5 Flash, Gemini 2.5 Flash Lite</li>
             </ul>
-            <p>You bring your own API key for whichever provider you pick — keys are stored in the macOS Keychain, one entry per provider. The Compose Run form has a per-run provider + model picker, so you can trade speed for capability without leaving the app.</p>
+            <p>Local (vision LLMs running on your Mac via <a href="https://ollama.com">Ollama</a>):</p>
+            <ul class="bullets">
+              <li><strong>Qwen3-VL 8B</strong> — recommended; GUI-trained vision LLM, the model the local path is tuned against</li>
+              <li><strong>Gemma 4 Vision 9B</strong></li>
+              <li><strong>Llama 3.2 Vision 11B</strong></li>
+              <li><strong>Custom local model</strong> — type-your-own Ollama tag, sent verbatim</li>
+            </ul>
+            <p>You bring your own API key for cloud providers (stored in the macOS Keychain, one entry per provider). Local needs no key and no internet — Ollama runs at <code>127.0.0.1:11434</code> and Harness probes it for reachability. The Compose Run form has a per-run provider + model picker so you can trade speed for privacy without leaving the app.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Can I run Harness fully local, without sending screenshots to a cloud provider?</summary>
+          <div>
+            <p>Yes. The <strong>Local Mac</strong> provider runs a vision LLM on your machine via Ollama at <code>127.0.0.1:11434</code>. Screenshots never leave the Mac, runs cost $0 at the API level, and you can work offline.</p>
+            <p>Trade-offs are surfaced honestly in the per-run picker: local models are <strong>~5–10× slower per step</strong> than Sonnet 4.6 and produce lower-quality friction-event summaries. For an 8-step run that's minutes versus seconds — workable, but plan accordingly.</p>
+            <p>Settings → Local Mac has a server reachability pill, base URL field, and copy-paste Ollama install commands. The first-run wizard adds an "Or run fully local" card. See the <a href="https://github.com/awizemann/harness/wiki/Local-vs-Cloud-Models">Local-vs-Cloud-Models</a> wiki page for a same-goal-same-site three-way head-to-head with concrete numbers.</p>
           </div>
         </details>
         <details>
@@ -461,7 +484,8 @@ open Harness.xcodeproj</code></pre>
         <details>
           <summary>Does my data leave my Mac?</summary>
           <div>
-            <p>Screenshots and step events are sent to whichever provider you picked — Anthropic, OpenAI, or Google — that's the inference path that drives the agent. Run logs (JSONL plus screenshots) live on disk in <code>~/Library/Application Support/Harness/runs/</code>. Nothing else phones home — no analytics, no telemetry, no remote logging.</p>
+            <p>Only if you pick a cloud provider. Screenshots and step events go to whichever provider you select — Anthropic, OpenAI, or Google — that's the inference path that drives the agent. The <strong>Local Mac</strong> provider keeps everything on your machine: Ollama runs at <code>127.0.0.1</code>, no internet required, no data leaves the box.</p>
+            <p>Either way, run logs (JSONL plus screenshots) live on disk in <code>~/Library/Application Support/Harness/runs/</code>. Nothing else phones home — no analytics, no telemetry, no remote logging.</p>
           </div>
         </details>
         <details>
