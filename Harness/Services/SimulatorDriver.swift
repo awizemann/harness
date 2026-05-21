@@ -233,16 +233,57 @@ actor SimulatorDriver: SimulatorDriving {
 
     nonisolated func screenshot(_ ref: SimulatorRef, into url: URL) async throws -> URL {
         let xcrun = try await requireXcrun()
+        let spec = ProcessSpec(
+            executable: xcrun,
+            arguments: ["simctl", "io", ref.udid, "screenshot", url.path],
+            timeout: .seconds(15)
+        )
+        // simctl's behavior on Xcode 17 / iOS 26 reliably writes the
+        // PNG and prints "Detected file type 'PNG' from extension" +
+        // "Wrote screenshot to: …" but the exit code can flake to
+        // non-zero on rapid back-to-back invocations (settle gate
+        // polls + per-step capture). Strategy:
+        //
+        //   1. Run simctl. If it exits 0 → success.
+        //   2. If it exits non-zero BUT the file exists on disk AND
+        //      is non-empty → success. simctl's stderr warning is
+        //      not a real failure; the PNG is valid.
+        //   3. If the file is missing / empty, retry once after
+        //      200ms. A second failure propagates.
         do {
-            _ = try await processRunner.run(ProcessSpec(
-                executable: xcrun,
-                arguments: ["simctl", "io", ref.udid, "screenshot", url.path],
-                timeout: .seconds(15)
-            ))
-        } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
-            throw SimulatorError.screenshotFailed(detail: so + se)
+            _ = try await processRunner.run(spec)
+            return url
+        } catch ProcessFailure.nonZeroExit {
+            if Self.fileLooksLikePNG(at: url) {
+                return url
+            }
+            // No file on disk → retry once.
+            try? await Task.sleep(for: .milliseconds(200))
+            do {
+                _ = try await processRunner.run(spec)
+                return url
+            } catch ProcessFailure.nonZeroExit(_, _, let so, let se) {
+                if Self.fileLooksLikePNG(at: url) {
+                    return url
+                }
+                throw SimulatorError.screenshotFailed(detail: (so + se).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
         }
-        return url
+    }
+
+    /// True when `url` exists on disk and is at least ~256 bytes (a
+    /// valid PNG header + a non-empty payload). Used by the
+    /// screenshot path to tolerate simctl's non-zero exits on
+    /// runs where the file did actually get written.
+    nonisolated private static func fileLooksLikePNG(at url: URL) -> Bool {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int,
+              size >= 256 else {
+            return false
+        }
+        // Could verify the 8-byte PNG signature but the size check
+        // is sufficient — simctl never writes a partial file.
+        return true
     }
 
     nonisolated func screenshotImage(_ ref: SimulatorRef) async throws -> NSImage {
