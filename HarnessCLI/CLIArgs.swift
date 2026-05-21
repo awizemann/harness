@@ -44,6 +44,10 @@ struct CLIArgs: Sendable {
     /// Runtime label for logs / events.jsonl (e.g. "iOS 26.2").
     var iosSimulatorRuntime: String?
 
+    // macOS-specific
+    /// Path to the `.app` bundle to drive.
+    var macAppPath: String?
+
     /// Default viewport. Matches the GUI's `LiveWebMirror` initial canvas
     /// so a CLI run against the same URL produces ~the same layout as a
     /// GUI run before the user resizes anything.
@@ -68,6 +72,7 @@ struct CLIArgs: Sendable {
         var iosSimulatorUDID: String?
         var iosSimulatorName: String?
         var iosSimulatorRuntime: String?
+        var macAppPath: String?
 
         var i = 1
         while i < argv.count {
@@ -120,6 +125,8 @@ struct CLIArgs: Sendable {
                 iosSimulatorName = try Self.consumeValue(arg, argv: argv, i: &i)
             case "--simulator-runtime":
                 iosSimulatorRuntime = try Self.consumeValue(arg, argv: argv, i: &i)
+            case "--app-path":
+                macAppPath = try Self.consumeValue(arg, argv: argv, i: &i)
             default:
                 throw CLIArgsError.unknownFlag(arg)
             }
@@ -156,7 +163,7 @@ struct CLIArgs: Sendable {
             guard iosScheme != nil else { throw CLIArgsError.missingRequired("--scheme (required when --platform ios)") }
             guard iosSimulatorUDID != nil else { throw CLIArgsError.missingRequired("--simulator-udid (required when --platform ios)") }
         case .macosApp:
-            throw CLIArgsError.invalidValue(flag: "--platform", value: "macos", reason: "macOS CLI runs are not yet supported; use --platform web or ios.")
+            guard macAppPath != nil else { throw CLIArgsError.missingRequired("--app-path (required when --platform macos)") }
         }
 
         guard let goal else { throw CLIArgsError.missingRequired("--goal") }
@@ -244,7 +251,8 @@ struct CLIArgs: Sendable {
             iosScheme: iosScheme,
             iosSimulatorUDID: iosSimulatorUDID,
             iosSimulatorName: iosSimulatorName,
-            iosSimulatorRuntime: iosSimulatorRuntime
+            iosSimulatorRuntime: iosSimulatorRuntime,
+            macAppPath: macAppPath
         )
     }
 
@@ -268,7 +276,7 @@ struct CLIArgs: Sendable {
                                                  gpt-5-mini, gemini-2.5-flash,
                                                  qwen3-vl:8b, gemma4:9b, llama3.2-vision:11b
                                                  (Any tag when --provider local maps to customLocal.)
-          --platform web|ios                   Run target (default: web). macOS not yet supported.
+          --platform web|ios|macos             Run target (default: web).
 
         Required for --platform web:
           --url <URL>                          Target web app URL
@@ -277,6 +285,9 @@ struct CLIArgs: Sendable {
           --project-path <PATH>                Path to the .xcodeproj (or .xcworkspace)
           --scheme <NAME>                      Xcodebuild scheme to build + launch
           --simulator-udid <UDID>              Simulator UDID (xcrun simctl list devices --json)
+
+        Required for --platform macos:
+          --app-path <PATH>                    Path to the .app bundle to drive
 
         Optional:
           --persona <TEXT>                     Persona description (default: curious first-time user)

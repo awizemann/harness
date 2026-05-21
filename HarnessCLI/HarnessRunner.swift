@@ -193,8 +193,59 @@ enum HarnessRunner {
             platformAdapterOverride = nil
 
         case .macosApp:
-            FileHandle.standardError.write(Data("--platform macos is not yet supported by HarnessCLI.\n".utf8))
-            return 2
+            // macOS runs need a `.app` bundle path. The
+            // MacOSPlatformAdapter launches the bundle, MacAppDriver
+            // drives it via CGEvent + Screen Recording, and the AX
+            // probe builds the Set-of-Mark scaffolding. The shared
+            // `XcodeBuilder` / `SimulatorDriver` slots in
+            // `PlatformAdapterServices` are unused on macOS — pass
+            // Noop fakes the same way the web path does.
+            guard let bundlePath = args.macAppPath else {
+                FileHandle.standardError.write(Data("Missing --app-path. See --help.\n".utf8))
+                return 2
+            }
+            let bundleURL = URL(fileURLWithPath: bundlePath)
+            // Synthesise a SimulatorRef so the existing RunRequest
+            // shape carries the run's display label / viewport. The
+            // real window point size comes from the front-window
+            // bounds at capture time; the value here is a placeholder
+            // that only feeds events.jsonl + log lines.
+            let pseudoSim = SimulatorRef(
+                udid: "harness-cli-mac",
+                name: bundleURL.deletingPathExtension().lastPathComponent,
+                runtime: "macOS",
+                pointSize: CGSize(width: 1280, height: 800),
+                scaleFactor: 2.0
+            )
+            let placeholderProject = ProjectRequest(
+                path: bundleURL,
+                scheme: "harness-cli",
+                displayName: pseudoSim.name
+            )
+            request = RunRequest(
+                id: runID,
+                name: "cli-run",
+                goal: args.goal,
+                persona: args.persona,
+                applicationID: nil,
+                personaID: nil,
+                payload: .ad_hoc,
+                project: placeholderProject,
+                simulator: pseudoSim,
+                model: args.model,
+                mode: .autonomous,
+                stepBudget: args.maxSteps,
+                tokenBudget: args.model.defaultTokenBudget,
+                platformKindRaw: PlatformKind.macosApp.rawValue,
+                macAppBundlePath: bundlePath,
+                webStartURL: nil,
+                webViewportWidthPt: nil,
+                webViewportHeightPt: nil,
+                credentialID: nil
+            )
+            xcodeBuilder = NoopXcodeBuilder()
+            simulatorDriver = NoopSimulatorDriver()
+            platformAdapterOverride = nil
         }
 
         // 6. Construct the coordinator.

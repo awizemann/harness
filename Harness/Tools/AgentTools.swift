@@ -195,6 +195,7 @@ enum ToolSchema {
 
     static let macOSToolNames: [String] = [
         ToolKind.tap.rawValue,
+        ToolKind.tapMark.rawValue,
         ToolKind.doubleTap.rawValue,
         ToolKind.rightClick.rawValue,
         ToolKind.scroll.rawValue,
@@ -245,10 +246,9 @@ enum ToolSchema {
     }
 
     private static func macOSCanonical() -> [CanonicalTool] {
-        // Click left mouse button at one point. Coordinates in window
-        // points (top-left origin within the captured window).
         [
-            tap(description: "Click the left mouse button at one point. Coordinates in window points (top-left origin within the captured window)."),
+            tap(description: "Click the left mouse button at one point. Coordinates in window points (top-left origin within the captured window). Prefer `tap_mark(id)` whenever the target has a numbered mark — coordinates are for unmarked positions only."),
+            tapMark(),
             doubleTap(description: "Double-click the left mouse button at one point. (Same name as iOS double-tap; click on macOS / web.)"),
             rightClick(),
             scroll(),
