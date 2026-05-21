@@ -6,7 +6,7 @@ You write a goal in plain language and a persona. Harness launches your target �
 
 Three artifacts come out of every run: a verdict (success/failure/blocked), a replayable timeline, and a list of timestamped friction events.
 
-Models are pluggable: Anthropic (Claude Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5 Mini, GPT-4.1 Nano), and Google (Gemini 2.5 Flash, Flash Lite). You bring your own API key for whichever provider you pick; keys live in the macOS Keychain.
+Models are pluggable. Cloud — Anthropic (Claude Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5 Mini, GPT-4.1 Nano), and Google (Gemini 2.5 Flash, Flash Lite); you bring your own API key, keys live in the macOS Keychain. Local — vision LLMs running on your own Mac via Ollama (Qwen3-VL 8B recommended, Gemma 4 Vision 9B, Llama 3.2 Vision 11B, plus a custom-model field). Local needs no key and no internet; screenshots never leave the machine.
 
 ## Project resources
 
