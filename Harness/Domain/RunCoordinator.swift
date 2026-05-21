@@ -189,15 +189,22 @@ actor RunCoordinator {
         // last step start — painful during slow local-model waits where
         // a single step is 1–2 minutes.
         //
-        // 333ms tick matches the iOS poller cadence (3fps). Errors
-        // inside `liveSnapshot()` collapse to nil and we just skip the
-        // tick rather than spamming logs.
+        // 1000ms tick (1 fps). Was 333ms (3 fps), which produced no
+        // perceivable benefit during cloud runs (steps run 6-15s
+        // each — the mirror only needs to refresh a few times per
+        // step) but flooded Xcode's console with WebKit's
+        // `markAllLayersVolatile: Failed` log because every poll
+        // touches layers WebKit wants to volatilize on our
+        // off-screen WKWebView host. Cutting to 1 fps drops the log
+        // volume by 3× without making the live mirror feel stale.
+        // Errors inside `liveSnapshot()` collapse to nil and we just
+        // skip the tick rather than spamming logs.
         let previewPollerTask = Task { [continuation] in
             while !Task.isCancelled {
                 if let jpeg = await session.driver.liveSnapshot() {
                     continuation.yield(.previewSnapshot(jpeg: jpeg))
                 }
-                try? await Task.sleep(for: .milliseconds(333))
+                try? await Task.sleep(for: .milliseconds(1000))
             }
         }
         defer { previewPollerTask.cancel() }

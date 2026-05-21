@@ -65,12 +65,28 @@ final class WebViewWindowController: NSWindowController {
         web.navigationDelegate = nav
         self.navigationDelegate = nav
 
-        // Off-screen window. Putting it at a far-negative origin keeps it
-        // out of the way without triggering the AppKit "you must have a
-        // visible screen" warnings — the window IS on a screen, just not
-        // a visible region.
+        // Hidden-but-on-screen window. Positioned at `(0, 0)` with
+        // `alphaValue = 0` so the user never sees it, but from
+        // WebKit's perspective the view IS on a visible screen.
+        //
+        // The previous `(-10_000, -10_000)` off-screen placement
+        // looked clever but made WebKit treat the view as invisible
+        // and aggressively try to mark its CoreAnimation layers
+        // "volatile" (releasable on memory pressure). Each layer-
+        // volatile attempt failed (we're snapshotting them every
+        // tick) and emitted
+        //   `WebProcess::markAllLayersVolatile: Failed to mark
+        //    layers as volatile for webPageID=N`
+        // to the unified log. Visible in Xcode's debug console
+        // during GUI runs, multiple times per second — confirmed in
+        // 2026-05 by the user. The on-screen-but-transparent
+        // placement bypasses the volatile-layer cycle entirely.
+        //
+        // `windowLevel = .normal - 1` puts the window behind every
+        // other normal-level window so even a user with `alphaValue`
+        // glitches wouldn't see it accidentally surface.
         let style: NSWindow.StyleMask = [.borderless]
-        let frame = NSRect(x: -10_000, y: -10_000, width: viewport.width, height: viewport.height)
+        let frame = NSRect(x: 0, y: 0, width: viewport.width, height: viewport.height)
         let window = NSWindow(
             contentRect: frame,
             styleMask: style,
@@ -80,6 +96,10 @@ final class WebViewWindowController: NSWindowController {
         window.contentView = web
         window.isReleasedWhenClosed = false
         window.titleVisibility = .hidden
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
 
         // Bind the window's NSAppearance to the **user's system Dark Mode
         // preference**, not the host app's appearance. WKWebView inherits
