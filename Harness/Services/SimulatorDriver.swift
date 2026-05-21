@@ -314,7 +314,13 @@ actor SimulatorDriver: SimulatorDriving {
 
         // Wait for /status before opening a session.
         do {
-            try await wdaClient.waitForReady(timeout: .seconds(45))
+            // 45s was the previous default; bumped to 120s after
+            // CLI iOS runs on iOS 26.2 hit timeouts during the
+            // initial xcodebuild-test-without-building → WDA boot
+            // window on warm-but-not-recently-used simulators.
+            // Cost: idle waits at most this long if WDA truly never
+            // comes up. Worth the extra runway on cold-ish caches.
+            try await wdaClient.waitForReady(timeout: .seconds(120))
             _ = try await wdaClient.createSession()
         } catch {
             // Don't leak the xcodebuild runner on session-open failure.

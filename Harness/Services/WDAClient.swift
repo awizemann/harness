@@ -243,36 +243,56 @@ actor WDAClient: WDAClienting {
         return json
     }
 
-    /// AX element types we treat as actionable. Subset of XCUI's full
-    /// type vocabulary — picked for iOS UIs that real users navigate.
-    /// Static text + image are intentionally excluded (too many; mostly
-    /// decorative) unless they're nested inside a cell/button, in
-    /// which case the cell/button is what gets the mark.
-    private static let actionableIOSRoles: Set<String> = [
-        "XCUIElementTypeButton",
-        "XCUIElementTypeLink",
-        "XCUIElementTypeTextField",
-        "XCUIElementTypeSecureTextField",
-        "XCUIElementTypeSearchField",
-        "XCUIElementTypeTextView",
-        "XCUIElementTypeSwitch",
-        "XCUIElementTypeSlider",
-        "XCUIElementTypeStepper",
-        "XCUIElementTypeCell",
-        "XCUIElementTypeMenuItem",
-        "XCUIElementTypeMenuButton",
-        "XCUIElementTypeSegmentedControl",
-        "XCUIElementTypeTab",
-        "XCUIElementTypeTabBar",
-        "XCUIElementTypeNavigationBar",
-        "XCUIElementTypeToolbar",
-        "XCUIElementTypePicker",
-        "XCUIElementTypePickerWheel",
-        "XCUIElementTypeCheckBox",
-        "XCUIElementTypeRadioButton",
-        "XCUIElementTypeDatePicker",
-        "XCUIElementTypeKey"
+    /// AX element types we treat as actionable. WDA 12.x's
+    /// `/source?format=json` returns SHORT names (`Button`, `Cell`,
+    /// `NavigationBar`, ...) — not the full `XCUIElementTypeButton`
+    /// strings the headerdoc and online docs show. We accept BOTH
+    /// forms to be forwards/backwards compatible across WDA versions.
+    ///
+    /// Subset of XCUI's full type vocabulary — picked for iOS UIs
+    /// that real users navigate. Static text + plain Image are
+    /// intentionally excluded (too many; mostly decorative) unless
+    /// they're nested inside a Cell or Button, in which case the
+    /// cell/button is what gets the mark.
+    ///
+    /// `NavigationBar` / `TabBar` / `Toolbar` are containers — when
+    /// we hit one we recurse to mark its children (the actual
+    /// back-button, tab-item, etc.) rather than marking the bar
+    /// itself.
+    private static let actionableIOSRolesShort: Set<String> = [
+        "Button",
+        "Link",
+        "TextField",
+        "SecureTextField",
+        "SearchField",
+        "TextView",
+        "Switch",
+        "Slider",
+        "Stepper",
+        "Cell",
+        "MenuItem",
+        "MenuButton",
+        "SegmentedControl",
+        "Tab",
+        "Picker",
+        "PickerWheel",
+        "CheckBox",
+        "RadioButton",
+        "DatePicker",
+        "Key"
     ]
+    private static let actionableIOSRolesLong: Set<String> = Set(
+        actionableIOSRolesShort.map { "XCUIElementType\($0)" }
+    )
+
+    private static let iosContainerRolesShort: Set<String> = [
+        "NavigationBar",
+        "TabBar",
+        "Toolbar"
+    ]
+    private static let iosContainerRolesLong: Set<String> = Set(
+        iosContainerRolesShort.map { "XCUIElementType\($0)" }
+    )
 
     /// Maximum marks to render per screenshot. Mirrors the web probe's
     /// cap so badge density stays manageable on dense screens (e.g.,
@@ -323,33 +343,32 @@ actor WDAClient: WDAClienting {
         // Defensively pull fields; WDA's JSON shapes have shifted
         // between versions but the field names are stable.
         let typeRaw = (node["type"] as? String) ?? ""
+        // Visibility/enabled flags are advisory — WDA omits them on
+        // many nodes. Default to true so a missing flag doesn't drop
+        // an element that's genuinely on-screen.
         let isVisible = (node["visible"] as? Bool) ?? true
         let isEnabled = (node["enabled"] as? Bool) ?? true
-        let isAccessible = (node["accessible"] as? Bool) ?? true
 
-        // If this node is itself actionable and visible + enabled,
-        // collect it AND skip recursing into descendants (avoids the
-        // cell-containing-button double-mark).
-        if actionableIOSRoles.contains(typeRaw),
-           isVisible, isEnabled, isAccessible,
-           let rect = parseRect(node["rect"]) {
+        let isActionable = actionableIOSRolesShort.contains(typeRaw) ||
+                           actionableIOSRolesLong.contains(typeRaw)
+        let isContainer = iosContainerRolesShort.contains(typeRaw) ||
+                          iosContainerRolesLong.contains(typeRaw)
+
+        if isActionable, isVisible, isEnabled, let rect = parseRect(node["rect"]) {
             let bigEnough = rect.width >= minTapSizePt && rect.height >= minTapSizePt
-            // Some toolbars / tab bars return rects matching the
-            // whole screen — those are containers, not tap targets.
-            // Skip when role is a container AND rect is very tall
-            // (heuristic; refined as needed).
-            let isJumboContainer = (typeRaw == "XCUIElementTypeNavigationBar" ||
-                                    typeRaw == "XCUIElementTypeTabBar" ||
-                                    typeRaw == "XCUIElementTypeToolbar")
-            if bigEnough && !isJumboContainer {
+            if bigEnough {
                 let label = resolveLabel(node)
                 out.append((rect, typeRaw, label))
+                // Don't recurse further — avoids double-marking a
+                // Cell that contains a Button (both would otherwise
+                // produce overlapping badges).
                 return
             }
-            // Container — fall through and recurse to mark its
-            // children individually (e.g., individual tabs in a tab
-            // bar).
         }
+        // Containers (NavigationBar, TabBar, Toolbar) get descended
+        // so their children (back buttons, tab items, etc.) end up
+        // marked individually rather than the bar itself.
+        _ = isContainer  // suppress unused warning; behaviour falls through to recursion
 
         // Recurse into children.
         guard let children = node["children"] as? [[String: Any]] else { return }
@@ -381,7 +400,14 @@ actor WDAClient: WDAClienting {
     /// Resolve a human-readable label from an AX node. Tries `label`
     /// first (most user-visible), falls back to `name` (the AX
     /// identifier or accessibility label), then `value` (current
-    /// content of text fields, etc.). Empty when none resolve.
+    /// content of text fields, etc.). When none of the node's own
+    /// attributes carry a label — common for `Cell` wrappers whose
+    /// visible text lives in child `StaticText` nodes — recursively
+    /// collects StaticText labels from descendants and joins them
+    /// with " — ". This makes table-view rows like a contact list,
+    /// settings list, or server list resolvable to their visible
+    /// text (e.g. "127.0.0.1 — alanwizemann@127.0.0.1") instead of
+    /// the unhelpful empty string.
     nonisolated private static func resolveLabel(_ node: [String: Any]) -> String {
         let candidates = [
             node["label"] as? String,
@@ -390,24 +416,79 @@ actor WDAClient: WDAClienting {
         ]
         for c in candidates {
             if let s = c?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty {
-                return s.count > 80 ? String(s.prefix(77)) + "…" : s
+                return clipLabel(s)
             }
+        }
+        // No direct label — try rolling up visible text from
+        // descendant StaticText / Image (with alt-text) nodes.
+        let rolled = collectChildText(node, limit: 3)
+        if !rolled.isEmpty {
+            return clipLabel(rolled.joined(separator: " — "))
         }
         return ""
     }
 
+    /// Walk descendants and collect up to `limit` non-empty text
+    /// labels from `StaticText` / `XCUIElementTypeStaticText` /
+    /// `Image` nodes (image alt text). Used by `resolveLabel` to
+    /// roll up the visible text of a Cell or similar container that
+    /// itself has no label attribute. Stops descending once `limit`
+    /// snippets are collected to keep label generation O(visible
+    /// children) rather than O(whole tree).
+    nonisolated private static func collectChildText(_ node: [String: Any], limit: Int) -> [String] {
+        var out: [String] = []
+        var visited = 0
+        func recurse(_ n: [String: Any]) {
+            if out.count >= limit { return }
+            visited += 1
+            // Bound the recursion in case of a deep tree.
+            if visited > 64 { return }
+            let type = (n["type"] as? String) ?? ""
+            let isTextLike = type == "StaticText" || type == "XCUIElementTypeStaticText"
+                          || type == "Image" || type == "XCUIElementTypeImage"
+            if isTextLike {
+                let candidates = [
+                    n["label"] as? String,
+                    n["value"] as? String,
+                    n["name"] as? String
+                ]
+                for c in candidates {
+                    if let s = c?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !s.isEmpty {
+                        out.append(s)
+                        break
+                    }
+                }
+            }
+            if let kids = n["children"] as? [[String: Any]] {
+                for k in kids { recurse(k); if out.count >= limit { break } }
+            }
+        }
+        if let kids = node["children"] as? [[String: Any]] {
+            for k in kids { recurse(k); if out.count >= limit { break } }
+        }
+        return out
+    }
+
+    nonisolated private static func clipLabel(_ s: String) -> String {
+        s.count > 80 ? String(s.prefix(77)) + "…" : s
+    }
+
     /// Short, agent-friendly role name. Maps `XCUIElementTypeButton`
-    /// → `button`, etc. Falls back to the raw type when no shortening
-    /// applies, so new XCUI types surface visibly in the annotation.
+    /// → `button`, `Button` → `button`, etc. WDA 12.x returns the
+    /// short form by default; older / configured-differently builds
+    /// may return the long form. Both normalise to lowercase-first
+    /// for readability in the annotation.
     nonisolated private static func shortRole(_ raw: String) -> String {
         let prefix = "XCUIElementType"
+        let body: String
         if raw.hasPrefix(prefix) {
-            let tail = String(raw.dropFirst(prefix.count))
-            // Lowercase the first character for natural reading.
-            guard let first = tail.first else { return tail }
-            return first.lowercased() + tail.dropFirst()
+            body = String(raw.dropFirst(prefix.count))
+        } else {
+            body = raw
         }
-        return raw
+        guard let first = body.first else { return body }
+        return first.lowercased() + body.dropFirst()
     }
 
     // MARK: Internals

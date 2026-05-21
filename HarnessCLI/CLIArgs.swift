@@ -12,7 +12,7 @@
 import Foundation
 
 struct CLIArgs: Sendable {
-    var url: String
+    var platform: PlatformKind
     var goal: String
     var persona: String
     var provider: ModelProvider
@@ -22,9 +22,27 @@ struct CLIArgs: Sendable {
     var customModelName: String?
     var maxSteps: Int
     var outputDir: URL
+    var deterministic: Bool
+
+    // Web-specific
+    var url: String
     var viewportWidth: Int
     var viewportHeight: Int
-    var deterministic: Bool
+
+    // iOS-specific
+    /// Path to the `.xcodeproj` (or `.xcworkspace`) the run will build.
+    var iosProjectPath: String?
+    /// Xcodebuild scheme to build + launch.
+    var iosScheme: String?
+    /// Simulator UDID. Required for iOS runs today — name+runtime
+    /// resolution via `simctl list` is a future-want; in the meantime
+    /// users grab the UDID from the GUI's Application detail or
+    /// `xcrun simctl list devices --json | jq`.
+    var iosSimulatorUDID: String?
+    /// Display name for logs / events.jsonl (e.g. "iPhone 17 Pro Max").
+    var iosSimulatorName: String?
+    /// Runtime label for logs / events.jsonl (e.g. "iOS 26.2").
+    var iosSimulatorRuntime: String?
 
     /// Default viewport. Matches the GUI's `LiveWebMirror` initial canvas
     /// so a CLI run against the same URL produces ~the same layout as a
@@ -34,6 +52,7 @@ struct CLIArgs: Sendable {
     static let defaultMaxSteps = 20
 
     static func parse(_ argv: [String]) throws -> CLIArgs {
+        var platformRaw: String?
         var url: String?
         var goal: String?
         var persona: String?
@@ -44,6 +63,11 @@ struct CLIArgs: Sendable {
         var viewportWidth: Int?
         var viewportHeight: Int?
         var deterministic = false
+        var iosProjectPath: String?
+        var iosScheme: String?
+        var iosSimulatorUDID: String?
+        var iosSimulatorName: String?
+        var iosSimulatorRuntime: String?
 
         var i = 1
         while i < argv.count {
@@ -51,6 +75,8 @@ struct CLIArgs: Sendable {
             switch arg {
             case "--help", "-h":
                 throw CLIArgsError.helpRequested
+            case "--platform":
+                platformRaw = try Self.consumeValue(arg, argv: argv, i: &i)
             case "--url":
                 url = try Self.consumeValue(arg, argv: argv, i: &i)
             case "--goal":
@@ -84,12 +110,55 @@ struct CLIArgs: Sendable {
             case "--deterministic":
                 deterministic = true
                 i += 1
+            case "--project-path":
+                iosProjectPath = try Self.consumeValue(arg, argv: argv, i: &i)
+            case "--scheme":
+                iosScheme = try Self.consumeValue(arg, argv: argv, i: &i)
+            case "--simulator-udid":
+                iosSimulatorUDID = try Self.consumeValue(arg, argv: argv, i: &i)
+            case "--simulator-name":
+                iosSimulatorName = try Self.consumeValue(arg, argv: argv, i: &i)
+            case "--simulator-runtime":
+                iosSimulatorRuntime = try Self.consumeValue(arg, argv: argv, i: &i)
             default:
                 throw CLIArgsError.unknownFlag(arg)
             }
         }
 
-        guard let url else { throw CLIArgsError.missingRequired("--url") }
+        let platform: PlatformKind = try {
+            guard let platformRaw else { return PlatformKind.web }
+            // Accept human-friendly aliases alongside the enum
+            // rawValues. The GUI persists `ios_simulator` /
+            // `macos_app` / `web` in SwiftData, but on the command
+            // line "ios" and "macos" are nicer to type.
+            switch platformRaw.lowercased() {
+            case "web":
+                return .web
+            case "ios", "ios_simulator", "iossimulator":
+                return .iosSimulator
+            case "macos", "macos_app", "macosapp":
+                return .macosApp
+            default:
+                throw CLIArgsError.invalidValue(
+                    flag: "--platform",
+                    value: platformRaw,
+                    reason: "must be one of: web|ios|macos"
+                )
+            }
+        }()
+
+        // Per-platform required-flag gates.
+        switch platform {
+        case .web:
+            guard url != nil else { throw CLIArgsError.missingRequired("--url (required when --platform web)") }
+        case .iosSimulator:
+            guard iosProjectPath != nil else { throw CLIArgsError.missingRequired("--project-path (required when --platform ios)") }
+            guard iosScheme != nil else { throw CLIArgsError.missingRequired("--scheme (required when --platform ios)") }
+            guard iosSimulatorUDID != nil else { throw CLIArgsError.missingRequired("--simulator-udid (required when --platform ios)") }
+        case .macosApp:
+            throw CLIArgsError.invalidValue(flag: "--platform", value: "macos", reason: "macOS CLI runs are not yet supported; use --platform web or ios.")
+        }
+
         guard let goal else { throw CLIArgsError.missingRequired("--goal") }
         guard let providerRaw else { throw CLIArgsError.missingRequired("--provider") }
         guard let modelRaw else { throw CLIArgsError.missingRequired("--model") }
@@ -159,7 +228,7 @@ struct CLIArgs: Sendable {
         }()
 
         return CLIArgs(
-            url: url,
+            platform: platform,
             goal: goal,
             persona: resolvedPersona,
             provider: provider,
@@ -167,9 +236,15 @@ struct CLIArgs: Sendable {
             customModelName: customModelName,
             maxSteps: maxSteps ?? Self.defaultMaxSteps,
             outputDir: resolvedOutputDir,
+            deterministic: deterministic,
+            url: url ?? "",
             viewportWidth: viewportWidth ?? Self.defaultViewportWidth,
             viewportHeight: viewportHeight ?? Self.defaultViewportHeight,
-            deterministic: deterministic
+            iosProjectPath: iosProjectPath,
+            iosScheme: iosScheme,
+            iosSimulatorUDID: iosSimulatorUDID,
+            iosSimulatorName: iosSimulatorName,
+            iosSimulatorRuntime: iosSimulatorRuntime
         )
     }
 
@@ -183,10 +258,9 @@ struct CLIArgs: Sendable {
     }
 
     static let usage: String = """
-        harness-cli — drive a single web run end-to-end without launching the Harness Mac app.
+        harness-cli — drive a single run end-to-end without launching the Harness Mac app.
 
-        Required:
-          --url <URL>                          Target web app URL
+        Required for every run:
           --goal <TEXT>                        Agent goal (plain language)
           --provider anthropic|openai|google|local
           --model <RAW>                        AgentModel rawValue, e.g.
@@ -194,20 +268,37 @@ struct CLIArgs: Sendable {
                                                  gpt-5-mini, gemini-2.5-flash,
                                                  qwen3-vl:8b, gemma4:9b, llama3.2-vision:11b
                                                  (Any tag when --provider local maps to customLocal.)
+          --platform web|ios                   Run target (default: web). macOS not yet supported.
+
+        Required for --platform web:
+          --url <URL>                          Target web app URL
+
+        Required for --platform ios:
+          --project-path <PATH>                Path to the .xcodeproj (or .xcworkspace)
+          --scheme <NAME>                      Xcodebuild scheme to build + launch
+          --simulator-udid <UDID>              Simulator UDID (xcrun simctl list devices --json)
 
         Optional:
           --persona <TEXT>                     Persona description (default: curious first-time user)
           --max-steps <N>                      Step budget (default: \(Self.defaultMaxSteps))
           --output <DIR>                       Output directory (default: ./runs/<timestamp>/)
-          --viewport-width <PT>                CSS-pixel width (default: \(Self.defaultViewportWidth))
-          --viewport-height <PT>               CSS-pixel height (default: \(Self.defaultViewportHeight))
+          --viewport-width <PT>                Web CSS-pixel width (default: \(Self.defaultViewportWidth))
+          --viewport-height <PT>               Web CSS-pixel height (default: \(Self.defaultViewportHeight))
+          --simulator-name <NAME>              iOS — human-readable label for logs (e.g. "iPhone 17 Pro Max")
+          --simulator-runtime <LABEL>          iOS — runtime label for logs (e.g. "iOS 26.2")
           --deterministic                      temperature=0 (advisory — provider-dependent)
 
-        Credentials (env vars; only the one your --provider needs is consulted):
+        Credentials (env vars; otherwise falls back to macOS Keychain entries
+        written by the GUI app, with a one-time access prompt):
           ANTHROPIC_API_KEY
           OPENAI_API_KEY
           GOOGLE_API_KEY
           HARNESS_OLLAMA_URL (default: http://127.0.0.1:11434)
+
+        Dev-time diagnostics:
+          HARNESS_DUMP_MARKED=1                Write step-NNN.marked.png next to each
+                                                unmarked PNG + log click/tap_mark resolution
+                                                to stderr.
 
         Output: events.jsonl + step-NNN.png + meta.json under --output.
         """

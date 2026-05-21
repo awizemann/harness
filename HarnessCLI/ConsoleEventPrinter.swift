@@ -23,9 +23,9 @@ struct ConsoleEventPrinter {
         case .runStarted(let req):
             log("[run] started — model=\(req.model.rawValue) provider=\(req.model.provider.rawValue) goal=\"\(req.goal)\" persona=\"\(short(req.persona))\" budget=\(req.stepBudget) steps / \(req.tokenBudget) tokens")
         case .buildStarted:
-            log("[run] buildStarted (unexpected on web)")
+            log("[run] buildStarted")
         case .buildCompleted(let appBundle, let bundleID):
-            log("[run] buildCompleted bundle=\(bundleID) at \(appBundle.path) (unexpected on web)")
+            log("[run] buildCompleted bundle=\(bundleID) at \(appBundle.path)")
         case .simulatorReady(let ref):
             log("[run] web target ready: \(ref.name) \(Int(ref.pointSize.width))×\(Int(ref.pointSize.height))pt")
         case .legStarted(let index, _, let goal, _):

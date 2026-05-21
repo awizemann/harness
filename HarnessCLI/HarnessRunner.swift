@@ -2,11 +2,10 @@
 //  HarnessRunner.swift
 //  HarnessCLI
 //
-//  The actual driver. Constructs a `WebPlatformAdapter`, plumbs the
-//  CLI's flags into a `RunRequest`, hands the bundle to
-//  `RunCoordinator`, and pretty-prints the `RunEvent` stream until the
-//  run completes or fails. Exits 0 on `.success`, 1 on any other
-//  terminal verdict or thrown error.
+//  Constructs the run dependency graph based on `--platform` and drives
+//  it end-to-end via `RunCoordinator`. Web and iOS supported today.
+//  Exits 0 on `verdict.success`, 1 on any other terminal verdict or
+//  thrown error, 130 on cancellation.
 //
 
 import AppKit
@@ -46,46 +45,8 @@ enum HarnessRunner {
             modelNameOverride: args.customModelName
         )
 
-        // 4. Construct the RunRequest. Web platform; `project` is a
-        //    placeholder (web doesn't xcodebuild anything).
+        // 4. Shared infrastructure (used by every platform).
         let runID = UUID()
-        let placeholderProject = ProjectRequest(
-            path: URL(fileURLWithPath: "/tmp/harness-cli-placeholder"),
-            scheme: "harness-cli",
-            displayName: "harness-cli"
-        )
-        let pseudoSim = SimulatorRef(
-            udid: "harness-cli-web",
-            name: "Web",
-            runtime: "Web",
-            pointSize: CGSize(width: args.viewportWidth, height: args.viewportHeight),
-            scaleFactor: 1.0
-        )
-        let request = RunRequest(
-            id: runID,
-            name: "cli-run",
-            goal: args.goal,
-            persona: args.persona,
-            applicationID: nil,
-            personaID: nil,
-            payload: .ad_hoc,
-            project: placeholderProject,
-            simulator: pseudoSim,
-            model: args.model,
-            mode: .autonomous,
-            stepBudget: args.maxSteps,
-            tokenBudget: args.model.defaultTokenBudget,
-            platformKindRaw: PlatformKind.web.rawValue,
-            macAppBundlePath: nil,
-            webStartURL: args.url,
-            webViewportWidthPt: args.viewportWidth,
-            webViewportHeightPt: args.viewportHeight,
-            credentialID: nil
-        )
-
-        // 5. Construct the in-memory history store (throwaway — runs
-        //    don't show up in any GUI). RunCoordinator demands a
-        //    non-nil store; the in-memory variant fits.
         let history: any RunHistoryStoring
         do {
             history = try RunHistoryStore.inMemory()
@@ -93,37 +54,164 @@ enum HarnessRunner {
             FileHandle.standardError.write(Data("Failed to construct in-memory history store: \(error.localizedDescription)\n".utf8))
             return 1
         }
-
-        // 6. Construct the platform adapter directly (bypassing the
-        //    iOS/MacOS factory branches we don't need on web). Real
-        //    ProcessRunner / ToolLocator are harmless here — the web
-        //    adapter never invokes them, but they're required slots in
-        //    `PlatformAdapterServices`.
         let processRunner = ProcessRunner()
         let toolLocator = ToolLocator(processRunner: processRunner)
-        let services = PlatformAdapterServices(
-            processRunner: processRunner,
-            toolLocator: toolLocator,
-            xcodeBuilder: NoopXcodeBuilder(),
-            simulatorDriver: NoopSimulatorDriver(),
-            promptLibrary: PromptLibrary(),
-            keychain: keychain,
-            runHistory: history
-        )
-        let webAdapter = WebPlatformAdapter(services: services)
 
-        // 7. Construct the coordinator.
+        // 5. Per-platform dispatch.
+        let request: RunRequest
+        let xcodeBuilder: any XcodeBuilding
+        let simulatorDriver: any SimulatorDriving
+        let platformAdapterOverride: (any PlatformAdapter)?
+        switch args.platform {
+        case .web:
+            let placeholderProject = ProjectRequest(
+                path: URL(fileURLWithPath: "/tmp/harness-cli-placeholder"),
+                scheme: "harness-cli",
+                displayName: "harness-cli"
+            )
+            let pseudoSim = SimulatorRef(
+                udid: "harness-cli-web",
+                name: "Web",
+                runtime: "Web",
+                pointSize: CGSize(width: args.viewportWidth, height: args.viewportHeight),
+                scaleFactor: 1.0
+            )
+            request = RunRequest(
+                id: runID,
+                name: "cli-run",
+                goal: args.goal,
+                persona: args.persona,
+                applicationID: nil,
+                personaID: nil,
+                payload: .ad_hoc,
+                project: placeholderProject,
+                simulator: pseudoSim,
+                model: args.model,
+                mode: .autonomous,
+                stepBudget: args.maxSteps,
+                tokenBudget: args.model.defaultTokenBudget,
+                platformKindRaw: PlatformKind.web.rawValue,
+                macAppBundlePath: nil,
+                webStartURL: args.url,
+                webViewportWidthPt: args.viewportWidth,
+                webViewportHeightPt: args.viewportHeight,
+                credentialID: nil
+            )
+            xcodeBuilder = NoopXcodeBuilder()
+            simulatorDriver = NoopSimulatorDriver()
+            // Build the web adapter with the same `services` shape the
+            // GUI uses, then pass it as the platform override so the
+            // factory doesn't try to construct one based on
+            // `platformKindRaw`.
+            let webServices = PlatformAdapterServices(
+                processRunner: processRunner,
+                toolLocator: toolLocator,
+                xcodeBuilder: xcodeBuilder,
+                simulatorDriver: simulatorDriver,
+                promptLibrary: PromptLibrary(),
+                keychain: keychain,
+                runHistory: history
+            )
+            platformAdapterOverride = WebPlatformAdapter(services: webServices)
+
+        case .iosSimulator:
+            // iOS runs use the real `XcodeBuilder` + `SimulatorDriver` +
+            // WDA stack. The PlatformAdapterFactory will instantiate
+            // `IOSPlatformAdapter` from the `platformKindRaw`; no
+            // override needed.
+            guard let projectPath = args.iosProjectPath,
+                  let scheme = args.iosScheme,
+                  let udid = args.iosSimulatorUDID else {
+                FileHandle.standardError.write(Data("Missing iOS required flags. See --help.\n".utf8))
+                return 2
+            }
+            // The point size + scale factor of the simulator are
+            // resolved by `simctl list devices` in the GUI; in the CLI
+            // we let the adapter resolve them at boot time. Build a
+            // SimulatorRef with the user-supplied identity and a
+            // placeholder size — `IOSPlatformAdapter.prepare` doesn't
+            // need a real pointSize until after `boot()`.
+            //
+            // For now, default to iPhone 17 Pro Max point size
+            // (440×956) when not overridden; the run still works on
+            // smaller devices because the agent's coordinates flow
+            // through WDA which queries the simulator natively.
+            let projectURL = URL(fileURLWithPath: projectPath)
+            let simRef = SimulatorRef(
+                udid: udid,
+                name: args.iosSimulatorName ?? "iOS Simulator",
+                runtime: args.iosSimulatorRuntime ?? "iOS",
+                pointSize: CGSize(width: 440, height: 956),
+                scaleFactor: 3.0
+            )
+            let project = ProjectRequest(
+                path: projectURL,
+                scheme: scheme,
+                displayName: scheme
+            )
+            request = RunRequest(
+                id: runID,
+                name: "cli-run",
+                goal: args.goal,
+                persona: args.persona,
+                applicationID: nil,
+                personaID: nil,
+                payload: .ad_hoc,
+                project: project,
+                simulator: simRef,
+                model: args.model,
+                mode: .autonomous,
+                stepBudget: args.maxSteps,
+                tokenBudget: args.model.defaultTokenBudget,
+                platformKindRaw: PlatformKind.iosSimulator.rawValue,
+                macAppBundlePath: nil,
+                webStartURL: nil,
+                webViewportWidthPt: nil,
+                webViewportHeightPt: nil,
+                credentialID: nil
+            )
+            // Build the real WDA stack so the iOS adapter can drive
+            // input + read the AX tree.
+            let wdaBuilder = WDABuilder(
+                processRunner: processRunner,
+                toolLocator: toolLocator,
+                sourceURL: HarnessPaths.wdaSourceURL ?? URL(fileURLWithPath: "/dev/null")
+            )
+            let wdaRunner = WDARunner(processRunner: processRunner, toolLocator: toolLocator)
+            let wdaClient = WDAClient()
+            let realDriver = SimulatorDriver(
+                processRunner: processRunner,
+                toolLocator: toolLocator,
+                wdaBuilder: wdaBuilder,
+                wdaRunner: wdaRunner,
+                wdaClient: wdaClient
+            )
+            let realBuilder = XcodeBuilder(processRunner: processRunner, toolLocator: toolLocator)
+            xcodeBuilder = realBuilder
+            simulatorDriver = realDriver
+            // No override — let the factory pick IOSPlatformAdapter.
+            platformAdapterOverride = nil
+
+        case .macosApp:
+            FileHandle.standardError.write(Data("--platform macos is not yet supported by HarnessCLI.\n".utf8))
+            return 2
+        }
+
+        // 6. Construct the coordinator.
         let agent = AgentLoop(llm: llm)
         let coordinator = RunCoordinator(
-            builder: NoopXcodeBuilder(),
-            driver: NoopSimulatorDriver(),
+            builder: xcodeBuilder,
+            driver: simulatorDriver,
             agent: agent,
             llm: llm,
             history: history,
-            platformAdapterOverride: webAdapter
+            toolLocator: toolLocator,
+            processRunner: processRunner,
+            keychain: keychain,
+            platformAdapterOverride: platformAdapterOverride
         )
 
-        // 8. Drive the run. Pretty-print events; exit on terminal event.
+        // 7. Drive the run. Pretty-print events; exit on terminal event.
         let printer = ConsoleEventPrinter(outputDir: args.outputDir)
         do {
             for try await event in coordinator.run(request) {
