@@ -408,37 +408,90 @@ actor WebDriver: UXDriving {
           tick();
         });
         """
-        let waitedMs: Int = await Task { @MainActor in
-            do {
-                // WKWebView's async `callAsyncJavaScript` returns `Any?`
-                // — a Promise resolution from the JS body. The body
-                // returns an Int via `Math.round`, which bridges to
-                // NSNumber (cast as `Int` works), occasionally as
-                // `Double` depending on platform — handle both.
-                let value = try await self.controller.webView.callAsyncJavaScript(
-                    js,
-                    arguments: [
-                        "idleMs": idleMs,
-                        "minMs": minMs,
-                        "maxMs": maxMs,
-                        "requireChildList": requireChildListMutation
-                    ],
-                    in: nil,
-                    contentWorld: .page
-                )
-                if let i = value as? Int { return i }
-                if let d = value as? Double { return Int(d) }
-                return 0
-            } catch {
-                Self.logger.warning("awaitDOMSettled JS bridge failed: \(error.localizedDescription, privacy: .public); falling back to fixed sleep")
-                return -1
-            }
-        }.value
+        // Swift-side hard backstop OVER the JS self-cap. The JS body caps
+        // itself at `maxMs`, but only once it actually runs. When a click
+        // triggered a full-page navigation to a slow/hung URL,
+        // `callAsyncJavaScript` blocks until the NEW document's JS context
+        // is ready — which never happens for a stuck load, so the JS cap
+        // never engages and the whole step (and the run) freezes. Race the
+        // call against a hard timeout; on timeout we abandon the wedged JS
+        // call and proceed so the next screenshot captures whatever's on
+        // screen instead of hanging forever.
+        let hardCapMs = maxMs + 4000
+        let outcome: Int? = await Self.raceAgainstTimeout(.milliseconds(hardCapMs)) { [controller] in
+            await Task { @MainActor in
+                do {
+                    // WKWebView's async `callAsyncJavaScript` returns `Any?`
+                    // — a Promise resolution from the JS body: an Int via
+                    // `Math.round` (bridges to NSNumber → Int, occasionally
+                    // Double depending on platform — handle both).
+                    let value = try await controller.webView.callAsyncJavaScript(
+                        js,
+                        arguments: [
+                            "idleMs": idleMs,
+                            "minMs": minMs,
+                            "maxMs": maxMs,
+                            "requireChildList": requireChildListMutation
+                        ],
+                        in: nil,
+                        contentWorld: .page
+                    )
+                    if let i = value as? Int { return i }
+                    if let d = value as? Double { return Int(d) }
+                    return 0
+                } catch {
+                    Self.logger.warning("awaitDOMSettled JS bridge failed: \(error.localizedDescription, privacy: .public); falling back to fixed sleep")
+                    return -1
+                }
+            }.value
+        }
+        guard let waitedMs = outcome else {
+            Self.logger.warning("awaitDOMSettled hard-timed-out after ~\(hardCapMs)ms — page likely stuck loading after a navigation; proceeding to capture")
+            return hardCapMs
+        }
         if waitedMs < 0 {
             try? await Task.sleep(for: .milliseconds(minMs))
             return minMs
         }
         return waitedMs
+    }
+
+    /// Await `operation`, returning `nil` if it doesn't finish within
+    /// `timeout`. The operation runs in its own unstructured task; on
+    /// timeout it is ABANDONED (left to finish on its own) rather than
+    /// awaited — so a wedged, non-cancellation-aware call (e.g.
+    /// `callAsyncJavaScript` / `takeSnapshot` blocked on a navigation that
+    /// never finishes loading) cannot stall the caller. A structured
+    /// `withTaskGroup` would NOT work here: it awaits all children before
+    /// returning, so a wedged child would re-introduce the hang. The
+    /// continuation is resumed exactly once, guarded by `RaceBox`.
+    nonisolated static func raceAgainstTimeout<T: Sendable>(
+        _ timeout: Duration,
+        _ operation: @escaping @Sendable () async -> T
+    ) async -> T? {
+        let box = RaceBox<T>()
+        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            Task {
+                let value = await operation()
+                await box.settle(.some(value), into: cont)
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                await box.settle(nil, into: cont)
+            }
+        }
+    }
+
+    /// One-shot resume guard for `raceAgainstTimeout` — whichever of the
+    /// operation / timeout tasks finishes first resumes the continuation;
+    /// the loser is a no-op.
+    private actor RaceBox<T: Sendable> {
+        private var resumed = false
+        func settle(_ value: T?, into cont: CheckedContinuation<T?, Never>) {
+            guard !resumed else { return }
+            resumed = true
+            cont.resume(returning: value)
+        }
     }
 
     /// Adapter-only teardown hook — closes the off-screen window
@@ -458,19 +511,43 @@ actor WebDriver: UXDriving {
     // MARK: - WebKit primitives (run on the main actor)
 
     private func captureSnapshot() async throws -> NSImage {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<NSImage, any Error>) in
-            Task { @MainActor in
-                let cfg = WKSnapshotConfiguration()
-                cfg.afterScreenUpdates = true
-                self.controller.webView.takeSnapshot(with: cfg) { image, error in
-                    if let image = image {
-                        cont.resume(returning: image)
-                    } else {
-                        cont.resume(throwing: error ?? WebDriverError.captureFailed)
+        // Hard timeout (see raceAgainstTimeout): a wedged WebKit after a hung
+        // navigation can leave takeSnapshot's completion uncalled, which would
+        // freeze the next-step capture the same way an unbounded settle did.
+        // We ferry a CGImage + the image's POINT size (both Sendable) across
+        // the race rather than the non-Sendable NSImage, then rebuild with the
+        // exact size — preserving the point/pixel geometry the Set-of-Mark
+        // overlay depends on. (A TIFF round-trip can silently hand back the
+        // image at PIXEL size, which would misplace every badge.)
+        let raced: WebSnapshot?? = await Self.raceAgainstTimeout(.seconds(15)) { [controller] in
+            await withCheckedContinuation { (cont: CheckedContinuation<WebSnapshot?, Never>) in
+                Task { @MainActor in
+                    let cfg = WKSnapshotConfiguration()
+                    cfg.afterScreenUpdates = true
+                    controller.webView.takeSnapshot(with: cfg) { image, _ in
+                        guard let image else { cont.resume(returning: nil); return }
+                        var rect = NSRect(origin: .zero, size: image.size)
+                        if let cg = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) {
+                            cont.resume(returning: WebSnapshot(cgImage: cg, pointSize: image.size))
+                        } else {
+                            cont.resume(returning: nil)
+                        }
                     }
                 }
             }
         }
+        guard let inner = raced else { throw WebDriverError.captureTimedOut }
+        guard let snap = inner else { throw WebDriverError.captureFailed }
+        return NSImage(cgImage: snap.cgImage, size: snap.pointSize)
+    }
+
+    /// Sendable carrier for a snapshot across the timeout race. `CGImage` is
+    /// immutable / thread-safe; `pointSize` is the original NSImage point size,
+    /// reapplied on reconstruction so downstream point/pixel math and the
+    /// Set-of-Mark overlay geometry stay identical to the pre-timeout behavior.
+    private struct WebSnapshot: @unchecked Sendable {
+        let cgImage: CGImage
+        let pointSize: CGSize
     }
 
     private func dispatchClick(x: Int, y: Int, button: Int, count: Int) async throws {
@@ -912,16 +989,26 @@ actor WebDriver: UXDriving {
     /// non-Sendable `Any?` result; we never need it for the input-event
     /// path, so we discard the value and only surface the error (if any).
     private func runJS(_ js: String) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
-            Task { @MainActor in
-                self.controller.webView.evaluateJavaScript(js) { _, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else {
-                        cont.resume()
+        // Bound the eval: a side-effecting JS that triggers a navigation can
+        // leave WKWebView's callback uncalled while the page tears down. Time
+        // out and proceed (the side effect was already dispatched; the settle
+        // / probe / capture timeouts bound the rest). A genuine JS error still
+        // throws so real failures aren't masked.
+        let outcome: String?? = await Self.raceAgainstTimeout(.seconds(8)) { [controller] in
+            await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+                Task { @MainActor in
+                    controller.webView.evaluateJavaScript(js) { _, error in
+                        cont.resume(returning: error?.localizedDescription)
                     }
                 }
             }
+        }
+        guard let jsError = outcome else {
+            Self.logger.warning("runJS timed out after 8s (navigation in flight?); proceeding")
+            return
+        }
+        if let jsError {
+            throw WebDriverError.jsEvaluationFailed(jsError)
         }
     }
 
@@ -934,17 +1021,22 @@ actor WebDriver: UXDriving {
     /// WKWebView's `evaluateJavaScript` returns dynamic JS — callers
     /// downcast at the use site.
     private func runJSAndReturn(_ js: String) async throws -> Any? {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<JSReturn, any Error>) in
-            Task { @MainActor in
-                self.controller.webView.evaluateJavaScript(js) { value, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else {
+        // Diagnostics-only (which element clicked, post-click URL). Bound it:
+        // a click that navigates can leave the callback uncalled as the page
+        // tears down — return no diagnostics rather than hanging the click.
+        let result: JSReturn? = await Self.raceAgainstTimeout(.seconds(8)) { [controller] in
+            await withCheckedContinuation { (cont: CheckedContinuation<JSReturn, Never>) in
+                Task { @MainActor in
+                    controller.webView.evaluateJavaScript(js) { value, _ in
                         cont.resume(returning: JSReturn(value: value))
                     }
                 }
             }
-        }.value
+        }
+        if result == nil {
+            Self.logger.warning("runJSAndReturn timed out after 8s (navigation in flight?); no diagnostics")
+        }
+        return result?.value
     }
 
     /// Sendable wrapper around a JS return value (which is `Any?` and
@@ -1109,32 +1201,40 @@ actor WebDriver: UXDriving {
         // dict array into our Sendable `InteractiveMark` shape **inside
         // the @MainActor closure** so the boundary crossing carries
         // only Sendable values.
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[InteractiveMark], any Error>) in
-            Task { @MainActor in
-                self.controller.webView.evaluateJavaScript(js) { value, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                        return
+        // Bound the probe's eval: this runs BEFORE the snapshot every step, and
+        // a stuck navigation can leave `evaluateJavaScript` uncalled until the
+        // new document's JS context is ready (never, for a hung load) — the same
+        // hang class the settle fix addresses. Time out to an empty mark set;
+        // the agent can still tap by coordinate.
+        let marks: [InteractiveMark]? = await Self.raceAgainstTimeout(.seconds(8)) { [controller] in
+            await withCheckedContinuation { (cont: CheckedContinuation<[InteractiveMark], Never>) in
+                Task { @MainActor in
+                    controller.webView.evaluateJavaScript(js) { value, error in
+                        if error != nil { cont.resume(returning: []); return }
+                        let array = (value as? [[String: Any]]) ?? []
+                        let marks: [InteractiveMark] = array.enumerated().map { (idx, dict) in
+                            InteractiveMark(
+                                id: idx + 1,
+                                rect: CGRect(
+                                    x: (dict["x"] as? Double) ?? Double((dict["x"] as? Int) ?? 0),
+                                    y: (dict["y"] as? Double) ?? Double((dict["y"] as? Int) ?? 0),
+                                    width: (dict["w"] as? Double) ?? Double((dict["w"] as? Int) ?? 0),
+                                    height: (dict["h"] as? Double) ?? Double((dict["h"] as? Int) ?? 0)
+                                ),
+                                role: (dict["role"] as? String) ?? "",
+                                inputType: dict["type"] as? String,
+                                label: (dict["label"] as? String) ?? ""
+                            )
+                        }
+                        cont.resume(returning: marks)
                     }
-                    let array = (value as? [[String: Any]]) ?? []
-                    let marks: [InteractiveMark] = array.enumerated().map { (idx, dict) in
-                        InteractiveMark(
-                            id: idx + 1,
-                            rect: CGRect(
-                                x: (dict["x"] as? Double) ?? Double((dict["x"] as? Int) ?? 0),
-                                y: (dict["y"] as? Double) ?? Double((dict["y"] as? Int) ?? 0),
-                                width: (dict["w"] as? Double) ?? Double((dict["w"] as? Int) ?? 0),
-                                height: (dict["h"] as? Double) ?? Double((dict["h"] as? Int) ?? 0)
-                            ),
-                            role: (dict["role"] as? String) ?? "",
-                            inputType: dict["type"] as? String,
-                            label: (dict["label"] as? String) ?? ""
-                        )
-                    }
-                    cont.resume(returning: marks)
                 }
             }
         }
+        if marks == nil {
+            Self.logger.warning("probeInteractiveElements timed out after 8s (page stuck loading?); returning no marks")
+        }
+        return marks ?? []
     }
 
     /// Click the element associated with `id` from the most recent
@@ -1213,6 +1313,8 @@ actor WebDriver: UXDriving {
 
 enum WebDriverError: Error, Sendable, LocalizedError {
     case captureFailed
+    case captureTimedOut
+    case jsEvaluationFailed(String)
     case invalidURL(String)
     /// V6 — agent emitted `tap_mark(id:)` with an id that wasn't in the
     /// most recent screenshot's mark cache. Surfaces back through the
@@ -1223,6 +1325,8 @@ enum WebDriverError: Error, Sendable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .captureFailed: return "WKWebView snapshot failed."
+        case .captureTimedOut: return "WKWebView snapshot timed out — the page is likely wedged after a navigation that never finished loading."
+        case .jsEvaluationFailed(let m): return "JavaScript evaluation failed: \(m)"
         case .invalidURL(let s): return "Invalid URL: '\(s)'."
         case .unknownMark(let id):
             return "tap_mark(id: \(id)) — that id wasn't in the latest screenshot's mark set. The page may have changed; the next screenshot will refresh the marks."

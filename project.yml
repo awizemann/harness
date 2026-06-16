@@ -220,6 +220,76 @@ targets:
           if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
             printf '%s\n' "$NEW" > "$DEST"
           fi
+  # HarnessMCP — development-time MCP server. Same `Harness/` source root
+  # (minus the SwiftUI surface) as HarnessCLI, but speaks MCP JSON-RPC
+  # over stdio instead of taking CLI flags. Lets agents drive Harness —
+  # create personas, stage credentials, start runs, read results — by
+  # reusing the same `RunCoordinator` + `RunHistoryStore` the GUI uses.
+  # Registered in `.mcp.json`. Entry point: `HarnessMCP/Main.swift`.
+  HarnessMCP:
+    type: tool
+    platform: macOS
+    sources:
+      - path: HarnessMCP
+      - path: Harness
+        excludes:
+          # Identical exclude set to HarnessCLI: drop the SwiftUI views,
+          # the @main app shell + AppContainer wiring, the NSOpenPanel
+          # ProjectPicker, and the HarnessDesign Mappers. The MCP target
+          # builds its own minimal graph in `HarnessMCP/MCPContainer.swift`.
+          - "Features/**"
+          - "App/HarnessApp.swift"
+          - "App/AppContainer.swift"
+          - "App/AppCoordinator.swift"
+          - "App/AppState.swift"
+          - "App/FirstRunWizard.swift"
+          - "App/SidebarView.swift"
+          - "Services/ProjectPicker.swift"
+          - "Domain/Mappers.swift"
+      - path: docs/PROMPTS
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_NAME: harness-mcp
+        PRODUCT_BUNDLE_IDENTIFIER: com.harness.mcp
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_ENTITLEMENTS: ""
+        SKIP_INSTALL: NO
+        INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
+    preBuildScripts:
+      # Same generated-stub bake as the Harness / HarnessCLI targets —
+      # `HarnessPaths` references both generated enums, so they must exist
+      # for this target's source list.
+      - name: Generate HarnessGeneratedRepoRoot.swift
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          DEST="$SRCROOT/Harness/Generated/HarnessGeneratedRepoRoot.swift"
+          mkdir -p "$(dirname "$DEST")"
+          NEW=$(printf '%s\n' \
+            '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+            'enum HarnessGeneratedRepoRoot {' \
+            "    static let path = \"$SRCROOT\"" \
+            '}')
+          if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
+            printf '%s\n' "$NEW" > "$DEST"
+          fi
+      - name: Generate HarnessGeneratedWDASnapshot.swift
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          DEST="$SRCROOT/Harness/Generated/HarnessGeneratedWDASnapshot.swift"
+          mkdir -p "$(dirname "$DEST")"
+          SHA="$(/usr/bin/git -C "$SRCROOT/vendor/WebDriverAgent" rev-parse HEAD 2>/dev/null || echo "")"
+          NEW=$(printf '%s\n' \
+            '// AUTO-GENERATED at build time. Do not edit — see project.yml.' \
+            'enum HarnessGeneratedWDASnapshot {' \
+            "    static let sha = \"$SHA\"" \
+            '}')
+          if [ ! -f "$DEST" ] || [ "$(cat "$DEST")" != "$NEW" ]; then
+            printf '%s\n' "$NEW" > "$DEST"
+          fi
 schemes:
   Harness:
     build:
@@ -241,5 +311,11 @@ schemes:
     build:
       targets:
         HarnessCLI: all
+    run:
+      config: Debug
+  HarnessMCP:
+    build:
+      targets:
+        HarnessMCP: all
     run:
       config: Debug

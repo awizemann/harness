@@ -1,0 +1,18 @@
+{
+  "mcpServers" : {
+    "memophant" : {
+      "args" : [
+        "--project-root",
+        ".",
+        "--default-project",
+        "harness"
+      ],
+      "command" : "./.memophant/mcp/memophant-mcp",
+      "type" : "stdio"
+    },
+    "harness" : {
+      "command" : "./.build/derived/Build/Products/Debug/harness-mcp",
+      "type" : "stdio"
+    }
+  }
+}
