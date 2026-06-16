@@ -38,7 +38,7 @@ Harness's roadmap covers three target platforms, declared per-Application:
 | `.macosApp` | **Live (Phase 2)** | macOS apps via `CGEvent` + `CGWindowListCreateImage` (pre-built `.app` or `xcodebuild` macOS scheme). |
 | `.web` | **Live (Phase 3)** | URLs in an embedded `WKWebView`. |
 
-Phase 2 introduced the abstraction layer:
+Phase 2 introduced the abstraction layer [[memophant/architecture/platform-drivers-ios-macos-web-set-of-mark-smart-gates-input]]:
 
 - `Harness/Platforms/UXDriving.swift` — common driver protocol (`screenshot(into:)`, `execute(_:)`, `relaunchForNewLeg()`).
 - `Harness/Platforms/PlatformAdapter.swift` + `RunSession` — per-platform façade owning lifecycle, tool schema, and prompt context.
@@ -48,14 +48,33 @@ Phase 2 introduced the abstraction layer:
 - `docs/PROMPTS/platforms/<kind>.md` — per-platform context block prepended to the canonical iOS-flavoured system prompt for non-iOS runs.
 - `docs/PROMPTS/personas/<kind>-defaults.md` — per-platform persona library (Phase 2 ships macOS personas; Phase 3 ships web personas).
 
-Phase 3 added `WebPlatformAdapter` driving an embedded `WKWebView` in an off-screen `NSWindow`. Input events go through `dispatchEvent` in the page (clicks, scroll, keyboard); navigation goes through `WKWebView.load` / `goBack` / `goForward` / `reload`. Browser-chrome shortcuts (Cmd+L, Cmd+T) won't work — that's a known v1 limit; the v2 CDP-backed adapter (Chrome) would lift it.
-
-The `Application` SwiftData model gained `platformKindRaw` (V3→V4 migration; `nil` resolves to `.iosSimulator`) plus per-platform optional fields (`macAppBundlePath`, `webStartURL` + viewport, etc.). `RunRecord` gained the same column so the history index renders the right per-row icon and Phase 2 / 3 replays can pick the right mirror view.
-
-`ApplicationCreateView` shows a three-segment platform picker today; only iOS is selectable. The macOS and web segments carry "Coming soon" affordances and become live as Phase 2 / 3 ship.
-
-When a phase introduces a real adapter, the abstraction layer (`UXDriving`, `PlatformAdapter`) lands at the same time — `RunCoordinator` and `AgentLoop` are kept iOS-only until then to avoid premature abstraction.
+Phase 3 added `WebPlatformAdapter` driving an embedded `WKWebView` in an off-screen `NSWindow`. Input events go through `dispatchEvent` in the page (clicks, scroll, keyboard); navigation goes through JavaScript `location.href`. The adapter owns the `WebViewWindowController` lifecycle and hands `RunCoordinator` a `RunSession` whose driver is a `WebDriver` (see [Web-Driver](Web-Driver)).
 
 ---
 
-_Last updated: 2026-05-05 — added platform discriminator section_
+## Feature modules (MVVM-F)
+
+Harness is **MVVM-F**: Model-View-ViewModel + Features. No feature module imports sibling feature modules; all cross-feature communication flows through the `AppCoordinator` (a central event hub). See [`standards/01-architecture.md`](https://github.com/awizemann/harness/blob/main/standards/01-architecture.md) for the full rule.
+
+Features live under `Harness/Features/`:  
+Applications, Personas, Actions, GoalInput, RunSession, RunHistory, RunReplay, FrictionReport, AgentSessions, Settings.
+
+Each feature is self-contained: a `ViewModels/` folder (SwiftUI state + business logic), a `Views/` folder (SwiftUI `@View` types), and sometimes a `Models/` folder (domain types). See [Adding-a-Feature](Adding-a-Feature) for the step-by-step.
+
+---
+
+## Set-of-Mark and smart settle gates
+
+Every platform driver layers two pieces on top of the universal loop [[memophant/architecture/platform-drivers-ios-macos-web-set-of-mark-smart-gates-input]].
+
+**Set-of-Mark badges:** Every screenshot the LLM sees has numbered green pills floating above each interactive element. The agent calls `tap_mark(id)` instead of `tap(x, y)` — coordinate-emission failure on small vision models drops out entirely. Disk PNGs stay unmarked so replay surfaces don't show scaffolding.
+
+**Smart settle gate:** Replaces fixed sleep timers that routinely captured pages / windows mid-render or mid-animation.
+
+| Platform | Mark probe | Settle gate | Doc |
+|---|---|---|---|
+| Web | JS `querySelectorAll` walk piercing shadow roots; anchors, buttons, role=*, contenteditable, etc. | `MutationObserver` quietness, with a `childList`-mutation requirement for SPA route transitions. | [Web-Driver](Web-Driver) |
+| iOS | WebDriverAgent's `/source?format=json` AX tree; actionable XCUI roles; `StaticText` rolls up into cell labels. | Screenshot dHash stability via `simctl io screenshot` polling. | [iOS-Driver](iOS-Driver) |
+| macOS | `AXUIElementCopyAttributeValue` walk of the focused window; actionable AX roles; window-local point space. | Screenshot dHash stability via `CGWindowListCreateImage` polling. | [macOS-Driver](macOS-Driver) |
+
+Together these are what make local vision models (Qwen3-VL 8B, Gemma 4 Vision, Llama 3.2 Vision) usable across all three platforms.

@@ -28,7 +28,7 @@ tap(
 
 ### `tap_mark` *(web, iOS, macOS)*
 
-Click an interactive element by its **Set-of-Mark badge id** from the current screenshot. The screenshot the model sees carries a small numbered green pill floating just above every focusable target — inputs, buttons, anchors (`<a href="...">`, including nav links), checkboxes, dropdowns, role=button / role=link / role=tab / role=menuitem / role=switch, and contenteditable regions. The agent picks the id from the badge of the element it wants to act on; the driver resolves to the element's CSS-pixel center and routes through the same click path as `tap`.
+Click an interactive element by its **Set-of-Mark badge id** from the current screenshot. The screenshot the model sees carries a small numbered green pill floating just above every focusable target — inputs, buttons, anchors (`<a href="...">`), checkboxes, dropdowns, and `role=button` / `role=link` / `role=tab` / `role=menuitem` / `role=switch` elements, and contenteditable regions. The agent picks the id from the badge of the element it wants to act on; the driver resolves to the element's center and routes through the same click path as `tap`.
 
 **Strongly preferred over `tap(x, y)` whenever the target has a mark.** Coordinate-emission failure (model says "tap Articles" but the (x, y) lands on a neighbour nav link) is the dominant failure mode for sub-10B vision models. `tap_mark` eliminates the coordinate-rescale math entirely: the model picks a number, the driver knows the rect. Use `tap(x, y)` only for unmarked positions — scrolling targets, image-region taps, page-level positions where no interactive element exists.
 
@@ -102,15 +102,13 @@ fill_credential(
 )
 ```
 
-The corresponding `tool_call.input` in the JSONL is exactly `{"field": "username"}` or `{"field": "password"}` — no value, ever. See [Run-Replay-Format](Run-Replay-Format) § Credential redaction.
-
 ### `press_button`
 
-Press a hardware-style button on the simulator.
+Press a hardware button (iOS only: home, volume-up, volume-down).
 
 ```
 press_button(
-  button: "home" | "lock" | "side" | "siri",
+  name: "home" | "volume_up" | "volume_down",
   observation: string,
   intent: string
 )
@@ -118,11 +116,11 @@ press_button(
 
 ### `wait`
 
-Pause for some milliseconds. Useful when the agent expects an animation or load to finish before acting again. The loop still captures a fresh screenshot afterward.
+Wait for a duration in milliseconds. Useful when the UI is animated (e.g., a sheet is sliding in) and you want to let it finish before screenshotting.
 
 ```
 wait(
-  ms: int,
+  duration_ms: int,
   observation: string,
   intent: string
 )
@@ -130,7 +128,7 @@ wait(
 
 ### `read_screen`
 
-A no-op action: the agent forces a fresh screenshot capture next iteration without taking any UI action. Useful when the agent wants to re-examine what's there before deciding.
+Take a fresh screenshot and OCR all visible text. Returns a plain-text dump of every label, button, field, and image alt-text on the screen. No coordinate info — just a readout of "what's written here". Useful when the agent is unsure what a button does or can't locate something by tapping.
 
 ```
 read_screen(
@@ -141,51 +139,30 @@ read_screen(
 
 ---
 
-## Reporting tools
+## Terminal tools
 
 ### `note_friction`
 
-Flag a UX problem. Emitted alongside or instead of an action. Multiple `note_friction` calls per step are allowed.
+Flag a UX friction event. Emitted by the agent (or synthesized by the loop) to record a confusing moment.
 
 ```
 note_friction(
-  kind: "dead_end" | "ambiguous_label" | "unresponsive" | "confusing_copy" | "unexpected_state",
-  detail: string
+  kind: string,  // one of the taxonomy in docs/PROMPTS/friction-vocab.md
+  detail: string // plain-language description in the persona's voice
 )
 ```
 
-`kind` enum is closed and matches `docs/PROMPTS/friction-vocab.md` exactly.
+Common kinds: `ambiguous_label`, `dead_end`, `unresponsive_control`, `auth_required`, `missing_affordance`, `unexpected_layout`, `validation_unclear`. Full list in `docs/PROMPTS/friction-vocab.md`.
 
 ### `mark_goal_done`
 
-Terminate the run. The agent calls this when it succeeds, fails, or would give up.
+Signal that the goal has been completed. The agent fills in an optional `summary` field describing what was accomplished.
 
 ```
 mark_goal_done(
-  verdict: "success" | "failure" | "blocked",
-  summary: string,
-  friction_count: int,
-  would_real_user_succeed: bool
+  summary: string // "I signed up with email alice@example.com and created a 'Groceries' list with three items."
 )
 ```
 
-- `verdict` — what happened from the agent's perspective.
-- `summary` — one-paragraph plain-English description.
-- `friction_count` — how many friction events were emitted this run.
-- `would_real_user_succeed` — the agent's honest read on whether *the persona it's playing* could complete the goal. Can disagree with `verdict`.
+Emitting this tool ends the run with `verdict: success`. If the agent gets stuck, the loop's cycle detector or step/token budgets will end with `failure` or `blocked` instead.
 
----
-
-## Schema agreement
-
-The Swift definitions in `Harness/Tools/AgentTools.swift`:
-
-- enumerate the same tool names,
-- have the same field names with matching types,
-- have the same enum values (verbatim).
-
-A unit test (`AgentToolSchemaTests`) loads this markdown file, parses the documented schema, and `#expect`s it equals `AgentTools.allTools`. PR with drift fails the build.
-
----
-
-P26-05-05 — migrated to GitHub Wiki_

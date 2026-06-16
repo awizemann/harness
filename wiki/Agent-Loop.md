@@ -6,8 +6,8 @@ The mechanical detail lives in [`../standards/13-agent-loop.md`](https://github.
 
 | Concern | File |
 |---|---|
-| Per-step decision (the loop body) | `Harness/Domain/AgentLoop.swift` |
-| Orchestration (build/install/screenshot/log around the loop) | `Harness/Domain/RunCoordinator.swift` |
+| Per-step decision (the loop body) | `Harness/Domain/AgentLoop.swift` (`actor AgentLoop: AgentLooping`) |
+| Orchestration (build/install/screenshot/log around the loop) | `Harness/Domain/RunCoordinator.swift` (`actor RunCoordinator`) |
 | LLM API call | `LLMClientFactory.client(for:keychain:)` returns one of `ClaudeClient` / `OpenAIClient` / `GeminiClient` per the run's `ModelProvider`; `Tests/HarnessTests/Mocks/MockLLMClient.swift` for replay tests |
 | Tool schema (model-facing contract) | `Harness/Tools/AgentTools.swift` (+ [Tool-Schema](Tool-Schema)) |
 | System prompt + persona defaults + friction vocab | `docs/PROMPTS/*.md`, loaded via `Harness/Core/PromptLibrary.swift` |
@@ -57,59 +57,17 @@ Together these are what make local vision models (Qwen3-VL 8B, Gemma 4 Vision, L
 
 ### Cycle detector
 
-`AgentLoop.recordPostStep(...)` maintains a rolling window of the last 3 `(dHash(screenshot), toolCall)` pairs. When **all 3 dHashes are within Hamming-distance 5** AND **all 3 tool calls are equivalent** (same kind + coordinates within 8pt of each other for tap/swipe; structural equality for type/wait/etc.), the loop bails with `mark_goal_done(blocked, "cycle detected ...")` and an `agent_blocked` friction event.
+`AgentLoop.recordPostStep(...)` maintains a history of the last 3 tool calls (tool name + coordinates / text) and rejects the 4th if it's identical. Coordinates within 5 pixels and text within Levenshtein 2 are considered "identical". Thrown error type: `AgentLoopError.cycleDetected(detail)` — the loop catches it, logs an `agent_blocked` friction event, and breaks.
 
-Why dHash and not exact equality: simulator status-bar overrides remove most chrome variance, but small animations (cursor blink, list ripple) would foil exact pixel hashing. dHash is robust to that.
+The detector resets on each new leg (for chain runs).
 
-### Parse-failure retry
+### Retry hint
 
-The loop catches three `LLMError` cases and retries up to 2 times:
+When a tool-call parse fails (e.g., the model emits two `tool_use` blocks instead of one), the loop doesn't just repeat — it passes the prior error detail back to the model on the next `LLMStepRequest.retryHint: String?` field. Small models loop on the same mistake without this signal; with it, they self-correct.
 
-- `.invalidToolCall(detail:)` — the response was structurally wrong (couldn't parse tool args, or the model emitted multiple tool calls when the loop expects exactly one).
-- `.unknownTool(name:)` — the model called a tool we don't advertise.
-- `.noToolCallReturned` — the model punted to plain text instead of calling any tool.
+### Prompt caching
 
-On retry, the prior failure detail is ferried back to the model via `LLMStepRequest.retryHint` — the next call's user message gets a `"Your previous response was rejected: <detail>. Emit exactly one tool call."` prefix. Without this, cheaper models (GPT-4.1 Nano, Gemini Flash Lite, sometimes Haiku) loop on the same mistake until the cap. After 2 retries, the loop throws `AgentLoopError.parseFailureExhausted` and the run blocks.
+The system prompt + persona + goal + tool schema are sent to the LLM once at the top of the run and reused on every step. Anthropic: explicit `cache_control: ephemeral` directives. OpenAI: automatic caching at ≥1024 tokens. Google: implicit caching on Gemini 2.5+.
 
-### Step + token budgets
+See [Claude-Client](Claude-Client) for the Anthropic caching contract.
 
-- **Step budget** (default 40, range 5–200, ceiling 200; **`stepBudget == 0` means unlimited**) — exceeded → `mark_goal_done(blocked, "step budget exhausted ...")`.
-- **Token budget** — resolved per-run from per-run override → `AppState.defaultTokenBudget` global override → `AgentModel.defaultTokenBudget` per-model default, then clamped to `AgentModel.maxTokenBudget`. Exceeded → `mark_goal_done(blocked, "token budget exhausted ...")`.
-
-Both checks happen at the top of every iteration, before any work. If the loop is mid-step when it would trip, it finishes that step and bails on the next iteration's check. Unlimited steps (`stepBudget == 0`) skips only the step-budget short-circuit; the token budget + cycle detector remain the safety rails.
-
-## Friction taxonomy
-
-Full taxonomy in [`../docs/PROMPTS/friction-vocab.md`](https://github.com/awizemann/harness/blob/main/docs/PROMPTS/friction-vocab.md). Quick reference:
-
-| Kind | Who emits | When |
-|---|---|---|
-| `dead_end` | Model | Tried a path, nothing happened, backed out. |
-| `ambiguous_label` | Model | Couldn't tell what a control did from its text. |
-| `unresponsive` | Model | Interacted, no visible response. |
-| `confusing_copy` | Model | Body / alert / error text was hard to parse. |
-| `unexpected_state` | Model | Saw a state the agent didn't expect from its last action. |
-| `auth_required` | Model | Hit a login wall the run can't pass — staged credential missing or doesn't unlock the surface. V5+. |
-| `agent_blocked` | Loop (synthesized) | Budget exhausted, cycle detected, or parse-retry exhausted. |
-
-## Replay-based testing
-
-`Tests/HarnessTests/RunCoordinatorReplayTests.swift` runs the full coordinator end-to-end against `FakeXcodeBuilder` + `FakeSimulatorDriver` + `MockLLMClient`. The mock returns scripted responses so the loop is deterministic. Three scenarios kept green:
-
-1. **Happy path** — tap → type → `mark_goal_done(success)`. Asserts driver was exercised, JSONL parses cleanly, `RunRecord` reflects the verdict.
-2. **Cycle detection** — same screenshot 4 turns in a row → expect `verdict == .blocked` + an `agent_blocked` friction event.
-3. **Step budget** — budget = 2, scripted 2 taps, no `mark_goal_done` → expect `verdict == .blocked` + summary mentions "step budget".
-
-The `MockLLMClient` is at `Tests/HarnessTests/Mocks/MockLLMClient.swift` and supports both scripted-sequence and request-lookup-closure modes.
-
-## Cross-references
-
-- [`../standards/13-agent-loop.md`](https://github.com/awizemann/harness/blob/main/standards/13-agent-loop.md) — loop invariants.
-- [`../standards/07-ai-integration.md`](https://github.com/awizemann/harness/blob/main/standards/07-ai-integration.md) — call-pattern + prompt-caching guidance.
-- [`../docs/PROMPTS/system-prompt.md`](https://github.com/awizemann/harness/blob/main/docs/PROMPTS/system-prompt.md) — the prompt itself.
-- [Tool-Schema](Tool-Schema) — what the model can emit.
-- [Run-Replay-Format](Run-Replay-Format) — what each step writes to disk.
-
----
-
-P26-05-05 — migrated to GitHub Wiki_

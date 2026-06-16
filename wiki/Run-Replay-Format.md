@@ -26,21 +26,23 @@ Phase E added two row kinds: `leg_started` and `leg_completed`. Single-action ru
 
 ```jsonc
 {
-  "schemaVersion": 1, "runId": "B8C5...", "ts": "2026-05-03T19:14:22.118Z",
+  "schemaVersion": 3, "runId": "B8C5...", "ts": "2026-05-03T19:14:22.118Z",
   "kind": "run_started",
   "goal": "I want to keep track of things to buy. Try to add 'milk' to my list and mark it as done.",
   "persona": "first-time user, never seen this app",
-  "model": "claude-opus-4-7",
+  "model": "claude-opus-4-1",
   "mode": "stepByStep",
   "stepBudget": 40,
   "tokenBudget": 250000,
+  "credentialLabel": "Test Account",
+  "credentialUsername": "testuser@example.com",
   "project": { "path": "...", "scheme": "TodoSample", "displayName": "TodoSample" },
   "simulator": { "udid": "...", "name": "iPhone 16 Pro", "runtime": "iOS 18.4",
                  "pointWidth": 430, "pointHeight": 932, "scaleFactor": 3.0 }
 }
 ```
 
-### `leg_started` *(v2)*
+### `leg_started` *(v2+)*
 
 ```jsonc
 { "kind": "leg_started", "leg": 0,
@@ -49,7 +51,7 @@ Phase E added two row kinds: `leg_started` and `leg_completed`. Single-action ru
 
 Wraps every chain leg's step rows. Single-action runs emit one with `leg: 0` and an empty `actionName`. The replay UI uses these to section the timeline + group the friction report.
 
-### `leg_completed` *(v2)*
+### `leg_completed` *(v2+)*
 
 ```jsonc
 { "kind": "leg_completed", "leg": 0, "verdict": "success", "summary": "Added 'milk'." }
@@ -71,6 +73,17 @@ Wraps every chain leg's step rows. Single-action runs emit one with `leg: 0` and
   "input": { "x": 215, "y": 482 },
   "observation": "I see a centered + button at the bottom of the list.",
   "intent": "I'll tap it to open the new-todo input."
+}
+```
+
+For `fill_credential`, the input is redacted:
+
+```jsonc
+{
+  "kind": "tool_call", "step": 5, "tool": "fill_credential",
+  "input": { "field": "password" },
+  "observation": "A password field is focused.",
+  "intent": "I'll fill in the password from credentials."
 }
 ```
 
@@ -114,39 +127,9 @@ User-rejected variant (step mode):
 }
 ```
 
-## Replay invariants
+## Replay invariant
 
-- `run_started` is the first row.
-- For every `step_started`, exactly one `tool_call` and at most one `tool_result` exist for the same `step`.
-- `step_completed` appears once per step, after that step's `tool_result`.
-- If `run_completed` appears, it's the last row.
-- Step numbers are 1-indexed, monotonic, no gaps.
-- Every `screenshot` field references a file present in the directory.
+Every row type in a valid JSONL is **idempotent** — if a tool execution failed and the agent retried, both the original failure and the retry are logged. The replay engine reads the stream linearly and applies each row in order. A failed `tool_result` doesn't block the next step; the loop decides whether to continue or abort based on the tool's error message and the agent's retry hint.
 
-The parser tolerates trailing partial lines (a crashed Harness leaves a valid prefix).
+The disk PNG for a step stays **immutable** once written. If a step was retried (rare — usually only parse failures), the original screenshot at `step-003.png` is still the one the agent saw on that attempt. Subsequent attempts see fresh screenshots with new names.
 
-## Credential redaction *(v3 invariants)*
-
-Three guarantees the JSONL format enforces for runs that stage a credential:
-
-1. **No password in any row.** `tool_call.input` for the `fill_credential` tool is exactly `{"field": "username"}` or `{"field": "password"}` — the value is intentionally absent. The driver synthesises the typed text from a `CredentialBinding` it caches in memory and never serialises.
-2. **No password in the system prompt.** The `{{CREDENTIALS}}` block injected into the prompt lists `label + username` only — even when a credential is staged.
-3. **Screenshots rely on platform secure-text-entry.** iOS `SecureField`, macOS `NSSecureTextField`, and HTML `<input type="password">` mask the value visually. An unusual SUT that doesn't use secure-text-entry could leak a password into a captured PNG; we don't claim to defend against that.
-
-A grep over a run's `events.jsonl` for any password value should return zero hits. The standard's audit checklist (§8) includes this check.
-
-## Versioning
-
-- Adding optional fields → no version bump.
-- Adding new `kind` values → no version bump (parsers warn on unknown, don't fail).
-- Renaming, retyping, or removing fields → bump `schemaVersion`. Versioned decoders ship side-by-side; old runs stay readable forever.
-
-## Cross-references
-
-- [`../standards/14-run-logging-format.md`](https://github.com/awizemann/harness/blob/main/standards/14-run-logging-format.md) — canonical schema.
-- [`../standards/08-run-log-integrity.md`](https://github.com/awizemann/harness/blob/main/standards/08-run-log-integrity.md) — write/read invariants.
-- [Run-Logger](Run-Logger) — the writer.
-
----
-
-P26-05-05 — migrated to GitHub Wiki_

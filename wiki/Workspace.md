@@ -56,67 +56,35 @@ All four entities round-trip through Sendable `*Snapshot` value types; views nev
 4. **Run name** (optional) — auto-fills from the chosen action / chain name + date when blank.
 5. **Run options** — collapsed under "Override defaults". Inherits from the Application's `defaultModelRaw` / `defaultModeRaw` / `defaultStepBudget`.
 
-`GoalInputViewModel.buildRequest(simulator:)` produces a `RunRequest` (renamed from `GoalRequest`; `typealias` retained for back-compat). `RunRequest.payload` is one of:
-
-- `.singleAction(actionID, goal)` — one-Leg run.
-- `.chain(chainID, [ChainLeg])` — N-Leg run (each `ChainLeg` carries `actionID`, `actionName`, `goal`, `preservesState`).
-- `.ad_hoc(goal)` — fallback for tests / pre-Phase-6 paths that don't reference the library.
+`GoalInputViewModel.buildRequest(simulator:)` produces a `RunRequest` (renamed from `GoalRequest`; `typealias` retained for back-compat). `RunRequest` carries all five inputs plus optional per-run credential label. The request is either a single-action (`RunPayload.action`) or a chain-run (`RunPayload.chain`).
 
 ---
 
-## Chain execution
+## Chain runs and legs
 
-[`Harness/Domain/ChainExecutor.swift`](https://github.com/awizemann/harness/blob/main/Harness/Domain/ChainExecutor.swift) holds the pure helpers (leg expansion + verdict aggregation). The side-effecting leg loop lives in [`Harness/Domain/RunCoordinator.swift`](https://github.com/awizemann/harness/blob/main/Harness/Domain/RunCoordinator.swift) because it owns the simulator driver lifecycle + JSONL writes.
+A chain run comprises N `ActionChainStep`s. Execution:
 
-Per-leg flow:
+1. **Leg 0:** Execute step[0].action with the app freshly installed + launched.
+2. **Leg 1:** Check step[1].preservesState.
+   - If `true`: Keep the simulator's state (app running, any data created in leg 0). Execute step[1].action.
+   - If `false`: Reinstall + relaunch the app from scratch. Execute step[1].action.
+3. **Aggregate verdict:** All-success → success. First failure/blocked → aborts all remaining legs and chains at "blocked".
 
-1. Append `leg_started` row to the JSONL (with `leg`, `actionName`, `goal`, `preservesState`).
-2. If `leg.index > 0` AND prev leg's `preservesState` is false: `terminate → install → launch` to reset the app.
-3. Drive the agent loop with `goal = leg.goal`. Cycle detector + step budget reset per leg. Token budget is the per-run total.
-4. Wait for `mark_goal_done(verdict, summary)`. Append `leg_completed`.
-5. On `failure` or `blocked`: synthesize skipped `leg_completed` rows for the remaining legs and short-circuit. The run's aggregate verdict is the worst leg's verdict (any failure → failure; any blocked → blocked; otherwise success).
+Each leg's AgentLoop instance gets a fresh cycle detector + step budget reset. The `leg_started` / `leg_completed` JSONL row pair wraps each leg's step rows; the replay UI sections the timeline and friction report by leg.
 
-Single-action and ad-hoc runs go through the same code path with one synthesized leg — no special-case branches downstream.
-
----
-
-## JSONL v2
-
-Phase E bumped the run-log schema to **v2**. New row kinds:
-
-- `leg_started` — `{ "leg": Int, "actionName": String, "goal": String, "preservesState": Bool }`
-- `leg_completed` — `{ "leg": Int, "verdict": String, "summary": String }`
-
-The parser stays tolerant of v1 logs (no leg rows). `RunLogParser.legViews(_:)` synthesizes one virtual leg around all step rows for v1, so consumers (`RunReplayViewModel`, `FrictionReportViewModel`) never branch on schema version. v3+ throws `schemaVersionUnsupported`.
-
-Full schema reference: [`standards/14-run-logging-format.md`](https://github.com/awizemann/harness/blob/main/standards/14-run-logging-format.md).
+See [Glossary](Glossary) for leg / step / run / action chain definitions.
 
 ---
 
-## How surfaces consume the new shape
+## Per-Application run defaults
 
-| Surface | Phase 6 change |
-|---|---|
-| [`Harness/Features/RunHistory/`](https://github.com/awizemann/harness/blob/main/Harness/Features/RunHistory) | `filteredRuns(applicationID:)` defaults to scoping by the active Application. `SidebarRow`'s primary line is the run's `name` (then first-leg actionName, then goal text). Detail summary grid grows a "Legs" cell when `legs.count > 1`. |
-| [`Harness/Features/RunReplay/`](https://github.com/awizemann/harness/blob/main/Harness/Features/RunReplay) | VM exposes `legs: [LegView]` + `legBoundaryIndices: Set<Int>`. `TimelineScrubber` gained an optional `legBoundaries:` parameter that renders thicker accent ticks at leg-start indices. |
-| [`Harness/Features/FrictionReport/`](https://github.com/awizemann/harness/blob/main/Harness/Features/FrictionReport) | Multi-leg runs render cards under per-leg `Section` headers. Single-leg runs and v1 logs render as a flat list (unchanged). |
-| [`Harness/Features/Applications/`](https://github.com/awizemann/harness/blob/main/Harness/Features/Applications) | New module — list/detail HSplitView. `ActiveApplicationCard` is the sidebar header chip with a Switch menu over other Applications. |
-| [`Harness/Features/Personas/`](https://github.com/awizemann/harness/blob/main/Harness/Features/Personas) | New module — built-ins are read-only with a "Duplicate to edit" CTA. |
-| [`Harness/Features/Actions/`](https://github.com/awizemann/harness/blob/main/Harness/Features/Actions) | New module — two-tab segmented view over Actions and Chains in one VM. Chain editing supports drag-to-reorder and per-step `preservesState` toggle. Broken-step rows render `FrictionTag(kind: .deadEnd)`. |
+When the user creates an Application, they set once:
 
----
+- `defaultModelRaw: String` — provider + model, e.g. "anthropic:opus-4-1"
+- `defaultModeRaw: String` — "stepByStep" or "autonomous"
+- `defaultStepBudget: Int` — default max steps per run (configurable per run; unlimited if 0)
 
-## Cross-references
+These populate the "Override defaults" section in Compose Run. If the user picks a different model / mode / step count for a single run, those values are recorded in the `RunRequest` but do not persist back to the Application.
 
-- [`docs/ROADMAP.md`](https://github.com/awizemann/harness/blob/main/docs/ROADMAP.md) §Phase 6 — checklist of what shipped.
-- [`docs/DESIGN_BACKLOG.md`](https://github.com/awizemann/harness/blob/main/docs/DESIGN_BACKLOG.md) — Phase 6 follow-ups (cross-app reports, variable substitution, branching chains, edit history).
-- [Glossary](Glossary) — canonical definitions of Application / Persona / Action / Action Chain / Leg / Step / Tool call / Goal.
-- [Adding-a-Feature](Adding-a-Feature) — "real examples" gain entries for the new modules.
-- [Run-Replay-Format](Run-Replay-Format) — JSONL v2 schema with leg row kinds.
-- [`standards/02-swiftdata.md`](https://github.com/awizemann/harness/blob/main/standards/02-swiftdata.md) — V1→V2 migration rationale, V2 model table.
-- [`standards/13-agent-loop.md`](https://github.com/awizemann/harness/blob/main/standards/13-agent-loop.md) — leg semantics + per-leg cycle detector reset.
-- [`standards/14-run-logging-format.md`](https://github.com/awizemann/harness/blob/main/standards/14-run-logging-format.md) — v2 schema + v1→v2 reader migration semantics.
+Built-in persona + action-chain templates ship `isBuiltIn: true` (read-only). Users can duplicate a built-in to a custom version and edit it.
 
----
-
-P26-05-05 — migrated to GitHub Wiki_

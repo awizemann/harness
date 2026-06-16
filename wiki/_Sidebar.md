@@ -1,14 +1,17 @@
 **Getting Started**
 - [Home](Home)
 - [Quick Start](Quick-Start)
+- [Contributing](Contributing)
 
-**Reference**
+**Architecture**
 - [Architecture Overview](Architecture-Overview)
 - [Core Services](Core-Services)
 - [Workspace](Workspace)
+- [Agent Loop](Agent-Loop)
+
+**Reference**
 - [Glossary](Glossary)
 - [Roadmap](Roadmap)
-- [Agent Loop](Agent-Loop)
 - [Tool Schema](Tool-Schema)
 - [Run Replay Format](Run-Replay-Format)
 - [Simulator Driver](Simulator-Driver)
@@ -28,12 +31,6 @@
 - [Standards Index](Standards-Index)
 - [Local vs Cloud Models](Local-vs-Cloud-Models)
 - [Wiki Maintenance](Wiki-Maintenance)
-
-**Developer Guide**
 - [Extending Harness](Extending-Harness)
-
-**Architecture**
 - [Platform Drivers](Platform-Drivers)
-
-**Persistence**
 - [Run Logging and Replay](Run-Logging-and-Replay)
