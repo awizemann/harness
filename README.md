@@ -47,7 +47,14 @@ Three artifacts come out of every run:
 
 Per-app setting: each Application declares its kind once at create time. The agent's tool schema (clicks vs swipes vs key shortcuts vs navigate) and the system-prompt context block re-shape per platform. Run history, replay, and friction reporting are platform-neutral.
 
-> **Status:** v0.5.0 (alpha). All three platforms wired end-to-end with **Set-of-Mark targeting on iOS, macOS, and web** (numbered overlays on interactive elements; agent clicks by id, not pixel; agent-only, never on disk); **Local Mac inference via Ollama** (Qwen3-VL 8B, Gemma 4 Vision 9B, Llama 3.2 Vision 11B, plus a custom-model field) alongside cloud providers (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5; OpenAI GPT-5 Mini / GPT-4.1 Nano; Google Gemini 2.5 Flash / Flash Lite); **per-Application credential storage**; per-provider Keychain storage; configurable per-model token budgets; unlimited-step option; **`harness-cli`** dev-time driver. macOS needs Screen Recording + Accessibility permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Status:** v0.6.0 (alpha). Drive Harness from an agent via the **MCP server** (agent-driven runs surface as first-class, badged history), with **Sparkle auto-update** built in. All three platforms wired end-to-end with **Set-of-Mark targeting on iOS, macOS, and web** (numbered overlays on interactive elements; agent clicks by id, not pixel; agent-only, never on disk); **Local Mac inference via Ollama** (Qwen3-VL 8B, Gemma 4 Vision 9B, Llama 3.2 Vision 11B, plus a custom-model field) alongside cloud providers (Anthropic Opus 4.7 / Sonnet 4.6 / Haiku 4.5; OpenAI GPT-5 Mini / GPT-4.1 Nano; Google Gemini 2.5 Flash / Flash Lite); **per-Application credential storage**; per-provider Keychain storage; configurable per-model token budgets; unlimited-step option; **`harness-cli`** dev-time driver. macOS needs Screen Recording + Accessibility permission. Web is WebKit-only; Chrome via CDP is on the roadmap. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## What's new in 0.6
+
+- **Drive Harness from an agent (MCP).** New `harness-mcp` — a development-time stdio MCP server built from the same `Harness/` source as the app — lets Claude (or any MCP client) create Applications, Personas, and Actions; stage per-app credentials; and **start, poll, and cancel runs** (`start_run` / `get_run_status` / `get_run_result` / `cancel_run` / `list_runs`). It opens the GUI's on-disk store, so anything an agent creates shows up in the app and vice-versa. An idle watchdog auto-cancels a wedged run. See [`HarnessMCP/README.md`](HarnessMCP/README.md).
+- **Agent runs are first-class in the GUI.** Every run carries an origin — **You / Agent / CLI**. History badges non-user runs (and titles them by goal); a new **Agent Sessions** sidebar section shows live agent sessions with a running step counter plus recent agent runs; a global banner floats in while an agent is driving the app. Ad-hoc agent runs match-or-create an Application from their target, so they thread into that app's normal History — badged, with the full summary / friction / replay — instead of living in a separate island.
+- **Sparkle auto-update.** Harness updates itself: **Check for Updates…** in the app menu, plus scheduled automatic checks. Updates are EdDSA-signed and delivered through the existing Developer-ID-signed, notarized pipeline; the [appcast](https://awizemann.github.io/harness/appcast.xml) is published to GitHub Pages on each release.
+- **Web-driver hardening.** Every per-step WKWebView await (settle, probe, JS eval, snapshot) is now bounded by a timeout race, so a navigating click to a page that never finishes loading can't wedge a run.
 
 ## What's new in 0.5
 
@@ -94,12 +101,6 @@ git submodule update --init --recursive
 brew install xcodegen
 xcodegen generate
 open Harness.xcodeproj
-```
-
-You'll also need `idb_companion` for simulator control:
-
-```bash
-brew tap facebook/fb && brew install idb-companion
 ```
 
 The first run builds WDA against your simulator's iOS runtime (~1–2 min). Result is cached under `~/Library/Application Support/Harness/wda-build/<iOS-version>/` and reused on subsequent runs.

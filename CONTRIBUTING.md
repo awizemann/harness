@@ -9,7 +9,7 @@ Thanks for the interest. Harness is a native macOS dev tool that drives an iOS S
 - macOS 14 or later
 - Xcode 16 or later (Swift 6 strict concurrency)
 - [Homebrew](https://brew.sh)
-- `idb_companion` — install via `brew tap facebook/fb && brew install idb-companion`
+- [xcodegen](https://github.com/yonaskolb/XcodeGen) — install via `brew install xcodegen` (generates the Xcode project; the iOS Simulator is driven by WebDriverAgent, built automatically on first run)
 - An [Anthropic API key](https://console.anthropic.com) (Harness stores it in the macOS Keychain on first run)
 
 **First clone:**
