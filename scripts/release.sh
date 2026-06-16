@@ -25,10 +25,13 @@
 #   3. gh CLI authed:
 #        gh auth status
 #
-# What it does NOT do (yet — future, when Sparkle ships for Harness):
-#   - No appcast.xml push. v0.1 is "download from GitHub Releases", no auto-update.
-#   - No EdDSA signature on the artifact. Sparkle expects one for trusted updates;
-#     manual download doesn't need it.
+# Sparkle auto-update (since v0.6.0):
+#   After the GitHub release, scripts/appcast.sh signs the zip with the EdDSA
+#   key in your login Keychain, regenerates appcast.xml, and publishes it to
+#   gh-pages (https://awizemann.github.io/harness/appcast.xml — the app's
+#   SUFeedURL). One-time prereq: run the bundled Sparkle `generate_keys` tool
+#   (stores the private key in your Keychain; paste the printed public key into
+#   Harness/Resources/Info.plist → SUPublicEDKey).
 #
 
 set -euo pipefail
@@ -160,6 +163,23 @@ if new != text:
     path.write_text(new)
 PY
 
+# Sparkle compares CFBundleVersion (sparkle:version) to decide whether an
+# update is newer, so it MUST increase every release. Bump CURRENT_PROJECT_VERSION.
+log "Incrementing project.yml CURRENT_PROJECT_VERSION"
+python3 - "$REPO_ROOT/project.yml" <<'PY'
+import re, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+new, n = re.subn(
+    r'(CURRENT_PROJECT_VERSION:\s*)"(\d+)"',
+    lambda m: f'{m.group(1)}"{int(m.group(2)) + 1}"',
+    text,
+)
+if n == 0:
+    raise SystemExit("CURRENT_PROJECT_VERSION line not found in project.yml")
+path.write_text(new)
+PY
+
 log "Regenerating Harness.xcodeproj"
 xcodegen generate >/dev/null
 
@@ -223,6 +243,7 @@ xcodebuild \
   -configuration Release \
   -archivePath "$ARCHIVE_PATH" \
   -destination "generic/platform=macOS" \
+  -derivedDataPath "$BUILD_DIR/DerivedData" \
   ONLY_ACTIVE_ARCH=NO \
   CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
   DEVELOPMENT_TEAM="$TEAM_ID" \
@@ -304,6 +325,18 @@ if [[ "$DRAFT" -eq 1 ]]; then
 else
   gh release create "v${VERSION}" "$ZIP_PATH" "${RELEASE_FLAGS[@]}" --target main \
     || die "gh release create failed"
+fi
+
+# ---------- sparkle appcast ----------
+# Publish only for live releases — the appcast enclosure points at the now-live
+# release asset. For drafts, publish manually after promoting (the asset URL
+# isn't final until the release is published).
+if [[ "$DRAFT" -eq 0 ]]; then
+  log "Publishing Sparkle appcast"
+  "$REPO_ROOT/scripts/appcast.sh" "$VERSION" \
+    || die "appcast publish failed. The release is LIVE; fix the EdDSA key and re-run: ./scripts/appcast.sh ${VERSION}"
+else
+  warn "draft mode — skipping appcast. After promoting the release: ./scripts/appcast.sh ${VERSION}"
 fi
 
 log "Done."

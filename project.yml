@@ -51,6 +51,13 @@ settings:
     # generate` regenerates the .pbxproj from this file, so a value set
     # via Xcode → Signing & Capabilities will be wiped on regen.
     DEVELOPMENT_TEAM: 3Q6X2L86C4
+packages:
+  # Sparkle auto-update framework. App target only — the CLI/MCP tool
+  # targets don't link it. macOS is non-sandboxed (see Harness.entitlements),
+  # so Sparkle's standard (non-XPC) installer path applies.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.0.0"
 targets:
   Harness:
     type: application
@@ -77,6 +84,8 @@ targets:
       - path: vendor/WebDriverAgent
         type: folder
         buildPhase: resources
+    dependencies:
+      - package: Sparkle
     settings:
       base:
         ENABLE_HARDENED_RUNTIME: YES
@@ -86,6 +95,10 @@ targets:
         INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
         INFOPLIST_KEY_CFBundleName: Harness
         INFOPLIST_KEY_CFBundleDisplayName: Harness
+        # Sparkle keys (SUFeedURL + EdDSA SUPublicEDKey) live in a partial
+        # Info.plist; Xcode merges the generated CFBundle/icon/version keys on
+        # top of it (GENERATE_INFOPLIST_FILE stays YES in base settings).
+        INFOPLIST_FILE: Harness/Resources/Info.plist
         MARKETING_VERSION: "0.5.0"
         CURRENT_PROJECT_VERSION: "4"
     preBuildScripts:

@@ -8,6 +8,8 @@
 
 import SwiftUI
 import AppKit
+import Combine
+import Sparkle
 
 @main
 struct HarnessApp: App {
@@ -20,6 +22,14 @@ struct HarnessApp: App {
     /// applying the autosave name to a hosting view's window rather
     /// than the user-facing main window.
     @NSApplicationDelegateAdaptor(HarnessAppDelegate.self) private var appDelegate
+
+    /// Sparkle auto-updater. `startingUpdater: true` starts the scheduled
+    /// update-check cycle; Sparkle prompts the user on first launch whether to
+    /// enable automatic checks (its standard, recommended UX). Reads SUFeedURL
+    /// + SUPublicEDKey from Info.plist.
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil
+    )
 
     var body: some Scene {
         WindowGroup {
@@ -61,6 +71,9 @@ struct HarnessApp: App {
         // for its own contents.
         .windowResizability(.contentMinSize)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesView(updater: updaterController.updater)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Run") {
                     container.appCoordinator.selectedSection = .newRun
@@ -317,6 +330,35 @@ final class HarnessAppDelegate: NSObject, NSApplicationDelegate {
         window.styleMask.contains(.titled)
             && window.styleMask.contains(.resizable)
             && !(window is NSPanel)
+    }
+}
+
+/// "Check for Updates…" menu command. Disabled while Sparkle can't check
+/// (e.g. a check already in flight). Canonical Sparkle SwiftUI integration.
+private struct CheckForUpdatesView: View {
+    @ObservedObject private var viewModel: CheckForUpdatesViewModel
+    private let updater: SPUUpdater
+
+    init(updater: SPUUpdater) {
+        self.updater = updater
+        self.viewModel = CheckForUpdatesViewModel(updater: updater)
+    }
+
+    var body: some View {
+        Button("Check for Updates…") { updater.checkForUpdates() }
+            .disabled(!viewModel.canCheckForUpdates)
+    }
+}
+
+/// Bridges Sparkle's KVO `canCheckForUpdates` into an observable flag so the
+/// menu item enables/disables correctly.
+@MainActor
+private final class CheckForUpdatesViewModel: ObservableObject {
+    @Published var canCheckForUpdates = false
+
+    init(updater: SPUUpdater) {
+        updater.publisher(for: \.canCheckForUpdates)
+            .assign(to: &$canCheckForUpdates)
     }
 }
 
