@@ -262,6 +262,18 @@ xcodebuild \
 APP_PATH="$EXPORT_DIR/${SCHEME}.app"
 [[ -d "$APP_PATH" ]] || die "exported .app not found at $APP_PATH"
 
+# Guard the partial-Info.plist + GENERATE_INFOPLIST_FILE merge (a lightly-
+# documented Xcode behavior). If a future Xcode drops the merge, the generated
+# CFBundle/icon/version keys or the Sparkle keys could silently vanish —
+# shipping an iconless app or breaking Sparkle's version compare. Fail loudly
+# here rather than ship it.
+PLIST="$APP_PATH/Contents/Info.plist"
+for key in CFBundleVersion CFBundleShortVersionString CFBundleIconFile SUFeedURL SUPublicEDKey; do
+  /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" >/dev/null 2>&1 \
+    || die "built Info.plist missing '$key' — the partial-plist merge may have broken (see project.yml INFOPLIST_FILE + GENERATE_INFOPLIST_FILE)."
+done
+[[ -f "$APP_PATH/Contents/Resources/AppIcon.icns" ]] || die "AppIcon.icns missing from the built app."
+
 # ---------- notarize ----------
 log "Zipping for notarization"
 NOTARIZE_ZIP="$BUILD_DIR/Harness-notarize.zip"
@@ -299,7 +311,7 @@ else
 
 $(head -1 "$NOTES_PATH" | sed 's/^# //')
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 fi
 
 if [[ "$DRAFT" -eq 1 ]]; then
@@ -334,7 +346,8 @@ fi
 if [[ "$DRAFT" -eq 0 ]]; then
   log "Publishing Sparkle appcast"
   "$REPO_ROOT/scripts/appcast.sh" "$VERSION" \
-    || die "appcast publish failed. The release is LIVE; fix the EdDSA key and re-run: ./scripts/appcast.sh ${VERSION}"
+    || die "appcast publish failed — but the release is already LIVE + tagged. Fix the cause and re-run: ./scripts/appcast.sh ${VERSION}
+  Likely causes: missing Sparkle EdDSA key in the Keychain (run generate_keys), or a diverged/dirty .gh-pages-worktree (git -C .gh-pages-worktree reset --hard origin/gh-pages). appcast.sh is safely re-runnable."
 else
   warn "draft mode — skipping appcast. After promoting the release: ./scripts/appcast.sh ${VERSION}"
 fi

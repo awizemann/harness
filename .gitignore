@@ -81,6 +81,8 @@ releases/**/*.zip
 releases/**/*.dmg
 # Generated per-release by scripts/appcast.sh; the live copy is on gh-pages.
 releases/**/appcast.xml
+# generate_appcast prunes superseded archives into this dir; never committed.
+releases/**/old_updates/
 
 # Memophant app-local state (machine-specific, not for git)
 .memophant/

@@ -55,6 +55,12 @@ fi
 # generate_appcast scans RELEASE_DIR, signs each archive with the Keychain
 # EdDSA key, reads the version from inside the .app, and writes appcast.xml.
 # --download-url-prefix makes enclosures point at this version's GitHub asset.
+#
+# By design the feed is SINGLE-ITEM (one zip per release dir → only the latest
+# version is listed). That is correct for delivery: Sparkle offers the newest
+# qualifying item to a host on ANY older version (full-package replacement, no
+# sequential upgrade path). The tradeoff is no deltas / no version history in
+# the feed — intentional; don't "fix" it by accident.
 log "Generating + signing appcast.xml"
 "$SPARKLE_BIN/generate_appcast" \
   --download-url-prefix "$DOWNLOAD_PREFIX" \
@@ -65,13 +71,21 @@ log "Generating + signing appcast.xml"
 
 # ---------- publish to gh-pages ----------
 log "Publishing appcast.xml to gh-pages"
-git -C "$REPO_ROOT" fetch origin gh-pages
+git -C "$REPO_ROOT" fetch origin gh-pages || die "fetch origin gh-pages failed (network?) — release is live; re-run ./scripts/appcast.sh ${VERSION} when back online."
 if [[ -d "$GHPAGES_DIR" ]]; then
+  # Reuse the existing worktree (it may be shared with scripts/site.sh).
+  # Refuse to proceed on uncommitted changes (e.g. a `site.sh build`/`preview`
+  # left index.html dirty) — otherwise the pull below can abort mid-publish.
+  git -C "$GHPAGES_DIR" diff --quiet && git -C "$GHPAGES_DIR" diff --cached --quiet \
+    || die "uncommitted changes in $GHPAGES_DIR (left by scripts/site.sh?) — commit or discard them, then re-run ./scripts/appcast.sh ${VERSION}."
   git -C "$GHPAGES_DIR" checkout gh-pages
   git -C "$GHPAGES_DIR" pull --ff-only origin gh-pages \
-    || die "gh-pages worktree at $GHPAGES_DIR diverged — resolve it, then re-run."
+    || die "gh-pages worktree diverged. Reconcile it: git -C $GHPAGES_DIR reset --hard origin/gh-pages — then re-run ./scripts/appcast.sh ${VERSION}."
 else
-  git -C "$REPO_ROOT" worktree add "$GHPAGES_DIR" gh-pages
+  # Base the new worktree on the REMOTE tip, not a possibly-stale local
+  # gh-pages branch (a plain `worktree add gh-pages` checks out the local ref,
+  # which on a cold machine can be behind origin and push a stale rewind).
+  git -C "$REPO_ROOT" worktree add -B gh-pages "$GHPAGES_DIR" origin/gh-pages
 fi
 
 cp "$RELEASE_DIR/appcast.xml" "$GHPAGES_DIR/appcast.xml"
