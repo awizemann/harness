@@ -70,7 +70,7 @@
       "name": "Can I run Harness in CI, headless?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Not yet. Harness today is a desktop tool with a GUI; a headless mode is on the roadmap. If you want to fail PR builds on UX regressions, watch the issue tracker."
+        "text": "Partly. Harness ships harness-mcp, a stdio MCP server, so an agent (Claude or any MCP client) can start, poll, and cancel runs programmatically against the same store the GUI uses — that's the automation path today. A first-class headless CI mode that fails PR builds on UX regressions is still on the roadmap."
       }
     },
     {
@@ -78,7 +78,7 @@
       "name": "Does Harness self-update?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Auto-update isn't wired up yet. Releases are GitHub releases for now; a Sparkle-based auto-updater is queued."
+        "text": "Yes. Harness uses Sparkle — there's a Check for Updates… item in the app menu, and it checks automatically on a schedule (you're asked once whether to enable automatic checks). Updates are EdDSA-signed and delivered over the same notarized, Developer-ID-signed release pipeline; the appcast feed is hosted on GitHub Pages."
       }
     },
     {
@@ -95,6 +95,14 @@
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "macOS 14 (Sonoma) or later, and Xcode 16 or later — Harness uses Swift 6 strict concurrency. The iOS Simulator ships with Xcode."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I drive Harness from an agent or Claude?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Harness ships harness-mcp, a stdio MCP (Model Context Protocol) server built from the same source as the app. Register it in your MCP client and an agent — Claude or any MCP client — can list and create Applications, Personas, and Actions, stage per-app credentials, and start, poll, and cancel runs (start_run, get_run_status, get_run_result, cancel_run, list_runs). It opens the GUI's on-disk store, so agent-created runs appear in the app — badged 'Agent', in a dedicated Agent Sessions view with a live step counter — and vice-versa."
       }
     }
   ]
@@ -135,11 +143,11 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> v0.5.0 · macOS · open source</p>
+        <p class="eyebrow"><span class="dot" aria-hidden="true"></span> v0.6.0 · macOS · open source</p>
         <h1>AI-driven user testing for iOS, macOS, and the web.</h1>
         <p class="lede">Write a goal in plain English. Pick a persona. Harness drives your target — iOS Simulator, macOS app, or a URL in an embedded browser — while an LLM agent reads each screen, taps and types its way through, and flags UX friction the way a real person would. Run on a cloud model — Claude, GPT, Gemini — or fully local on your own Mac.</p>
         <div class="cta-row">
-          <a class="btn btn-primary btn-download" href="https://github.com/awizemann/harness/releases/download/v0.5.0/Harness-v0.5.0-Universal.zip" download>
+          <a class="btn btn-primary btn-download" href="https://github.com/awizemann/harness/releases/download/v0.6.0/Harness-v0.6.0-Universal.zip" download>
             <svg class="btn-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 3v12"></path>
               <path d="M7 10l5 5 5-5"></path>
@@ -149,7 +157,7 @@
           </a>
           <a class="btn btn-ghost" href="https://github.com/awizemann/harness">View on GitHub</a>
         </div>
-        <p class="meta">v0.5.0 · Universal (Apple Silicon + Intel) · macOS 14+ · <a href="https://github.com/awizemann/harness/releases/latest">Release notes</a></p>
+        <p class="meta">v0.6.0 · Universal (Apple Silicon + Intel) · macOS 14+ · <a href="https://github.com/awizemann/harness/releases/latest">Release notes</a></p>
       </div>
       <div class="hero-art">
         <picture class="pic">
@@ -170,6 +178,8 @@
       <li>Cloud or fully-local models</li>
       <li>Replayable runs</li>
       <li>Friction-typed events</li>
+      <li>Agent-drivable (MCP)</li>
+      <li>Auto-updating</li>
       <li>MIT licensed</li>
     </ul>
   </aside>
@@ -356,6 +366,39 @@
 
   </section>
 
+  <!-- 5f. Drive from an agent (MCP) -->
+  <section class="band band-alt" aria-labelledby="mcp-title">
+    <div class="wrap">
+      <h2 id="mcp-title">Run it yourself — or hand it to an agent.</h2>
+      <p class="sub">Harness ships <code>harness-mcp</code>, a stdio <a href="https://modelcontextprotocol.io">MCP</a> server built from the same source as the app. Point Claude — or any MCP client — at it, and an agent composes and launches real user-test runs, then reads back the verdict and friction. Same engine, same on-disk history as the GUI.</p>
+      <div class="get-started-grid">
+        <div>
+          <pre class="code"><code># Register harness-mcp in your MCP client, then an agent can:
+list_personas
+stage_credential { application_id, label, username, password }
+start_run {
+  platform:   "web",
+  web_url:    "https://your.app",
+  goal:       "Sign up and create my first project",
+  persona_id: "…",
+  model:      "claude-haiku-4-5"
+}
+get_run_status · get_run_result · cancel_run</code></pre>
+          <p class="cta-inline">Runs execute asynchronously with an idle watchdog; results land in the shared store. More in <a href="https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md">HarnessMCP</a>.</p>
+        </div>
+        <div>
+          <h3 class="h3-tight">Agent runs are first-class</h3>
+          <ul class="bullets">
+            <li>Every run is tagged <strong>You</strong>, <strong>Agent</strong>, or <strong>CLI</strong> — History badges the non-you ones and titles them by goal.</li>
+            <li>A dedicated <strong>Agent Sessions</strong> view lists live sessions with a running step counter, plus recent agent runs.</li>
+            <li>A global banner floats in while an agent is at the wheel.</li>
+            <li>Ad-hoc agent runs match-or-create an Application from their target, so they thread into that app's normal History — replay, friction, and all.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- 6. Why vision-grounded matters -->
   <section class="band" aria-labelledby="why-vision">
     <div class="wrap">
@@ -387,14 +430,14 @@
   <section id="get-started" class="band band-alt" aria-labelledby="get-started-title">
     <div class="wrap">
       <h2 id="get-started-title">Get started</h2>
-      <p class="sub">Harness is alpha. Build from source today; signed binary releases follow.</p>
+      <p class="sub">Harness is alpha — but the builds are real: signed, notarized Universal releases with in-app auto-update. Grab the latest from the download button up top, or build from source below.</p>
 
       <div class="get-started-grid">
         <div>
           <h3 class="h3-tight">Prerequisites</h3>
           <ul class="bullets">
             <li>macOS 14 or later, Xcode 16+ (Swift 6 strict concurrency)</li>
-            <li><a href="https://brew.sh">Homebrew</a> + <code>idb-companion</code> + <a href="https://github.com/yonaskolb/XcodeGen">xcodegen</a></li>
+            <li><a href="https://brew.sh">Homebrew</a> + <a href="https://github.com/yonaskolb/XcodeGen">xcodegen</a></li>
             <li>An API key for at least one supported provider — <a href="https://console.anthropic.com">Anthropic</a>, <a href="https://platform.openai.com">OpenAI</a>, or <a href="https://aistudio.google.com">Google</a> — stored in the macOS Keychain on first run</li>
           </ul>
 
@@ -402,7 +445,7 @@
           <pre class="code"><code>git clone https://github.com/awizemann/harness.git
 cd harness
 git submodule update --init --recursive
-brew tap facebook/fb &amp;&amp; brew install idb-companion xcodegen
+brew install xcodegen
 xcodegen generate
 open Harness.xcodeproj</code></pre>
 
@@ -472,13 +515,13 @@ open Harness.xcodeproj</code></pre>
         <details>
           <summary>Can I run Harness in CI, headless?</summary>
           <div>
-            <p>Not yet. Harness today is a desktop tool with a GUI; a headless <code>harness run goal.md</code> mode is on the roadmap. If you want to fail PR builds on UX regressions, watch <a href="https://github.com/awizemann/harness/issues">the issue tracker</a>.</p>
+            <p>Partly, today. Harness ships <code>harness-mcp</code> (see above), so an agent can start, poll, and cancel runs programmatically against the same store the GUI uses — that's the automation path right now. A first-class headless CI mode that fails PR builds on UX regressions is still on the roadmap; watch <a href="https://github.com/awizemann/harness/issues">the issue tracker</a>.</p>
           </div>
         </details>
         <details>
           <summary>Does Harness self-update?</summary>
           <div>
-            <p>Auto-update isn't wired up yet. Releases are <a href="https://github.com/awizemann/harness/releases">GitHub releases</a> for now; a Sparkle-based auto-updater is queued.</p>
+            <p>Yes. Harness uses <strong>Sparkle</strong> — there's a <strong>Check for Updates…</strong> item in the app menu, and it checks automatically on a schedule (you're asked once whether to enable automatic checks). Updates are EdDSA-signed and delivered over the same notarized, Developer-ID-signed pipeline as the <a href="https://github.com/awizemann/harness/releases">GitHub releases</a>; the appcast feed is hosted on GitHub Pages.</p>
           </div>
         </details>
         <details>
@@ -494,6 +537,12 @@ open Harness.xcodeproj</code></pre>
             <p>macOS 14 (Sonoma) or later, and Xcode 16 or later — Harness uses Swift 6 strict concurrency. The iOS Simulator ships with Xcode.</p>
           </div>
         </details>
+        <details>
+          <summary>Can I drive Harness from an agent or Claude?</summary>
+          <div>
+            <p>Yes. Harness ships <code>harness-mcp</code>, a stdio <a href="https://modelcontextprotocol.io">MCP</a> server built from the same source as the app. Register it in your MCP client and an agent — Claude or any MCP client — can list and create Applications, Personas, and Actions, stage per-app credentials, and <strong>start, poll, and cancel runs</strong> (<code>start_run</code>, <code>get_run_status</code>, <code>get_run_result</code>, <code>cancel_run</code>, <code>list_runs</code>). It opens the GUI's on-disk store, so agent-created runs appear in the app — badged <strong>Agent</strong>, in a dedicated Agent Sessions view — and vice-versa. See <a href="https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md">HarnessMCP</a>.</p>
+          </div>
+        </details>
       </div>
     </div>
   </section>
@@ -503,7 +552,7 @@ open Harness.xcodeproj</code></pre>
 <footer class="footer">
   <div class="wrap footer-row">
     <p>© 2026 Alan Wizemann · <a href="https://github.com/awizemann/harness/blob/main/LICENSE">MIT</a> · <a href="https://github.com/awizemann/harness">Source</a> · <a href="https://github.com/awizemann/harness/wiki">Wiki</a> · <a href="https://github.com/awizemann/harness/blob/main/CONTRIBUTING.md">Contribute</a></p>
-    <p class="footer-meta">v<code>0.5.0</code> · 2026-05-21</p>
+    <p class="footer-meta">v<code>0.6.0</code> · 2026-06-16</p>
   </div>
 </footer>
 

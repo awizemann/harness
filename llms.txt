@@ -8,6 +8,8 @@ Three artifacts come out of every run: a verdict (success/failure/blocked), a re
 
 Models are pluggable. Cloud — Anthropic (Claude Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5 Mini, GPT-4.1 Nano), and Google (Gemini 2.5 Flash, Flash Lite); you bring your own API key, keys live in the macOS Keychain. Local — vision LLMs running on your own Mac via Ollama (Qwen3-VL 8B recommended, Gemma 4 Vision 9B, Llama 3.2 Vision 11B, plus a custom-model field). Local needs no key and no internet; screenshots never leave the machine.
 
+Drive it from an agent: `harness-mcp` is a stdio MCP server (built from the same source as the app) that lets Claude — or any MCP client — create Applications, Personas, and Actions, stage per-app credentials, and start/poll/cancel runs against the same on-disk store the GUI uses. Agent-driven runs surface as first-class, badged history in the app (a dedicated Agent Sessions view, a live banner, threaded into per-Application history). The app auto-updates via Sparkle (EdDSA-signed, notarized).
+
 ## Project resources
 
 - [Source code](https://github.com/awizemann/harness) — Swift 6, SwiftUI, MVVM-F, native macOS app.
