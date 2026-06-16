@@ -880,14 +880,310 @@ enum HarnessSchemaV5: VersionedSchema {
     static var versionIdentifier: Schema.Version { .init(5, 0, 0) }
     static var models: [any PersistentModel.Type] {
         [
-            RunRecord.self,
-            Application.self,
-            Persona.self,
-            Action.self,
-            ActionChain.self,
-            ActionChainStep.self,
-            Credential.self
+            // All seven models are frozen below at their V5 shape — DISTINCT
+            // classes from the file-scope V6 models. Sharing the live classes
+            // (even for the six unchanged entities) made V5's and V6's
+            // checksums collide ("Duplicate version checksums detected"), so
+            // each version must own its full, distinct model set — the same
+            // pattern V1–V4 use.
+            HarnessSchemaV5.RunRecord.self,
+            HarnessSchemaV5.Application.self,
+            HarnessSchemaV5.Persona.self,
+            HarnessSchemaV5.Action.self,
+            HarnessSchemaV5.ActionChain.self,
+            HarnessSchemaV5.ActionChainStep.self,
+            HarnessSchemaV5.Credential.self
         ]
+    }
+
+    /// Frozen V5 shape of `RunRecord` — an exact copy of the file-scope
+    /// `RunRecord` as it stood before V6 added `sourceRaw`. Never instantiated
+    /// by production code; it exists only so the migration plan can describe
+    /// the V5→V6 column addition. Relationships point at the unchanged
+    /// file-scope `Application`/`Persona`/`Action`/`ActionChain` entities.
+    @Model
+    final class RunRecord {
+        @Attribute(.unique) var id: UUID
+        var name: String?
+        var createdAt: Date
+        var completedAt: Date?
+        var projectPath: String
+        var scheme: String
+        var displayName: String
+        var simulatorUDID: String
+        var simulatorName: String
+        var simulatorRuntime: String
+        var goal: String
+        var persona: String
+        var modelRaw: String
+        var modeRaw: String
+        var verdictRaw: String?
+        var summary: String?
+        var stepCount: Int
+        var frictionCount: Int
+        var wouldRealUserSucceed: Bool
+        var tokensUsedInput: Int
+        var tokensUsedOutput: Int
+        var runDirectoryPath: String
+        @Relationship(deleteRule: .nullify) var application: Application?
+        @Relationship(deleteRule: .nullify) var persona_: Persona?
+        @Relationship(deleteRule: .nullify) var action: Action?
+        @Relationship(deleteRule: .nullify) var actionChain: ActionChain?
+        var applicationLookupID: UUID?
+        var personaLookupID: UUID?
+        var actionLookupID: UUID?
+        var actionChainLookupID: UUID?
+        var legsJSON: String? = nil
+        var tokensUsedCacheRead: Int? = nil
+        var tokensUsedCacheCreation: Int? = nil
+        var platformKindRaw: String? = nil
+
+        init(
+            id: UUID,
+            name: String? = nil,
+            createdAt: Date,
+            completedAt: Date? = nil,
+            projectPath: String,
+            scheme: String,
+            displayName: String,
+            simulatorUDID: String,
+            simulatorName: String,
+            simulatorRuntime: String,
+            goal: String,
+            persona: String,
+            modelRaw: String,
+            modeRaw: String,
+            runDirectoryPath: String
+        ) {
+            self.id = id
+            self.name = name
+            self.createdAt = createdAt
+            self.completedAt = completedAt
+            self.projectPath = projectPath
+            self.scheme = scheme
+            self.displayName = displayName
+            self.simulatorUDID = simulatorUDID
+            self.simulatorName = simulatorName
+            self.simulatorRuntime = simulatorRuntime
+            self.goal = goal
+            self.persona = persona
+            self.modelRaw = modelRaw
+            self.modeRaw = modeRaw
+            self.runDirectoryPath = runDirectoryPath
+            self.stepCount = 0
+            self.frictionCount = 0
+            self.wouldRealUserSucceed = false
+            self.tokensUsedInput = 0
+            self.tokensUsedOutput = 0
+        }
+    }
+
+    // ---- Frozen V5 copies of the six entities that are UNCHANGED from V5 to
+    // V6. They are DISTINCT Swift classes from the file-scope V6 models (same
+    // entity names, via the simple class name) so V5's schema checksum differs
+    // from V6's. Verbatim copies of the file-scope shapes at the time V6 was
+    // introduced; their relationships resolve to these nested V5 types. ----
+
+    @Model
+    final class Application {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+        var platformKindRaw: String? = nil
+        var projectPath: String
+        var projectBookmark: Data?
+        var scheme: String
+        var defaultSimulatorUDID: String?
+        var defaultSimulatorName: String?
+        var defaultSimulatorRuntime: String?
+        var macAppBundlePath: String? = nil
+        var macAppBundleBookmark: Data? = nil
+        var webStartURL: String? = nil
+        var webViewportWidthPt: Int? = nil
+        var webViewportHeightPt: Int? = nil
+        var defaultModelRaw: String
+        var defaultModeRaw: String
+        var defaultStepBudget: Int
+        @Relationship(deleteRule: .cascade) var credentials: [Credential] = []
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil,
+            platformKindRaw: String? = PlatformKind.iosSimulator.rawValue,
+            projectPath: String,
+            projectBookmark: Data? = nil,
+            scheme: String,
+            defaultSimulatorUDID: String? = nil,
+            defaultSimulatorName: String? = nil,
+            defaultSimulatorRuntime: String? = nil,
+            macAppBundlePath: String? = nil,
+            macAppBundleBookmark: Data? = nil,
+            webStartURL: String? = nil,
+            webViewportWidthPt: Int? = nil,
+            webViewportHeightPt: Int? = nil,
+            defaultModelRaw: String = AgentModel.opus47.rawValue,
+            defaultModeRaw: String = RunMode.stepByStep.rawValue,
+            defaultStepBudget: Int = 40
+        ) {
+            self.id = id
+            self.name = name
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+            self.platformKindRaw = platformKindRaw
+            self.projectPath = projectPath
+            self.projectBookmark = projectBookmark
+            self.scheme = scheme
+            self.defaultSimulatorUDID = defaultSimulatorUDID
+            self.defaultSimulatorName = defaultSimulatorName
+            self.defaultSimulatorRuntime = defaultSimulatorRuntime
+            self.macAppBundlePath = macAppBundlePath
+            self.macAppBundleBookmark = macAppBundleBookmark
+            self.webStartURL = webStartURL
+            self.webViewportWidthPt = webViewportWidthPt
+            self.webViewportHeightPt = webViewportHeightPt
+            self.defaultModelRaw = defaultModelRaw
+            self.defaultModeRaw = defaultModeRaw
+            self.defaultStepBudget = defaultStepBudget
+        }
+    }
+
+    @Model
+    final class Persona {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var blurb: String
+        var promptText: String
+        var isBuiltIn: Bool
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            blurb: String,
+            promptText: String,
+            isBuiltIn: Bool = false,
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil
+        ) {
+            self.id = id
+            self.name = name
+            self.blurb = blurb
+            self.promptText = promptText
+            self.isBuiltIn = isBuiltIn
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+        }
+    }
+
+    @Model
+    final class Action {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var promptText: String
+        var notes: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            promptText: String,
+            notes: String = "",
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil
+        ) {
+            self.id = id
+            self.name = name
+            self.promptText = promptText
+            self.notes = notes
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+        }
+    }
+
+    @Model
+    final class ActionChain {
+        @Attribute(.unique) var id: UUID
+        var name: String
+        var notes: String
+        var createdAt: Date
+        var lastUsedAt: Date
+        var archivedAt: Date?
+        @Relationship(deleteRule: .cascade) var steps: [ActionChainStep]
+
+        init(
+            id: UUID = UUID(),
+            name: String,
+            notes: String = "",
+            createdAt: Date = Date(),
+            lastUsedAt: Date = Date(),
+            archivedAt: Date? = nil,
+            steps: [ActionChainStep] = []
+        ) {
+            self.id = id
+            self.name = name
+            self.notes = notes
+            self.createdAt = createdAt
+            self.lastUsedAt = lastUsedAt
+            self.archivedAt = archivedAt
+            self.steps = steps
+        }
+    }
+
+    @Model
+    final class ActionChainStep {
+        @Attribute(.unique) var id: UUID
+        var index: Int
+        @Relationship(deleteRule: .nullify) var action: Action?
+        var preservesState: Bool
+
+        init(
+            id: UUID = UUID(),
+            index: Int,
+            action: Action? = nil,
+            preservesState: Bool = false
+        ) {
+            self.id = id
+            self.index = index
+            self.action = action
+            self.preservesState = preservesState
+        }
+    }
+
+    @Model
+    final class Credential {
+        @Attribute(.unique) var id: UUID
+        var label: String
+        var username: String
+        var createdAt: Date
+        @Relationship(inverse: \Application.credentials) var application: Application?
+
+        init(
+            id: UUID = UUID(),
+            label: String,
+            username: String,
+            createdAt: Date = Date(),
+            application: Application? = nil
+        ) {
+            self.id = id
+            self.label = label
+            self.username = username
+            self.createdAt = createdAt
+            self.application = application
+        }
     }
 }
 
@@ -976,6 +1272,12 @@ final class RunRecord {
     /// `RunRequest.platformKindRaw` at creation time.
     var platformKindRaw: String? = nil
 
+    /// V6: which source generated the run (gui/mcp/cli). Optional with a nil
+    /// default so the V5→V6 lightweight migration adds the column to existing
+    /// stores without a backfill — legacy rows resolve via `source`. New runs
+    /// get the value from the run name in `RunRecordSnapshot.skeleton(from:)`.
+    var sourceRaw: String? = nil
+
     init(
         id: UUID,
         name: String? = nil,
@@ -1000,6 +1302,7 @@ final class RunRecord {
         tokensUsedOutput: Int = 0,
         runDirectoryPath: String,
         platformKindRaw: String? = nil,
+        sourceRaw: String? = nil,
         application: Application? = nil,
         persona_: Persona? = nil,
         action: Action? = nil,
@@ -1028,6 +1331,7 @@ final class RunRecord {
         self.tokensUsedOutput = tokensUsedOutput
         self.runDirectoryPath = runDirectoryPath
         self.platformKindRaw = platformKindRaw
+        self.sourceRaw = sourceRaw
         self.application = application
         self.persona_ = persona_
         self.action = action
@@ -1045,6 +1349,9 @@ final class RunRecord {
     /// Resolved platform kind. Reads `platformKindRaw` (V4 column) and
     /// defaults to iOS for legacy rows / nil values.
     var platformKind: PlatformKind { PlatformKind.from(rawValue: platformKindRaw) }
+    /// Resolved run source (gui/mcp/cli). Reads the stored `sourceRaw`,
+    /// falling back to deriving from the run name for legacy (pre-V6) rows.
+    var source: RunOrigin { sourceRaw.flatMap(RunOrigin.init(rawValue:)) ?? RunOrigin.fromRunName(name) }
 }
 
 @Model
@@ -1330,6 +1637,26 @@ final class Credential {
     }
 }
 
+// MARK: - V6 (lightweight: adds `RunRecord.sourceRaw` — gui/mcp/cli origin)
+//
+// V6 is the current production shape: its models are the live file-scope
+// classes (which now carry `RunRecord.sourceRaw`). The only change from V5 is
+// that one additive optional column, so the migration is lightweight.
+enum HarnessSchemaV6: VersionedSchema {
+    static var versionIdentifier: Schema.Version { .init(6, 0, 0) }
+    static var models: [any PersistentModel.Type] {
+        [
+            RunRecord.self,
+            Application.self,
+            Persona.self,
+            Action.self,
+            ActionChain.self,
+            ActionChainStep.self,
+            Credential.self
+        ]
+    }
+}
+
 // MARK: - Migration plan
 
 /// V1 → V2: lightweight model addition (Application/Persona/Action/
@@ -1346,11 +1673,11 @@ enum HarnessMigrationPlan: SchemaMigrationPlan {
     )
 
     static var schemas: [any VersionedSchema.Type] {
-        [HarnessSchemaV1.self, HarnessSchemaV2.self, HarnessSchemaV3.self, HarnessSchemaV4.self, HarnessSchemaV5.self]
+        [HarnessSchemaV1.self, HarnessSchemaV2.self, HarnessSchemaV3.self, HarnessSchemaV4.self, HarnessSchemaV5.self, HarnessSchemaV6.self]
     }
 
     static var stages: [MigrationStage] {
-        [v1ToV2, v2ToV3, v3ToV4, v4ToV5]
+        [v1ToV2, v2ToV3, v3ToV4, v4ToV5, v5ToV6]
     }
 
     static let v1ToV2 = MigrationStage.custom(
@@ -1390,6 +1717,15 @@ enum HarnessMigrationPlan: SchemaMigrationPlan {
     static let v4ToV5 = MigrationStage.lightweight(
         fromVersion: HarnessSchemaV4.self,
         toVersion: HarnessSchemaV5.self
+    )
+
+    /// Lightweight: adds the optional `RunRecord.sourceRaw` column (gui/mcp/cli
+    /// origin). Existing V5 rows reopen with `sourceRaw == nil`; the computed
+    /// `RunRecord.source` resolves nil by deriving from the run name, so
+    /// historical rows still classify correctly. Nothing to backfill.
+    static let v5ToV6 = MigrationStage.lightweight(
+        fromVersion: HarnessSchemaV5.self,
+        toVersion: HarnessSchemaV6.self
     )
 
     /// Walk every `RunRecord` in the post-migration store, group by

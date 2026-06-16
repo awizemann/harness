@@ -145,6 +145,116 @@ struct RunRequest: Sendable, Hashable, Codable {
 /// New code should use `RunRequest` directly.
 typealias GoalRequest = RunRequest
 
+/// Origin of a run — lets the GUI distinguish agent-driven runs (MCP server)
+/// from user-driven ones (and CLI). Stored on `RunRecord.sourceRaw` (schema
+/// V6), with the value derived from the denormalized run `name` at skeleton
+/// time: `RunBuilder` (MCP) names runs `"mcp-run"`, `HarnessRunner` (CLI)
+/// `"cli-run"`, and GUI runs carry a user/auto name. Legacy (pre-V6) rows
+/// resolve via the same name-derivation in `RunRecordSnapshot.source`.
+enum RunOrigin: String, Sendable, Hashable, CaseIterable {
+    case gui
+    case mcp
+    case cli
+
+    /// Short label for badges/sections.
+    var displayName: String {
+        switch self {
+        case .gui: return "You"
+        case .mcp: return "Agent"
+        case .cli: return "CLI"
+        }
+    }
+
+    /// SF Symbol used in the History badge / Agent Sessions surface.
+    var systemImage: String {
+        switch self {
+        case .gui: return "person"
+        case .mcp: return "sparkles"
+        case .cli: return "terminal"
+        }
+    }
+
+    /// Resolve a run's source from the denormalized run name set at
+    /// construction time. Unknown/empty → `.gui`.
+    static func fromRunName(_ name: String?) -> RunOrigin {
+        switch name {
+        case "mcp-run": return .mcp
+        case "cli-run": return .cli
+        default:        return .gui
+        }
+    }
+}
+
+/// A small marker file the MCP server writes while an agent-driven run is in
+/// flight, so the GUI (a separate process) can surface live "agent session
+/// running" state. The shared SwiftData store has no cross-process change
+/// notifications, so this filesystem signal is how the GUI learns an agent is
+/// active. Written to `AgentSessionStore.fileURL(runID:)`, updated per step,
+/// and removed when the run ends.
+struct AgentSessionMarker: Codable, Sendable, Hashable, Identifiable {
+    let runID: UUID
+    let goal: String
+    let platformRaw: String
+    let modelRaw: String
+    let sourceRaw: String
+    let startedAt: Date
+    var currentStep: Int
+    var phase: String
+
+    var id: UUID { runID }
+    var source: RunOrigin { RunOrigin(rawValue: sourceRaw) ?? .mcp }
+    var platformKind: PlatformKind { PlatformKind.from(rawValue: platformRaw) }
+}
+
+/// Filesystem helpers for agent-session markers — written by the MCP server
+/// (`RunSupervisor`), read/polled by the GUI. All operations are best-effort;
+/// a missing/corrupt marker just means "no live session."
+enum AgentSessionStore {
+    static var directory: URL {
+        HarnessPaths.appSupport.appendingPathComponent("agent-sessions", isDirectory: true)
+    }
+    static func fileURL(runID: UUID) -> URL {
+        directory.appendingPathComponent("\(runID.uuidString).json")
+    }
+
+    private static func makeEncoder() -> JSONEncoder {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }
+    private static func makeDecoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }
+
+    /// Write/update a marker atomically.
+    static func write(_ marker: AgentSessionMarker) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let data = try? makeEncoder().encode(marker) {
+            try? data.write(to: fileURL(runID: marker.runID), options: .atomic)
+        }
+    }
+
+    static func remove(runID: UUID) {
+        try? FileManager.default.removeItem(at: fileURL(runID: runID))
+    }
+
+    /// All current markers, oldest-started first. The GUI poller reads these.
+    static func readAll() -> [AgentSessionMarker] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ) else { return [] }
+        let decoder = makeDecoder()
+        return urls
+            .filter { $0.pathExtension == "json" }
+            .compactMap { url in
+                (try? Data(contentsOf: url)).flatMap { try? decoder.decode(AgentSessionMarker.self, from: $0) }
+            }
+            .sorted { $0.startedAt < $1.startedAt }
+    }
+}
+
 extension RunRequest {
     /// Sentinel value on `stepBudget` meaning "no step cap — only the
     /// token budget gates the run." Picked as `0` rather than `Int.max`

@@ -94,7 +94,10 @@ final class RunHistoryViewModel {
     ) -> [RunRecordSnapshot] {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return runs.filter { run in
-            if let applicationID, run.applicationID != applicationID {
+            // The app-scope filter applies only to user (gui) runs. Agent/CLI
+            // runs have no Application, so scoping by the selected app would
+            // hide them entirely — they should always be visible in History.
+            if let applicationID, run.applicationID != applicationID, run.source == .gui {
                 return false
             }
             if !needle.isEmpty {

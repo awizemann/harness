@@ -79,6 +79,9 @@ actor RunSupervisor {
     private var statuses: [UUID: Status] = [:]
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var watchdogs: [UUID: Task<Void, Never>] = [:]
+    /// Live agent-session markers written to disk so the GUI (separate process)
+    /// can show "agent session running" without cross-process store notifications.
+    private var markers: [UUID: AgentSessionMarker] = [:]
 
     /// Used to persist a TERMINAL RunRecord when a run ends abnormally (cancel
     /// / watchdog / thrown error / stream-ended-without-completion). The
@@ -113,6 +116,19 @@ actor RunSupervisor {
             lastEventAt: now,
             finishedAt: nil
         )
+        let marker = AgentSessionMarker(
+            runID: id,
+            goal: request.goal,
+            platformRaw: request.platformKind.rawValue,
+            modelRaw: request.model.rawValue,
+            sourceRaw: RunOrigin.fromRunName(request.name).rawValue,
+            startedAt: now,
+            currentStep: 0,
+            phase: "starting"
+        )
+        markers[id] = marker
+        AgentSessionStore.write(marker)
+
         let task = Task.detached { [weak self] in
             guard let self else { return }
             do {
@@ -171,8 +187,10 @@ actor RunSupervisor {
         switch event {
         case .runStarted:
             s.phase = "running"
+            updateMarker(id: id) { $0.phase = "running" }
         case .stepStarted(let step, _, _):
             s.currentStep = step
+            updateMarker(id: id) { $0.currentStep = step; $0.phase = "running" }
         case .frictionEmitted:
             s.frictionCount += 1
         case .runCompleted(let outcome):
@@ -182,6 +200,7 @@ actor RunSupervisor {
             s.currentStep = outcome.stepCount
             s.frictionCount = outcome.frictionCount
             s.finishedAt = outcome.completedAt
+            removeMarker(id: id)
         default:
             break
         }
@@ -234,6 +253,7 @@ actor RunSupervisor {
     /// token totals are unknown here (the run dir's JSONL has the truth) so we
     /// record the steps/friction we observed and zero tokens.
     private func persistTerminal(id: UUID, verdict: Verdict, summary: String) async {
+        removeMarker(id: id)
         let s = statuses[id]
         let outcome = RunOutcome(
             verdict: verdict,
@@ -246,5 +266,20 @@ actor RunSupervisor {
             completedAt: s?.finishedAt ?? Date()
         )
         try? await history.markCompleted(id: id, outcome: outcome)
+    }
+
+    // MARK: Agent-session markers (cross-process live signal for the GUI)
+
+    private func updateMarker(id: UUID, _ mutate: (inout AgentSessionMarker) -> Void) {
+        guard var m = markers[id] else { return }
+        mutate(&m)
+        markers[id] = m
+        AgentSessionStore.write(m)
+    }
+
+    private func removeMarker(id: UUID) {
+        guard markers[id] != nil else { return }
+        markers[id] = nil
+        AgentSessionStore.remove(runID: id)
     }
 }

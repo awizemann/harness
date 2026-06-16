@@ -148,8 +148,15 @@ struct RunRecordSnapshot: Sendable, Hashable {
     /// V4: which platform kind this run drove. `nil` for legacy V3 rows;
     /// `platformKind` resolves nil to `.iosSimulator`.
     let platformKindRaw: String?
+    /// V6: which source generated the run (gui/mcp/cli). `nil` for legacy rows.
+    let sourceRaw: String?
 
     var platformKind: PlatformKind { PlatformKind.from(rawValue: platformKindRaw) }
+
+    /// Origin of the run (agent/MCP vs user vs CLI). Reads the stored
+    /// `sourceRaw`, falling back to deriving from the run name for legacy
+    /// (pre-V6) rows. Lets History show agent-driven runs distinctly.
+    var source: RunOrigin { sourceRaw.flatMap(RunOrigin.init(rawValue:)) ?? RunOrigin.fromRunName(name) }
 
     var verdict: Verdict? { verdictRaw.flatMap(Verdict.init(rawValue:)) }
     var runDirectoryURL: URL { URL(fileURLWithPath: runDirectoryPath) }
@@ -206,7 +213,8 @@ struct RunRecordSnapshot: Sendable, Hashable {
         actionID: UUID? = nil,
         actionChainID: UUID? = nil,
         legsJSON: String? = nil,
-        platformKindRaw: String? = nil
+        platformKindRaw: String? = nil,
+        sourceRaw: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -238,6 +246,7 @@ struct RunRecordSnapshot: Sendable, Hashable {
         self.actionChainID = actionChainID
         self.legsJSON = legsJSON
         self.platformKindRaw = platformKindRaw
+        self.sourceRaw = sourceRaw
     }
 }
 
@@ -329,7 +338,7 @@ actor RunHistoryStore: RunHistoryStoring {
     /// In-memory variant for unit tests. Same schema + migration plan as
     /// the on-disk store; no persistence between processes.
     static func inMemory() throws -> RunHistoryStore {
-        let schema = Schema(versionedSchema: HarnessSchemaV5.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV6.self)
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true
@@ -355,7 +364,7 @@ actor RunHistoryStore: RunHistoryStoring {
         url: URL,
         resetOnMigrationFailure: Bool
     ) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: HarnessSchemaV5.self)
+        let schema = Schema(versionedSchema: HarnessSchemaV6.self)
         let configuration = ModelConfiguration(schema: schema, url: url)
         do {
             return try ModelContainer(
@@ -379,10 +388,23 @@ actor RunHistoryStore: RunHistoryStoring {
 
     /// Remove the SQLite store file and its WAL/SHM siblings so the next
     /// `ModelContainer` open starts clean.
+    /// Archive (don't delete) the SQLite store + WAL/SHM siblings when the
+    /// store can't be opened/migrated, so a failure NEVER silently destroys
+    /// user data — the bytes are moved to timestamped `.corrupt-…` copies the
+    /// user can recover from. Graduated from the earlier delete-and-start-fresh
+    /// behavior now that real migrations ship. Only if the move itself fails do
+    /// we fall back to deletion, so the retry open still gets a clean slot.
     nonisolated private static func deleteStoreFiles(at url: URL) {
         let fm = FileManager.default
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
         for path in [url.path, url.path + "-wal", url.path + "-shm"] {
-            if fm.fileExists(atPath: path) {
+            guard fm.fileExists(atPath: path) else { continue }
+            let archived = path + ".corrupt-" + stamp
+            do {
+                try fm.moveItem(atPath: path, toPath: archived)
+                logger.error("Archived un-openable store file to \(archived, privacy: .public)")
+            } catch {
                 try? fm.removeItem(atPath: path)
             }
         }
@@ -415,6 +437,7 @@ actor RunHistoryStore: RunHistoryStoring {
             row.tokensUsedCacheCreation = snapshot.tokensUsedCacheCreation
             row.legsJSON = snapshot.legsJSON
             row.platformKindRaw = snapshot.platformKindRaw
+            row.sourceRaw = snapshot.sourceRaw
             if let app { row.application = app; row.applicationLookupID = app.id }
             if let persona { row.persona_ = persona; row.personaLookupID = persona.id }
             if let action { row.action = action; row.actionLookupID = action.id }
@@ -444,6 +467,7 @@ actor RunHistoryStore: RunHistoryStoring {
                 tokensUsedOutput: snapshot.tokensUsedOutput,
                 runDirectoryPath: snapshot.runDirectoryPath,
                 platformKindRaw: snapshot.platformKindRaw,
+                sourceRaw: snapshot.sourceRaw,
                 application: app,
                 persona_: persona,
                 action: action,
@@ -947,7 +971,8 @@ actor RunHistoryStore: RunHistoryStoring {
             actionID: row.actionLookupID,
             actionChainID: row.actionChainLookupID,
             legsJSON: row.legsJSON,
-            platformKindRaw: row.platformKindRaw
+            platformKindRaw: row.platformKindRaw,
+            sourceRaw: row.sourceRaw
         )
     }
 
@@ -1109,7 +1134,8 @@ extension RunRecordSnapshot {
             actionID: resolvedActionID,
             actionChainID: resolvedChainID,
             legsJSON: legsJSON,
-            platformKindRaw: request.platformKindRaw
+            platformKindRaw: request.platformKindRaw,
+            sourceRaw: RunOrigin.fromRunName(request.name).rawValue
         )
     }
 }
