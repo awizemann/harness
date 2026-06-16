@@ -79,3 +79,11 @@ TODO.local.md
 # repo small and avoids "is the .zip the source of truth" confusion.
 releases/**/*.zip
 releases/**/*.dmg
+
+# Memophant app-local state (machine-specific, not for git)
+.memophant/
+
+sessions/.raw/
+sessions/.index.json
+
+.claude/memophant-activity.log

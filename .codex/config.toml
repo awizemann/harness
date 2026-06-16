@@ -1,0 +1,5 @@
+# memophant:begin — managed by Memophant.app (regenerated)
+[mcp_servers.memophant]
+command = "./.memophant/mcp/memophant-mcp"
+args = ["--project-root", ".", "--default-project", "harness"]
+# memophant:end

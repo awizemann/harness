@@ -1,0 +1,15 @@
+{
+  "hooks" : {
+    "SessionStart" : [
+      {
+        "hooks" : [
+          {
+            "command" : "bash -c 'cd \"${CODEX_PROJECT_DIR:-.}\" && bash .claude\/memophant-memory-hook.sh'",
+            "type" : "command"
+          }
+        ],
+        "matcher" : "startup|resume"
+      }
+    ]
+  }
+}

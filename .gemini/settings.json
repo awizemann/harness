@@ -1,0 +1,26 @@
+{
+  "hooks" : {
+    "SessionStart" : [
+      {
+        "hooks" : [
+          {
+            "command" : "bash -c 'cd \"${GEMINI_PROJECT_DIR:-.}\" && bash .claude/memophant-memory-hook.sh'",
+            "type" : "command"
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers" : {
+    "memophant" : {
+      "args" : [
+        "--project-root",
+        ".",
+        "--default-project",
+        "harness"
+      ],
+      "command" : "./.memophant/mcp/memophant-mcp",
+      "type" : "stdio"
+    }
+  }
+}

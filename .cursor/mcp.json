@@ -1,0 +1,14 @@
+{
+  "mcpServers" : {
+    "memophant" : {
+      "args" : [
+        "--project-root",
+        ".",
+        "--default-project",
+        "harness"
+      ],
+      "command" : "./.memophant/mcp/memophant-mcp",
+      "type" : "stdio"
+    }
+  }
+}
