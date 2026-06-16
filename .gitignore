@@ -79,6 +79,8 @@ TODO.local.md
 # repo small and avoids "is the .zip the source of truth" confusion.
 releases/**/*.zip
 releases/**/*.dmg
+# Generated per-release by scripts/appcast.sh; the live copy is on gh-pages.
+releases/**/appcast.xml
 
 # Memophant app-local state (machine-specific, not for git)
 .memophant/
