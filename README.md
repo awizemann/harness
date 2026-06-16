@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: macOS 14+](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
 ![Targets: iOS · macOS · Web](https://img.shields.io/badge/targets-iOS%20%C2%B7%20macOS%20%C2%B7%20Web-3DDC97)
-![Version: 0.5.0](https://img.shields.io/badge/version-0.5.0-blue)
+![Version: 0.6.0](https://img.shields.io/badge/version-0.6.0-blue)
 ![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
 
 <p align="center">
@@ -14,8 +14,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/awizemann/harness/releases/download/v0.5.0/Harness-v0.5.0-Universal.zip">
-    <img alt="Download Harness v0.5.0 — macOS Universal (Apple Silicon + Intel)" src="https://img.shields.io/badge/Download%20for%20Mac-v0.5.0%20Universal-1f6feb?style=for-the-badge&logo=apple&logoColor=white">
+  <a href="https://github.com/awizemann/harness/releases/download/v0.6.0/Harness-v0.6.0-Universal.zip">
+    <img alt="Download Harness v0.6.0 — macOS Universal (Apple Silicon + Intel)" src="https://img.shields.io/badge/Download%20for%20Mac-v0.6.0%20Universal-1f6feb?style=for-the-badge&logo=apple&logoColor=white">
   </a>
   <br>
   <sub>macOS 14+ · Apple Silicon &amp; Intel · ~12 MB</sub>
