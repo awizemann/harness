@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Harness</title>
+        <item>
+            <title>0.6.0</title>
+            <pubDate>Tue, 16 Jun 2026 11:54:18 -0400</pubDate>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/awizemann/harness/releases/download/v0.6.0/Harness-v0.6.0-Universal.zip" length="14023338" type="application/octet-stream" sparkle:edSignature="qKz7DFoAEwQhR+O1A0xvQLLzClDECH9NTJXq4bmC5p9winImjPnYM0VC7bM8uqqi+tA4iTv6bw26572ej3EAAg=="/>
+        </item>
+    </channel>
+</rss>
