@@ -4,7 +4,7 @@
 <dict>
 	<!--
 	  Harness is an unsandboxed developer tool. It needs to invoke external
-	  CLIs (xcodebuild, simctl, idb) and read/write arbitrary filesystem
+	  CLIs (xcodebuild, simctl, xcodegen) and read/write arbitrary filesystem
 	  locations on behalf of the user. App Sandbox is intentionally disabled.
 	  Hardened Runtime stays on for notarization.
 

@@ -964,7 +964,7 @@ actor RunCoordinator {
     /// scale factor reliably and emits coordinates in image space — taps land
     /// off-target or outside the screen rect. By making image dimensions ==
     /// point dimensions, image-space and point-space are identical and the
-    /// model's coordinates flow straight to `idb tap` without conversion.
+    /// model's coordinates flow straight to WebDriverAgent's tap without conversion.
     ///
     /// **Anthropic-side resize:** Claude Vision resizes images to fit within
     /// 1568px on the long edge before tokenization. Modern iPhone point

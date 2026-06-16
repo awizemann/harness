@@ -334,7 +334,7 @@ final class RunSessionViewModel {
         }
     }
 
-    /// User clicked on the mirror — forward to the simulator via idb.
+    /// User clicked on the mirror — forward to the simulator via WebDriverAgent.
     /// Best-effort: we don't surface tap errors here (the agent loop will
     /// react to the next screenshot regardless). Updates the last-tap dot
     /// so the user sees their click registered.

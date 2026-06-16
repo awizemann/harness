@@ -335,10 +335,9 @@ actor ProcessRunner: ProcessRunning {
 
     /// Locations to prepend to `PATH` for every spawned subprocess. Apps
     /// launched from Finder inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
-    /// that doesn't include Homebrew or pipx paths — but our tools (`idb`,
-    /// `idb_companion`, `xcodebuild`'s helpers) all live there. Without this,
-    /// `idb` finds itself but can't spawn `idb_companion`, every `tap` fails,
-    /// and the simulator gets wedged.
+    /// that omits Homebrew — but Homebrew-installed tools (e.g. `xcodegen`)
+    /// plus `xcodebuild`'s helpers live there. Without this prefix a spawned
+    /// tool isn't found and the run fails before it starts.
     private static let pathPrefix: [String] = [
         "/opt/homebrew/bin",
         "/opt/homebrew/sbin",

@@ -30,7 +30,7 @@ A one-page block diagram + data flow. For deeper detail per layer see the per-se
 |    v               v                v              v                 |
 |  +---------+  +-----------+  +-------------+  +-----------+          |
 |  | XcodeBuilder|SimulatorDriver|  AgentLoop |  RunLogger | RunHistoryStore|
-|  | (xcodebuild)|(simctl + idb) |  (loop)    |  (JSONL)   | (SwiftData)    |
+|  | (xcodebuild)|(simctl + WDA) |  (loop)    |  (JSONL)   | (SwiftData)    |
 |  +------+---+  +-------+-------+  +----+----+  +----+----+ +-----+----+   |
 |         |             |                |              |        |         |
 |         |             |                v              |        |         |
@@ -46,7 +46,7 @@ A one-page block diagram + data flow. For deeper detail per layer see the per-se
 |  +-+--------------+-----------------+   |  Support/Harness/runs/<id>/|   |
 |    |              |                     +----------------------------+   |
 |    v              v                                                       |
-| `xcodebuild`   `xcrun simctl` / `idb` / `idb_companion`                   |
+| `xcodebuild`   `xcrun simctl` + `WebDriverAgent`                          |
 +----------------------------------------------------------------------+
 ```
 
@@ -75,7 +75,7 @@ A one-page block diagram + data flow. For deeper detail per layer see the per-se
 | Concern | Owner | Scope |
 |---|---|---|
 | Navigation (sidebar selection, sheets, modal flags) | `AppCoordinator` | App lifetime |
-| App-level cross-section state (API key presence, idb health, default sim) | `AppState` | App lifetime |
+| App-level cross-section state (API key presence, WebDriverAgent readiness, default sim) | `AppState` | App lifetime |
 | Per-run state (live screenshot, step feed, approval pending) | `RunSessionViewModel` | One run |
 | Run orchestration (build/install/loop/log) | `RunCoordinator` (actor) | One run |
 | Per-run history record | `RunRecord` (SwiftData) | Persisted |
@@ -111,7 +111,7 @@ No singletons except `ToolLocator` (paths to external CLIs) and the keychain acc
 | Subprocess actor | `Harness/Services/ProcessRunner.swift` |
 | External CLI discovery | `Harness/Services/ToolLocator.swift` |
 | `xcodebuild` wrapper | `Harness/Services/XcodeBuilder.swift` |
-| `simctl` + `idb` wrapper | `Harness/Services/SimulatorDriver.swift` |
+| `simctl` + WebDriverAgent wrapper | `Harness/Services/SimulatorDriver.swift` |
 | Anthropic SDK wrapper | `Harness/Services/ClaudeClient.swift` |
 | JSONL writer | `Harness/Services/RunLogger.swift` |
 | SwiftData index | `Harness/Services/RunHistoryStore.swift` |

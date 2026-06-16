@@ -7,7 +7,7 @@ Get Harness building and running in under 10 minutes.
 - macOS 14 or later
 - Xcode 16 or later (Swift 6 strict concurrency)
 - [Homebrew](https://brew.sh)
-- `idb_companion` — install via `brew tap facebook/fb && brew install idb-companion`
+- [xcodegen](https://github.com/yonaskolb/XcodeGen) — install via `brew install xcodegen` (the iOS Simulator is driven by WebDriverAgent, built automatically on first run)
 - An [Anthropic API key](https://console.anthropic.com) (optional for first-run, but Harness works best with a key)
 
 ## Clone and generate

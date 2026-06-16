@@ -189,7 +189,7 @@ If you add a new SwiftUI-touching file under `Harness/`, the CLI build will fail
 
 ## Limitations
 
-- **Web only.** iOS / macOS would require booting an iOS simulator + idb daemon / Screen Recording — overkill for a CLI loop. If you need to drive an iOS run, use the GUI app.
+- **Web only.** iOS / macOS would require booting an iOS simulator + WebDriverAgent / Screen Recording — overkill for a CLI loop. If you need to drive an iOS run, use the GUI app.
 - **No GUI run history.** The CLI uses `RunHistoryStore.inMemory()`, so completed runs don't show up in the GUI's History tab. (Intentional — the CLI is for inspection on disk.)
 - **Persona presets aren't parsed.** Only literal `--persona "..."` text. If you want a preset, copy the markdown block from `docs/PROMPTS/persona-defaults.md` into the flag.
 - **No SPM `Package.swift`.** Builds via `xcodebuild`. Adding SPM later for `swift run harness-cli` ergonomics is reasonable but unnecessary for v1.

@@ -51,7 +51,7 @@ enum BuildFailure: Error, Sendable, LocalizedError {
 
             Harness can only drive iOS apps. \(availableLine)
 
-            If your project has multiple schemes (some macOS, some iOS), pick one that targets iOS. If it's macOS-only, Harness can't test it — Harness drives the iOS Simulator via idb, which has no Mac equivalent.
+            If your project has multiple schemes (some macOS, some iOS), pick one that targets iOS. If it's macOS-only, Harness can't test it — Harness drives the iOS Simulator via WebDriverAgent, which has no Mac equivalent.
             """
         case .compileFailed(let code, let snippet, _):
             // The full-log location is in `recoverySuggestion` so the UI can
