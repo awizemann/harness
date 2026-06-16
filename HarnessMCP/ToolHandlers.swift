@@ -287,6 +287,14 @@ extension MCPServer {
             if args.string("model") == nil, let m = app.defaultModel { params.model = m }
         } else {
             params.platform = PlatformKind.from(rawValue: args.string("platform"))
+            // Ad-hoc run (no application_id): thread it into the app-centric
+            // model by matching an existing Application that targets the same
+            // thing, or creating one. This is what lands agent runs in the
+            // GUI's normal per-app History (badged "Agent") instead of leaving
+            // them app-less and invisible there. Best-effort — if the target
+            // is incomplete this returns nil and RunBuilder throws the precise
+            // validation error below.
+            params.applicationID = try await resolveOrCreateApplication(c, params)
         }
 
         // Explicit model arg always wins.
@@ -330,6 +338,83 @@ extension MCPServer {
             ],
             "note": "Run is executing asynchronously. Poll get_run_status with this run_id; fetch results with get_run_result once finished. Use cancel_run to stop it early."
         ])
+    }
+
+    /// Ad-hoc runs (no `application_id`) get threaded into the app-centric
+    /// model: match an existing Application that targets the same thing, or
+    /// create one, and return its id. That's what makes agent runs appear in
+    /// the GUI's normal per-app History (badged "Agent") rather than floating
+    /// app-less. Returns nil when the target params are insufficient (e.g. web
+    /// with no URL) so the caller still hits `RunBuilder`'s precise error.
+    private func resolveOrCreateApplication(_ c: MCPContainer, _ p: RunBuilder.Params) async throws -> UUID? {
+        // Propagate a store-read failure instead of silently treating it as
+        // "no apps" — that would mint a duplicate Application and bury a real
+        // error (the explicit application_id path also surfaces store errors).
+        let existing = try await c.history.applications(includeArchived: false)
+        let now = Date()
+
+        func create(
+            name: String,
+            projectPath: String = "",
+            scheme: String = "",
+            simUDID: String? = nil,
+            simName: String? = nil,
+            simRuntime: String? = nil,
+            macAppPath: String? = nil,
+            webURL: String? = nil
+        ) async throws -> UUID {
+            let snap = ApplicationSnapshot(
+                id: UUID(), name: name, createdAt: now, lastUsedAt: now,
+                platformKindRaw: p.platform.rawValue,
+                projectPath: projectPath, scheme: scheme,
+                defaultSimulatorUDID: simUDID, defaultSimulatorName: simName,
+                defaultSimulatorRuntime: simRuntime,
+                macAppBundlePath: macAppPath,
+                webStartURL: webURL,
+                webViewportWidthPt: p.viewportW, webViewportHeightPt: p.viewportH,
+                defaultModelRaw: AgentModel.opus47.rawValue,
+                defaultModeRaw: RunMode.autonomous.rawValue,
+                defaultStepBudget: 40
+            )
+            try await c.history.upsert(snap)
+            return snap.id
+        }
+
+        switch p.platform {
+        case .web:
+            guard let raw = p.webURL, !raw.isEmpty, let host = Self.normalizedHost(raw) else { return nil }
+            if let match = existing.first(where: {
+                $0.platformKind == .web && Self.normalizedHost($0.webStartURL ?? "") == host
+            }) { return match.id }
+            return try await create(name: host, webURL: raw)
+        case .iosSimulator:
+            guard let proj = p.iosProjectPath, let scheme = p.iosScheme else { return nil }
+            if let match = existing.first(where: {
+                $0.platformKind == .iosSimulator && $0.projectPath == proj && $0.scheme == scheme
+            }) { return match.id }
+            return try await create(
+                name: scheme, projectPath: proj, scheme: scheme,
+                simUDID: p.iosSimulatorUDID, simName: p.iosSimulatorName, simRuntime: p.iosSimulatorRuntime
+            )
+        case .macosApp:
+            guard let path = p.macAppPath, !path.isEmpty else { return nil }
+            if let match = existing.first(where: {
+                $0.platformKind == .macosApp && $0.macAppBundlePath == path
+            }) { return match.id }
+            let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+            return try await create(name: name, macAppPath: path)
+        }
+    }
+
+    /// Lowercased host without a leading "www.", for grouping web runs by
+    /// site. `nil` when no host resolves, so callers skip matching rather than
+    /// collapsing unrelated runs under an empty key.
+    private static func normalizedHost(_ urlString: String) -> String? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let withScheme = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let host = URL(string: withScheme)?.host?.lowercased() else { return nil }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 
     private func cancelRun(_ c: MCPContainer, _ args: MCPArguments) async throws -> MCPToolOutcome {

@@ -70,6 +70,12 @@ struct PreviewRun: Identifiable, Hashable {
     let verdict: PreviewVerdict
     var steps: [PreviewStep]
     var friction: [PreviewFrictionEvent]
+    /// Origin badge text (e.g. "Agent", "CLI") shown next to the verdict in
+    /// `SidebarRow`. `nil` = no badge (the default user-driven run). Plain
+    /// strings keep this struct decoupled from the app's `RunOrigin` enum;
+    /// the production mapper fills them in (see `Mappers.swift`).
+    var originLabel: String? = nil
+    var originSystemImage: String? = nil
 }
 
 // MARK: - Mock data

@@ -181,7 +181,10 @@ extension PreviewRun {
         // the leg-zero action name (most recent context), then the
         // raw goal as the existing fallback.
         let primary: String = {
-            if let name = snapshot.name, !name.isEmpty { return name }
+            // Agent / CLI runs carry a sentinel name ("mcp-run" / "cli-run"),
+            // so the goal is the meaningful title for them. Only user (gui)
+            // runs get the user-supplied run name as the primary line.
+            if snapshot.source == .gui, let name = snapshot.name, !name.isEmpty { return name }
             if let firstLeg = snapshot.legs.first, !firstLeg.actionName.isEmpty {
                 return firstLeg.actionName
             }
@@ -200,7 +203,11 @@ extension PreviewRun {
             stepBudget: max(snapshot.stepCount, 40),
             verdict: mappedVerdict,
             steps: stepStubs,
-            friction: frictionStubs
+            friction: frictionStubs,
+            // Badge non-user origins (agent / CLI) so History reads at a
+            // glance who drove the run. User (gui) runs stay unbadged.
+            originLabel: snapshot.source == .gui ? nil : snapshot.source.displayName,
+            originSystemImage: snapshot.source == .gui ? nil : snapshot.source.systemImage
         )
     }
 }

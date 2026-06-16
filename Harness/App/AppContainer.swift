@@ -30,6 +30,10 @@ final class AppContainer {
     let appState: AppState
     let appCoordinator: AppCoordinator
 
+    /// Tails the MCP server's live-session marker files (a separate process)
+    /// so the GUI can show a running-agent banner + the Agent Sessions list.
+    let agentSessionsMonitor: AgentSessionsMonitor
+
     init() {
         self.processRunner = ProcessRunner()
         let runner = self.processRunner
@@ -79,6 +83,12 @@ final class AppContainer {
             wdaBuilder: wdaBuilder
         )
         self.appCoordinator = AppCoordinator()
+
+        // Start tailing agent-session markers immediately so the banner +
+        // Agent Sessions section reflect any agent run already in flight at
+        // launch. `start()` is idempotent; the monitor lives for the session.
+        self.agentSessionsMonitor = AgentSessionsMonitor()
+        self.agentSessionsMonitor.start()
     }
 
     /// Build a `RunCoordinator` for one run. New `AgentLoop` and

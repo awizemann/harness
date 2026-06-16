@@ -20,6 +20,7 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
     case applications
     case personas
     case actions
+    case agentSessions
 
     // Workspace (gated on selectedApplicationID != nil)
     case newRun
@@ -36,7 +37,7 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
 
     var category: Category {
         switch self {
-        case .applications, .personas, .actions:
+        case .applications, .personas, .actions, .agentSessions:
             return .library
         case .newRun, .activeRun, .history, .friction:
             return .workspace
@@ -48,6 +49,7 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
         case .applications: return "Applications"
         case .personas: return "Personas"
         case .actions: return "Actions"
+        case .agentSessions: return "Agent Sessions"
         case .newRun: return "New Run"
         case .activeRun: return "Active Run"
         case .history: return "History"
@@ -60,6 +62,7 @@ enum SidebarSection: String, Hashable, CaseIterable, Identifiable {
         case .applications: return "square.stack.3d.up.fill"
         case .personas: return "person.2"
         case .actions: return "text.cursor"
+        case .agentSessions: return "sparkles"
         case .newRun: return "plus.circle"
         case .activeRun: return "play.circle"
         case .history: return "clock.arrow.circlepath"

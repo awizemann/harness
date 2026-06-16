@@ -240,14 +240,33 @@ enum AgentSessionStore {
         try? FileManager.default.removeItem(at: fileURL(runID: runID))
     }
 
-    /// All current markers, oldest-started first. The GUI poller reads these.
-    static func readAll() -> [AgentSessionMarker] {
+    /// A marker whose file hasn't been touched in this long is treated as a
+    /// ghost and ignored. The MCP server rewrites a run's marker on every step
+    /// and removes it on any terminal transition (including the idle watchdog
+    /// at ~180s), so a marker older than this means the writing process died
+    /// without cleaning up — e.g. `pkill harness-mcp` during a dev binary
+    /// swap. Without this gate such a marker would pin a permanent fake
+    /// "agent session running" banner the user can't dismiss.
+    static let staleMarkerThreshold: TimeInterval = 300
+
+    /// All current (non-stale) markers, oldest-started first. The GUI poller
+    /// reads these. `now` is injectable for tests.
+    static func readAll(now: Date = Date()) -> [AgentSessionMarker] {
         guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey]
         ) else { return [] }
         let decoder = makeDecoder()
         return urls
             .filter { $0.pathExtension == "json" }
+            .filter { url in
+                // Drop ghosts: a marker not rewritten within the staleness
+                // window belongs to a dead writer. Fail open if mtime is
+                // unreadable (keep the marker rather than hide a live run).
+                guard let mtime = try? url.resourceValues(
+                    forKeys: [.contentModificationDateKey]
+                ).contentModificationDate else { return true }
+                return now.timeIntervalSince(mtime) <= staleMarkerThreshold
+            }
             .compactMap { url in
                 (try? Data(contentsOf: url)).flatMap { try? decoder.decode(AgentSessionMarker.self, from: $0) }
             }

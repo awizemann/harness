@@ -94,10 +94,11 @@ final class RunHistoryViewModel {
     ) -> [RunRecordSnapshot] {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return runs.filter { run in
-            // The app-scope filter applies only to user (gui) runs. Agent/CLI
-            // runs have no Application, so scoping by the selected app would
-            // hide them entirely — they should always be visible in History.
-            if let applicationID, run.applicationID != applicationID, run.source == .gui {
+            // Scope by the active Application. Agent/CLI runs now carry an
+            // applicationID too (the MCP server matches or creates one at
+            // start_run), so they scope exactly like user runs — the origin
+            // badge is what distinguishes them within an app's History.
+            if let applicationID, run.applicationID != applicationID {
                 return false
             }
             if !needle.isEmpty {

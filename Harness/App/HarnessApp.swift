@@ -131,6 +131,12 @@ private struct RootView: View {
         } detail: {
             DetailRouter()
         }
+        .overlay(alignment: .top) {
+            AgentSessionBanner(sessions: container.agentSessionsMonitor.activeSessions)
+                // Pure presentation — never intercept clicks meant for the
+                // toolbar / sidebar it floats over.
+                .allowsHitTesting(false)
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -160,6 +166,47 @@ private struct RootView: View {
 }
 
 private struct IdentifiableUUID: Identifiable, Hashable { let id: UUID }
+
+/// Floating top toast shown while ≥1 agent session is in flight. Reads the
+/// live markers published by `AgentSessionsMonitor` (via the container) and
+/// animates in/out. Pure presentation — owns no polling or state.
+private struct AgentSessionBanner: View {
+    let sessions: [AgentSessionMarker]
+
+    var body: some View {
+        Group {
+            if let primary = sessions.first {
+                toast(primary: primary, total: sessions.count)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(Theme.motion.standard, value: sessions.isEmpty)
+    }
+
+    private func toast(primary: AgentSessionMarker, total: Int) -> some View {
+        HStack(spacing: Theme.spacing.s) {
+            StatusChip(kind: .running)
+            Text(message(primary: primary, total: total))
+                .font(HFont.caption)
+                .foregroundStyle(Color.harnessText)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, Theme.spacing.m)
+        .padding(.vertical, Theme.spacing.s)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.harnessAccent.opacity(0.30), lineWidth: 1))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .padding(.top, Theme.spacing.s)
+    }
+
+    private func message(primary: AgentSessionMarker, total: Int) -> String {
+        let goal = primary.goal.count <= 60 ? primary.goal : String(primary.goal.prefix(59)) + "…"
+        if total > 1 {
+            return "\(total) agent sessions running — '\(goal)' · step \(primary.currentStep)"
+        }
+        return "Agent session running — '\(goal)' · step \(primary.currentStep)"
+    }
+}
 
 /// Decoupled main-window frame persistence.
 ///
@@ -281,6 +328,7 @@ private struct DetailRouter: View {
         case .applications: ApplicationsView()
         case .personas:     PersonasView()
         case .actions:      ActionsView()
+        case .agentSessions: AgentSessionsView()
         case .newRun:       GoalInputView()
         case .activeRun:    RunSessionView()
         case .history:      RunHistoryView()

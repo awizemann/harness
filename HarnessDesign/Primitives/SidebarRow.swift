@@ -16,6 +16,9 @@ struct SidebarRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 VerdictPill(verdict: run.verdict)
+                if let label = run.originLabel, let symbol = run.originSystemImage {
+                    OriginBadge(label: label, systemImage: symbol)
+                }
                 Spacer(minLength: 0)
                 Text(run.elapsed).font(HFont.mono).foregroundStyle(Color.harnessText3)
             }

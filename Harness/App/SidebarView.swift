@@ -123,7 +123,7 @@ struct SidebarView: View {
     // MARK: Section content
 
     private var librarySections: [SidebarSection] {
-        [.applications, .personas, .actions]
+        [.applications, .personas, .actions, .agentSessions]
     }
 
     private var workspaceSections: [SidebarSection] {
