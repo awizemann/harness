@@ -8,6 +8,7 @@ tags:
 - workspace
 source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
 source_paths: Harness/Domain/ChainExecutor.swift, Harness/Core/Models.swift, Harness/Features/Actions/, standards/14-run-logging-format.md
+status: deprecated
 ---
 
 ## Observations

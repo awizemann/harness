@@ -8,6 +8,7 @@ tags:
 - inference
 source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
 source_paths: Harness/Services/ClaudeClient.swift, standards/07-ai-integration.md, docs/PROMPTS/, README.md
+status: deprecated
 ---
 
 ## Observations

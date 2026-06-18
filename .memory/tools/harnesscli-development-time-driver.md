@@ -8,6 +8,7 @@ tags:
 - tooling
 source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
 source_paths: HarnessCLI/, README.md
+status: deprecated
 ---
 
 ## Observations

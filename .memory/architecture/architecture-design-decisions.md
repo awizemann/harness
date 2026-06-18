@@ -7,6 +7,7 @@ tags:
 - design
 source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
 source_paths: CONTRIBUTING.md, docs/ARCHITECTURE.md, standards/INDEX.md, standards/01-architecture.md, standards/03-subprocess-and-filesystem.md, standards/04-swift-conventions.md, standards/05-design-system.md, standards/10-testing.md
+status: deprecated
 ---
 
 ## Observations

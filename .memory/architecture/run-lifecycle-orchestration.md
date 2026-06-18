@@ -7,6 +7,7 @@ tags:
 - run_loop
 source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
 source_paths: Harness/Domain/RunCoordinator.swift, Harness/Domain/AgentLoop.swift, Harness/Services/RunLogger.swift, Harness/Features/RunSession/, Harness/Features/RunReplay/, standards/13-agent-loop.md
+status: deprecated
 ---
 
 ## Observations
