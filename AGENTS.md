@@ -14,15 +14,20 @@ stays consistent and nothing is lost. Keep `AGENTS.md` and the per-agent shims (
 `GEMINI.md` / `.github/copilot-instructions.md` / `.cursor/rules/memophant.mdc`) **minimal**:
 they point at the memory system, they don't BE the memory system.
 
-**Memory engine — get to know these tools before you start.** Memophant ships an in-repo
-native MCP server (`memophant-mcp`) that owns the memory backend end-to-end. When the server
-is loaded by your agent, the tools below show up directly. **Before you begin a task, take
-stock of the `memophant` MCP tools available in this session and read their descriptions so
-you know what each does** — they're how you read and write every tier here, so reach for them
-first rather than ad-hoc file reads, greps, or hand-edits. The basic-memory CLI was retired
-from production on 2026-06-06; if the MCP tools aren't present in this session, fall back to
-grep over `.memory/` and `wiki/` until the server is restored, rather than reaching
-for `basic-memory`.
+**Memory engine — use these tools for everything you can, and get to know them before you
+start.** Memophant ships an in-repo native MCP server (`memophant-mcp`) that owns the memory
+backend end-to-end. When the server is loaded by your agent, the tools below show up directly.
+**Before you begin a task, take stock of the `memophant` MCP tools available in this session
+and read their descriptions so you know what each does.** They are the PRIMARY interface to
+every tier in this repo — memory, wiki, design, code, vendors, templates: **default to them
+for any read or write you can express as a tool call** (search, read, write, edit, move,
+context-build), and treat ad-hoc file reads, `grep`, and hand-edits as a LAST RESORT — only
+when no tool covers the need or the server is down. Hand-editing a managed-tier file when a
+tool exists is a mistake: you bypass slug generation, automatic reindexing, and the
+write-time secret/dedup guards, and your change can be silently overwritten on the next
+regen. The basic-memory CLI was retired from production on 2026-06-06; if the MCP tools aren't
+present in this session, fall back to grep over `.memory/` and `wiki/` until the
+server is restored, rather than reaching for `basic-memory`.
 
 - Native MCP tools (preferred): `search_memories`, `read_memory`, `view_memory`, `write_memory`,
   `edit_memory`, `move_memory`, `delete_memory`, `list_directory`, `list_memory_projects`,
@@ -142,12 +147,16 @@ hosting, email, dns, monitoring, analytics, anything billed or credentialed.
   immediately. Treat it as ONE-SHOT: write it to a `mktemp` file and reference the path in
   later commands — don't echo, log, or persist it. Requires the Memophant app to be running
   (headless/cron sessions time out — use a runtime secret store for those).
-- **Created a credential yourself** (minted an API key, got a token from CLI output)? Call
-  `set_vendor_credential(vendor: "<slug>", credential: "<secret>", project:
-  "harness", reason: "<why>")` to stash it in the Keychain instead of leaving it in
-  chat. Memophant asks for approval, creates the vendors/<slug>.md record if it's missing,
-  and stores the secret (Keychain only — never the file). Fetch it back later with
-  `get_vendor_credential`.
+- **Encountered OR created a credential? Store it as a vendor — don't leave it loose.** Any
+  time you read a real secret for a service this project uses (from a `.env`/config file, an
+  env var, CLI output, or a user paste) OR mint one yourself (a new API key, a token from CLI
+  output), stash it with `set_vendor_credential(vendor: "<slug>", credential: "<secret>",
+  project: "harness", reason: "<why>")` rather than leaving it in chat, a scratch
+  file, or only in the shell. Memophant asks for approval, creates the `vendors/<slug>.md`
+  record if it's missing, and stores the secret in the Keychain (never the file). Fetch it
+  back later with `get_vendor_credential`. (Don't relocate a secret the project deliberately
+  keeps in a gitignored `.env` it already loads — the point is to capture credentials that
+  would otherwise be lost to the chat transcript or scattered across the shell.)
 - Search via `search_memories(query: "<text>", project: "harness-vendors")` — the
   tier registers its own engine index, so hybrid search ("which vendor handles
   email?") returns the right hit even when the term lives in notes, not the typed
