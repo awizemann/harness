@@ -31,8 +31,9 @@ server is restored, rather than reaching for `basic-memory`.
 
 - Native MCP tools (preferred): `search_memories`, `read_memory`, `view_memory`, `write_memory`,
   `edit_memory`, `move_memory`, `delete_memory`, `list_directory`, `list_memory_projects`,
-  `recent_activity`, `build_context`. All accept a `project` argument (default
-  harness).
+  `recent_activity`, `build_context` (all accept a `project` argument, default
+  harness) — plus `search_code` (structural symbol search over THIS repo's code index;
+  repo-scoped, no `project` arg).
 - Fallback (only if the MCP tools above are not present in this session): grep `.memory/` and
   `wiki/` directly — `grep -rn "<query>" .memory/ wiki/`.
 
@@ -81,10 +82,12 @@ OUT of this auto-loaded file to save context — search it on demand.
 gives every session a queryable map of THIS repo's source. Two halves: curated `code/` markdown
 overviews (module purpose, key types, public surface) for orientation, and an indexed SQLite map
 of symbols/imports under `.memophant/code/` (gitignored) for sub-second structural queries.
-**Prefer `memophant code <verb>` over `grep` for any structural question** — it's deterministic,
-cheap, and saves context. Fall back to `grep` only when the index is stale (see `status`), the
-language isn't yet supported (Phase 1 indexes Swift only), or you need a verb that's still Phase 2
-(refs / callers / callees).
+**Prefer the code index over `grep` for any structural question** — it's deterministic, cheap,
+and saves context. The fastest "where is `<symbol>`?" is the **`search_code` MCP tool** (it's in
+your tool list → file:line · kind · name, FTS5/BM25-ranked); the `memophant code <verb>` CLI
+covers the rest (outline / imports / status / Phase-2 refs). Fall back to `grep` only when the
+index is stale (see `status`), the language isn't yet supported (Phase 1 indexes Swift only), or
+`search_code` reports the index is missing.
 - **Invocation:** Memophant installs a project-local shim at `./.memophant/code/memophant`. Use
   `memophant code <verb>` if it's on your PATH, otherwise `./.memophant/code/memophant code <verb>`
   from the repo root. (One-time PATH install: `ln -s "$(pwd)/.memophant/code/memophant" ~/.local/bin/memophant`.)
@@ -92,7 +95,8 @@ language isn't yet supported (Phase 1 indexes Swift only), or you need a verb th
 - Find references: `memophant code refs <SymbolName>` → every call/use site.
 - File outline: `memophant code outline <path>` → the symbol tree inside a file.
 - Imports: `memophant code imports <path>` → what a file imports + what imports a file.
-- Semantic / curated search: `memophant code search "<intent>"` → FTS over symbols + curated notes.
+- Symbol search: `search_code(query: "<symbol or fragment>")` MCP tool (preferred), or the
+  `memophant code search "<intent>"` CLI fallback → FTS over symbols.
 - Index health: `memophant code status` → `clean | n files stale | rebuilding`, plus HEAD drift.
 - Curated overviews: `search_memories(query: "<text>", project: "harness-code")` via MCP, or
   `grep -rn "<query>" code/`. Authored as markdown like wiki/design pages — module purposes,
@@ -136,10 +140,12 @@ type, login_url, signup_url, username, keychain_ref, account_email, monthly_cost
 and a free-form `## Notes` body. Tracks the services this project depends on — payments,
 hosting, email, dns, monitoring, analytics, anything billed or credentialed.
 - **Credentials live in the iCloud-synced Keychain via the Memophant app, NEVER in the
-  vendor file.** The frontmatter's `keychain_ref` field is the NAME of the Keychain item
-  (the vendor slug), not the secret. The writer HARD-blocks any save whose serialized form
-  contains anything that looks like an API key, JWT, or long-base64 secret — no soft
-  warning, no override.
+  vendor file.** The credential itself is a SEPARATE password field that only ever goes to
+  the Keychain; the frontmatter's `keychain_ref` field is the NAME of the Keychain item
+  (the vendor slug), not the secret. On save, the writer scans the serialized record and
+  blocks it if anything looks like an API key, JWT, or token — but the block is overridable
+  PER HIT: when a match is an EXAMPLE key in your setup notes (a false positive — the real
+  secret lives in the Keychain, never the file), verify each hit and "Save anyway".
 - **Need the actual credential? Call `get_vendor_credential(vendor: "<slug>", project:
   "harness", reason: "<one-line why>")`** instead of asking the user to paste it.
   Memophant pops an in-app consent modal and, on approval, returns the secret in the tool
@@ -202,8 +208,10 @@ its own codebase.
   PLACEHOLDER guidance (`{{ PADDLE_API_TOKEN }}`, `<your-key-here>`) in its
   Variables section. Reference files are verbatim source — they SHOULD NOT
   contain real credentials because the original source didn't either (credentials
-  live in Vendors/Keychain). Concrete-looking credentials are HARD-blocked by the
-  writer in BOTH manifest and reference paths. When a template needs a credential,
+  live in Vendors/Keychain). On save, the writer secret-scans the manifest and blocks
+  a key/JWT/token match — overridable PER HIT for placeholder/example values (verify
+  each hit and "Save anyway"). Reference files stay a HARD block with no override. When
+  a template needs a credential,
   it points at a Vendor record via `vendor_refs:` in the manifest frontmatter —
   the Vendor owns the Keychain item; the template just references it.
 - **Creating a template** from an existing project: in the Memophant app, click
