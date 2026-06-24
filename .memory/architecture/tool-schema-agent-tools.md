@@ -5,8 +5,12 @@ permalink: harness/architecture/tool-schema-agent-tools
 tags:
 - tools
 - agent-schema
-source_sha: 60fdd16d416f309f12ae6e82aeb563813cbd19c7
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
 source_paths: Harness/Tools/AgentTools.swift, docs/PROMPTS/
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-16
+updated: 2026-06-16
 ---
 
 ## Observations

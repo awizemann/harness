@@ -5,8 +5,12 @@ permalink: harness/architecture/architecture-design-decisions-mvvm-f-strict-conc
 tags:
 - architecture
 - patterns
-source_sha: 60fdd16d416f309f12ae6e82aeb563813cbd19c7
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
 source_paths: standards/01-architecture.md, standards/03-subprocess-and-filesystem.md, standards/04-swift-conventions.md, docs/ARCHITECTURE.md
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-16
+updated: 2026-06-16
 ---
 
 ## Observations

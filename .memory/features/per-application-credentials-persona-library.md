@@ -5,8 +5,12 @@ permalink: harness/features/per-application-credentials-persona-library
 tags:
 - credentials
 - personas
-source_sha: 60fdd16d416f309f12ae6e82aeb563813cbd19c7
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
 source_paths: Harness/Features/Applications/, Harness/Features/Personas/, docs/PROMPTS/persona-defaults.md
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-15
+updated: 2026-06-16
 ---
 
 ## Observations

@@ -5,15 +5,20 @@ permalink: harness/design/design-system-harnessdesign-package-unified-tokens
 tags:
 - design-system
 - tokens
-source_sha: 60fdd16d416f309f12ae6e82aeb563813cbd19c7
-source_paths: HarnessDesign/, Harness/Features/
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
+source_paths: project.yml, HarnessDesign/README.md, Harness/Domain/Mappers.swift
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-16
+updated: 2026-06-16
 ---
 
 ## Observations
-- [design] HarnessDesign: separate Swift Package included directly in main app target (not a separate product target). Contains: design system tokens (Theme.*, HFont.*, Color.harness*), primitive components (buttons, cards, pickers, lists), and screen layout abstractions. #package
+- [design] HarnessDesign is a directory of Swift sources (`HarnessDesign/`) pulled into the Harness app target via xcodegen `path: HarnessDesign` (see project.yml). Not a separate SwiftPM package and not a separate product target — its types are simply in-scope for the app. Excluded from HarnessCLI / HarnessMCP targets, so those tool binaries never link the SwiftUI presentation layer. #package
 - [rule] Every feature view consumes HarnessDesign primitives + Theme/HFont/Color tokens. No raw .padding(12) / cornerRadius: 8 / .red / .green literals. Enforced via design-system unification pass in Phase 4. #rule
-- [primitive] Components: VerdictPill (success/failure/blocked badge), FrictionTag (friction kind badges), ApprovalCard (step-mode approval UX), TimelineScrubber (replay playhead), SimulatorMirrorView (live screenshot + coordinate overlay), StepFeedView (turn-by-turn step list). #components
+- [primitive] HarnessDesign/Primitives/: ApprovalCard, EmptyStateView, FlowLayout, FrictionTag, OriginBadge, PanelContainer, PendingStepCell, PersonaGoalForm, Pill, SegmentedToggle, SidebarRow, SimulatorMirrorView, StatusChip, StepFeedCell, TimelineScrubber, ToolCallChip, VerdictPill, WebMirrorView. OriginBadge was added with v0.6's Agent-runs visibility. #components
 - [design] NSAppearance binds to user's system Dark Mode preference (not host app appearance). Web mirror: flat browser chrome (URL pill, lock glyph, back/forward/refresh) fills full middle column. Default viewport 1280×1600 tall desktop or 375×812 mobile. #appearance
+- [adapter] Harness/Domain/Mappers.swift converts production Verdict / ToolKind / FrictionKind / ToolCall / RunRecordSnapshot to HarnessDesign's Preview* placeholder types so primitives stay decoupled from the domain model. Mappers.swift is excluded from CLI/MCP targets. #adapter
 
 ## Relations
-- relates_to [[Architecture & Design Decisions]]
+- relates_to [[Architecture & Design Decisions — MVVM-F, Strict Concurrency, Subprocess Actor]]

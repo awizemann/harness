@@ -2,6 +2,11 @@
 title: Release Signing, Notarization & Sparkle Keys
 type: note
 permalink: harness/core/release-signing-notarization-sparkle-keys
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-16
+updated: 2026-06-16
 ---
 
 ## Observations

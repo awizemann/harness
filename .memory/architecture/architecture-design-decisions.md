@@ -5,9 +5,13 @@ permalink: harness/architecture/architecture-design-decisions
 tags:
 - architecture
 - design
-source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
 source_paths: CONTRIBUTING.md, docs/ARCHITECTURE.md, standards/INDEX.md, standards/01-architecture.md, standards/03-subprocess-and-filesystem.md, standards/04-swift-conventions.md, standards/05-design-system.md, standards/10-testing.md
 status: deprecated
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-15
+updated: 2026-06-18
 ---
 
 ## Observations
@@ -22,4 +26,3 @@ status: deprecated
 ## Relations
 - referenced_by [[CONTRIBUTING.md Guidelines]]
 - complements [[Project Overview & Targets]]
-- detailed_in [[docs/ARCHITECTURE.md]]

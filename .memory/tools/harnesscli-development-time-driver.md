@@ -6,9 +6,13 @@ tags:
 - cli
 - dev_tool
 - tooling
-source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
 source_paths: HarnessCLI/, README.md
 status: deprecated
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-15
+updated: 2026-06-18
 ---
 
 ## Observations

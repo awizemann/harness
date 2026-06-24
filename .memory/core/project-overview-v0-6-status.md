@@ -1,14 +1,16 @@
 ---
-title: Project Overview & v0.5 Status
+title: Project Overview & v0.6 Status
 type: note
 permalink: harness/core/project-overview-v0-5-status
 tags:
 - project
 - status
 - version
-source_sha: 3577a98a460f73631b6541b13473e49402705a53
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
 source_paths: README.md, project.yml
-reviewed: 2026-06-16
+reviewed: 2026-06-24
+aliases: [Project Overview & v0.5 Status, harness/core/project-overview-v0-5-status]
+reviewed_by: human
 ---
 
 ## Observations

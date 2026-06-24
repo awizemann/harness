@@ -5,9 +5,13 @@ permalink: harness/architecture/run-lifecycle-orchestration
 tags:
 - orchestration
 - run_loop
-source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
 source_paths: Harness/Domain/RunCoordinator.swift, Harness/Domain/AgentLoop.swift, Harness/Services/RunLogger.swift, Harness/Features/RunSession/, Harness/Features/RunReplay/, standards/13-agent-loop.md
 status: deprecated
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-15
+updated: 2026-06-18
 ---
 
 ## Observations
@@ -20,4 +24,3 @@ status: deprecated
 
 ## Relations
 - implements [[Architecture & Design Decisions]]
-- detailed_in [[docs/ARCHITECTURE.md]]

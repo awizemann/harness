@@ -7,12 +7,16 @@ tags:
 - actions
 - chains
 - swiftdata
-source_sha: 60fdd16d416f309f12ae6e82aeb563813cbd19c7
-source_paths: Harness/Domain/ChainExecutor.swift, Harness/Features/Applications/, Harness/Features/ActionsChains/
+source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
+source_paths: Harness/Domain/ChainExecutor.swift, Harness/Services/HarnessSchema.swift, Harness/Core/Models.swift
+reviewed: 2026-06-24
+reviewed_by: human
+created: 2026-06-16
+updated: 2026-06-16
 ---
 
 ## Observations
-- [model] SwiftData V2 (@Model): Application (projectPath, scheme, kind, credentials), Persona (name, prompt, notes, isBuiltIn flag), Action (name, prompt, notes), ActionChain (name, steps: ActionChainStep[]), ActionChainStep (actionID, preservesState: Bool). V1→V2 migration backfills one Application per distinct (projectPath, scheme) tuple from run history. #schema
+- [model] SwiftData V2+ (@Model): Application (projectPath, scheme, kind, credentials), Persona (name, prompt, notes, isBuiltIn flag), Action (name, prompt, notes), ActionChain (name, steps: ActionChainStep[]), ActionChainStep (actionID, preservesState: Bool). V1→V2 migration backfills one Application per distinct (projectPath, scheme) tuple from run history. Schema is now at V6 (added RunRecord.sourceRaw for RunOrigin in v0.6); each version is a fully frozen nested model set in HarnessSchema.swift. #schema
 - [feature] Sidebar LIBRARY / WORKSPACE sections. LIBRARY always shows. WORKSPACE gated on selectedApplicationID (persisted in settings.json; stale ids cleared on launch). Active Application card between them. #ui
 - [feature] Applications module: full CRUD, create/edit sheets, recent-runs panel. ProjectPicker extracted to Harness/Services/ so both Applications and run form share it. #crud
 - [feature] Personas library: list/detail UI, create/duplicate/edit/archive. Built-in personas seeded idempotently from docs/PROMPTS/persona-defaults.md via PromptLibrary.parseMarkdownSections. Built-ins read-only with 'Duplicate to edit' CTA. #personas
@@ -24,4 +28,4 @@ source_paths: Harness/Domain/ChainExecutor.swift, Harness/Features/Applications/
 ## Relations
 - supersedes [[Workspace & Actions Chain System]]
 - relates_to [[Per-Application Credentials & Persona Library]]
-- relates_to [[Run Logging Format (JSONL v2+)]]
+- relates_to [[Run Logging Format (JSONL v2+) — Append-Only, Legs, Credentials]]

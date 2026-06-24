@@ -8,6 +8,8 @@ tags:
 source_sha: 898ebd9c030f8959ac46c7690487f267692a728c
 source_paths: Harness/Services/SimulatorDriver.swift, Harness/Services/WDABuilder.swift, Harness/Services/WDAClient.swift, standards/07-ai-integration.md
 status: deprecated
+created: 2026-06-15
+updated: 2026-06-18
 ---
 
 ## Observations
@@ -19,4 +21,3 @@ status: deprecated
 
 ## Relations
 - implements [[Project Overview & Targets]]
-- detailed_in [[docs/ARCHITECTURE.md]]
