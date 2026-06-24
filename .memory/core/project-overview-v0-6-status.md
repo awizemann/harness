@@ -11,6 +11,8 @@ source_paths: README.md, project.yml
 reviewed: 2026-06-24
 aliases: [Project Overview & v0.5 Status, harness/core/project-overview-v0-5-status]
 reviewed_by: human
+created: 2026-06-16
+updated: 2026-06-24
 ---
 
 ## Observations
