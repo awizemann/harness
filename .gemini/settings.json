@@ -1,10 +1,16 @@
 {
+  "context" : {
+    "fileName" : [
+      "AGENTS.md",
+      "GEMINI.md"
+    ]
+  },
   "hooks" : {
     "SessionStart" : [
       {
         "hooks" : [
           {
-            "command" : "bash -c 'cd \"${GEMINI_PROJECT_DIR:-.}\" && bash .claude/memophant-memory-hook.sh'",
+            "command" : "bash -c 'cd \"${GEMINI_PROJECT_DIR:-.}\" && bash .claude\/memophant-memory-hook.sh'",
             "type" : "command"
           }
         ]
@@ -19,7 +25,7 @@
         "--default-project",
         "harness"
       ],
-      "command" : "./.memophant/mcp/memophant-mcp",
+      "command" : ".\/.memophant\/mcp\/memophant-mcp",
       "type" : "stdio"
     }
   }

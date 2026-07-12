@@ -5,8 +5,10 @@ alwaysApply: true
 
 <!-- memophant:begin -->
 <!-- memophant:shim -->
-> Agent instructions for this project live in [AGENTS.md](../../AGENTS.md) — read it before
-> starting work. Memophant manages a repo-resident memory system (`.memory/`, `wiki/`, `design/`,
-> `code/`, `TASKS.md`) and a native MCP server (`memophant-mcp`) for read/write. Substance lives
-> in those files, not here.
+## Memory System (managed by Memophant) — core rules. Full reference: [AGENTS.md](../../AGENTS.md).
+1. **Memory is the source of truth.** Search it before assuming; record durable decisions/learnings as memory notes or wiki pages — never in this file or session-private/model memory.
+2. **Prefer the `memophant` MCP tools** for every read/write (search/read/write/edit/move) — read each tool's description (they document their args). Hand-edits/`grep` are a last resort (they bypass slug-gen, reindex, secret/dedup guards). Tools absent → grep `.memory/` + `wiki/`.
+3. **Don't `git add`/`commit` the managed tiers** (`.memory/`, `wiki/`, `design/`, `code/`, `sessions/`, `documents/`, `vendors/`, `templates/`, `TASKS.md`, `tasks/`) — the user commits each via Memophant's per-tier secret-scanned bar; leave them dirty. Everything else is yours.
+4. **Secrets → Keychain, never chat or files.** Found or made a credential? Store it with `set_vendor_credential` (fetch later with `get_vendor_credential`); never leave it loose in chat.
+File memory notes under one of six folders (architecture/conventions/decisions/operations/project/roadmap), never the root.
 <!-- memophant:end -->

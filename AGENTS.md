@@ -12,7 +12,10 @@ before starting work, and record durable decisions and learnings as **notes or w
 not in this file, and not in any session-private or model-specific memory — so every session
 stays consistent and nothing is lost. Keep `AGENTS.md` and the per-agent shims (`CLAUDE.md` /
 `GEMINI.md` / `.github/copilot-instructions.md` / `.cursor/rules/memophant.mdc`) **minimal**:
-they point at the memory system, they don't BE the memory system.
+they point at the memory system, they don't BE the memory system. And don't hand-maintain a
+SECOND guidance tier that duplicates it — ad-hoc `.claude/rules/*.md`, hand-kept convention
+docs, or model-private memory. A parallel copy nobody reindexes drifts and starts feeding
+stale instructions; put durable guidance in memory/wiki, reachable from here, and nowhere else.
 
 **Memory engine — use these tools for everything you can, and get to know them before you
 start.** Memophant ships an in-repo native MCP server (`memophant-mcp`) that owns the memory
@@ -25,9 +28,8 @@ context-build), and treat ad-hoc file reads, `grep`, and hand-edits as a LAST RE
 when no tool covers the need or the server is down. Hand-editing a managed-tier file when a
 tool exists is a mistake: you bypass slug generation, automatic reindexing, and the
 write-time secret/dedup guards, and your change can be silently overwritten on the next
-regen. The basic-memory CLI was retired from production on 2026-06-06; if the MCP tools aren't
-present in this session, fall back to grep over `.memory/` and `wiki/` until the
-server is restored, rather than reaching for `basic-memory`.
+regen. If the MCP tools aren't present in this session, fall back to grep over `.memory/`
+and `wiki/`.
 
 - Native MCP tools (preferred): `search_memories`, `read_memory`, `view_memory`, `write_memory`,
   `edit_memory`, `move_memory`, `delete_memory`, `list_directory`, `list_memory_projects`,
@@ -41,20 +43,45 @@ server is restored, rather than reaching for `basic-memory`.
 of observations and relations. Search it before assuming; it is the source of truth for past
 decisions and learnings.
 - Search: invoke `search_memories(query: "<text>", project: "harness")` via MCP.
-- Record durable facts/decisions as you work: `write_memory(title, content, folder, project: "harness")`
-  (they're committed with the repo and visible to every session).
-- Grammar: each note is markdown with `## Observations` (`- [category] fact text #tag`) and
-  `## Relations` (`- relation_type [[Target Note]]`).
+- Record durable facts/decisions as you work with `write_memory` — pass the structure as
+  FIRST-CLASS ARGUMENTS, not hand-written markdown: `observations: ["- [category] fact #tag", …]`
+  (1–5 atomic facts) and `relations: [{"relation": "relates_to", "target": "Other Note"}, …]`;
+  `content` is OPTIONAL short prose context (a few lines), never the place for the facts. The
+  tool composes the hybrid note and validates the bullets (a malformed one is rejected with a
+  fixable reason). `project: "harness"`, committed with the repo, visible to every session.
+- Why structure, not prose: observations are the tooling contract — consolidation, semantic
+  search, and task auto-import read them; a prose-only note degrades silently in all three, and
+  Consolidate has to spend an LLM pass distilling later what you could state now for free. Put
+  `[[links]]` in `relations` (prose links are invisible to the graph). Use the canonical
+  categories — decision, fact, gotcha, constraint, convention, todo, idea, done — so data-layer queries that
+  group by `[category]` don't fragment; a freeform one still saves, with a nudge.
+- Long-form DOCUMENTS (guides, research, specs) → the wiki tier at write time: `write_memory(project:
+  "harness-wiki", …)` for the full prose page, and keep only its distilled facts in the
+  memory note with a `documented_in` relation to the page. A memory note is atomic facts + a little
+  context, never a document.
 - **Filenames are `dashed-slug.md`** — lowercase, hyphen-separated, derived deterministically
   from the title. The display title comes from frontmatter `title:` (always), with the
   prettified filename as a fallback. So title `"GitHub Status Service"` → file
   `github-status-service.md`, and the UI renders `GitHub Status Service`. Use `write_memory`
-  for new notes — it slug-generates correctly. **Folder names** are lowercase singular:
-  `architecture`, `decisions`, `conventions`, `operations`, `project`, `roadmap`.
+  for new notes — it slug-generates correctly. **Always file each note under exactly one of the
+  six canonical folders** (lowercase) — never omit `folder` (that drops the note at the memory
+  root) and never invent a new folder or pass a description as the folder. The six:
+  `architecture/` — How major systems fit together; long-lived structural truth.; `conventions/` — Coding / naming / workflow conventions the team agreed on.; `decisions/` — Discrete choices with rationale (architecture decision records).; `operations/` — Runbooks, recurring tasks, infrastructure ops, build/deploy notes.; `project/` — Project-level facts (name, owner, scope, contact, repo URL).; `roadmap/` — Forward-looking plans, milestones, follow-up queues.
 - Reindex happens automatically after every write_memory / edit_memory; for direct file edits,
   use the Memophant app's "Reindex" action or restart the MCP server.
-- Optional provenance frontmatter — `source_paths` (repo files a note depends on) + `source_sha`
-  (HEAD when written) — lets Memory Health flag the note when that code later changes.
+- Editing an existing note: use `edit_memory` (append/prepend/replace/find_replace/insert_*
+  for the body; **`set_tags` for the frontmatter `tags:` list**) — it reindexes that note. Don't
+  hand-edit frontmatter on disk: search reads the index as-is, so the change stays invisible to
+  search until a reindex.
+- Frontmatter Memophant manages automatically: `created`/`updated` (set on write, bumped on
+  edit), `reviewed`/`reviewed_by` + `source_sha` (the last verification and the commit it was
+  checked against — Memory Health flags the note when that code drifts).
+- **Declare `source_paths` when a note is grounded in code.** Pass the repo-relative file(s) the
+  note depends on to `write_memory` (`source_paths: ["path/one.swift", …]`) and Memophant stamps
+  them against the current commit so drift is detectable. Omit for pure human-decision notes.
+  A note with no `source_paths` can't be drift-checked — this is the signal that keeps memory honest.
+- Set `status` only to flag a retired state — `deprecated`/`superseded`/`historical`/`resolved`;
+  an active, current fact needs none.
 
 **2. Wiki (`wiki/`) — long-form reference docs.** Guides, architecture deep-dives, runbooks, and
 design notes. Deliberately kept OUT of this auto-loaded file to save context — search it on demand
@@ -77,40 +104,25 @@ OUT of this auto-loaded file to save context — search it on demand.
 - Search: `search_memories(query: "<text>", project: "harness-design")` via MCP, or grep:
   `grep -rn "<query>" design/`.
 - Plain `.md` files (any name) — add your own or import a design skill; no special structure required.
+- **Reference only — never the app.** `design/` may hold prototype or hand-off code
+  (`.swift`, `.jsx`, `.tsx`, …) next to the Markdown. Treat ALL of it as something to build
+  FROM, never as the real application: don't import, copy, or edit those files as if they were
+  source, and don't cite them as how the app works. The app lives in the repo's own source and
+  the Code tier — `search_code` deliberately excludes `design/` for exactly this reason.
 
-**4. Code (`code/` + `memophant code` CLI) — structural queries, not blind grep.** The code layer
-gives every session a queryable map of THIS repo's source. Two halves: curated `code/` markdown
-overviews (module purpose, key types, public surface) for orientation, and an indexed SQLite map
-of symbols/imports under `.memophant/code/` (gitignored) for sub-second structural queries.
-**Prefer the code index over `grep` for any structural question** — it's deterministic, cheap,
-and saves context. The fastest "where is `<symbol>`?" is the **`search_code` MCP tool** (it's in
-your tool list → file:line · kind · name, FTS5/BM25-ranked); the `memophant code <verb>` CLI
-covers the rest (outline / imports / status / Phase-2 refs). Fall back to `grep` only when the
-index is stale (see `status`), the language isn't yet supported (Phase 1 indexes Swift only), or
-`search_code` reports the index is missing.
-- **Invocation:** Memophant installs a project-local shim at `./.memophant/code/memophant`. Use
-  `memophant code <verb>` if it's on your PATH, otherwise `./.memophant/code/memophant code <verb>`
-  from the repo root. (One-time PATH install: `ln -s "$(pwd)/.memophant/code/memophant" ~/.local/bin/memophant`.)
-- Find a symbol: `memophant code find <SymbolName>` → file:line of every definition.
-- Find references: `memophant code refs <SymbolName>` → every call/use site.
-- File outline: `memophant code outline <path>` → the symbol tree inside a file.
-- Imports: `memophant code imports <path>` → what a file imports + what imports a file.
-- Symbol search: `search_code(query: "<symbol or fragment>")` MCP tool (preferred), or the
-  `memophant code search "<intent>"` CLI fallback → FTS over symbols.
-- Index health: `memophant code status` → `clean | n files stale | rebuilding`, plus HEAD drift.
+**4. Code (`code/` + `search_code`) — structural queries, not blind grep.** A queryable map of
+THIS repo's source: curated `code/` markdown overviews (module purpose, key types) + an indexed
+symbol map under `.memophant/code/` (gitignored). **Prefer the code index over `grep` for any
+structural question.** The fastest "where is `<symbol>`?" is the **`search_code` MCP tool**
+(`search_code(query: "<symbol or fragment>")` → file:line · kind · name, FTS5/BM25-ranked); the
+`memophant code <verb>` CLI (find / refs / outline / imports / status) covers the rest. Fall back
+to `grep` only when the index is stale/missing or the language isn't indexed (Phase 1 = Swift).
 - Curated overviews: `search_memories(query: "<text>", project: "harness-code")` via MCP, or
-  `grep -rn "<query>" code/`. Authored as markdown like wiki/design pages — module purposes,
-  architecture maps, "where to start when touching X".
-- Symbols + curated notes both surface under `memophant code search`; use it as the default
-  structural-discovery verb when you don't already know the symbol name.
+  `grep -rn "<query>" code/`.
 
-**5. Documents (`documents/`) — per-project file store.** Arbitrary files the user or an
-agent wants alongside the codebase: PDFs, exported reports, screenshots, source briefs,
-scanned receipts — anything that's project context but isn't memory, wiki, design, or code.
-Schema-less by design: any file extension is welcome. Browse + open + add via the
-Memophant app's Documents tier; the folder is committed with the repo so docs travel with
-the project. Phase 1 is browse + open; Phase 2 will add an optional "mine this document for
-memory observations" action (Claude reads the document, proposes `.memory/` notes).
+**5. Documents (`documents/`) — per-project file store.** Arbitrary files alongside the codebase
+(PDFs, reports, briefs) — project context that isn't memory/wiki/design/code. Schema-less;
+committed with the repo. Browse/add via the Memophant app's Documents tier.
 
 **Plans AND generated documents go in `documents/`.** Whenever you produce a file-shaped
 artifact for this project — a plan, design proposal, audit report, comparison matrix,
@@ -134,101 +146,43 @@ to keep anything you produce.
   work lands). Code outputs still go in the actual codebase, not here.
 - **No credentials or secrets in `documents/`** — the folder is committed with the repo.
 
-**6. Vendors (`vendors/`) — per-project third-party service registry.** Markdown records
-(one file per vendor at `vendors/<slug>.md`) with YAML frontmatter for typed fields (name,
-type, login_url, signup_url, username, keychain_ref, account_email, monthly_cost, tags)
-and a free-form `## Notes` body. Tracks the services this project depends on — payments,
-hosting, email, dns, monitoring, analytics, anything billed or credentialed.
-- **Credentials live in the iCloud-synced Keychain via the Memophant app, NEVER in the
-  vendor file.** The credential itself is a SEPARATE password field that only ever goes to
-  the Keychain; the frontmatter's `keychain_ref` field is the NAME of the Keychain item
-  (the vendor slug), not the secret. On save, the writer scans the serialized record and
-  blocks it if anything looks like an API key, JWT, or token — but the block is overridable
-  PER HIT: when a match is an EXAMPLE key in your setup notes (a false positive — the real
-  secret lives in the Keychain, never the file), verify each hit and "Save anyway".
-- **Need the actual credential? Call `get_vendor_credential(vendor: "<slug>", project:
-  "harness", reason: "<one-line why>")`** instead of asking the user to paste it.
-  Memophant pops an in-app consent modal and, on approval, returns the secret in the tool
-  result (never echoed to chat). Read fresh from the Keychain each call, so rotations apply
-  immediately. Treat it as ONE-SHOT: write it to a `mktemp` file and reference the path in
-  later commands — don't echo, log, or persist it. Requires the Memophant app to be running
-  (headless/cron sessions time out — use a runtime secret store for those).
-- **Encountered OR created a credential? Store it as a vendor — don't leave it loose.** Any
-  time you read a real secret for a service this project uses (from a `.env`/config file, an
-  env var, CLI output, or a user paste) OR mint one yourself (a new API key, a token from CLI
-  output), stash it with `set_vendor_credential(vendor: "<slug>", credential: "<secret>",
-  project: "harness", reason: "<why>")` rather than leaving it in chat, a scratch
-  file, or only in the shell. Memophant asks for approval, creates the `vendors/<slug>.md`
-  record if it's missing, and stores the secret in the Keychain (never the file). Fetch it
-  back later with `get_vendor_credential`. (Don't relocate a secret the project deliberately
-  keeps in a gitignored `.env` it already loads — the point is to capture credentials that
-  would otherwise be lost to the chat transcript or scattered across the shell.)
-- Search via `search_memories(query: "<text>", project: "harness-vendors")` — the
-  tier registers its own engine index, so hybrid search ("which vendor handles
-  email?") returns the right hit even when the term lives in notes, not the typed
-  frontmatter.
-- When you discover a vendor a project uses (via code references, README, env vars), add
-  a record via the Memophant app's Vendors tier; don't write the file by hand from an
-  agent session unless the user asks — the editor wires up the Keychain credential
-  atomically with the file.
+**6. Vendors (`vendors/`) — per-project third-party service registry.** One markdown record per
+vendor (`vendors/<slug>.md`) for the services this project depends on. **Credentials live in the
+iCloud Keychain, NEVER in the vendor file** (the file's `keychain_ref` is the item NAME, not the
+secret; the writer secret-scans records on save, overridable per-hit for example keys).
+- **Need the actual credential?** Call `get_vendor_credential(vendor: "<slug>", project:
+  "harness", reason: "<why>")` instead of asking the user to paste it — Memophant prompts
+  for approval and returns it in the tool result (never echoed). Treat it ONE-SHOT: write to a
+  `mktemp` file, reference the path, don't echo/log/persist. Requires the app running.
+- **Encountered OR created a credential? Store it as a vendor — don't leave it loose.** Stash any
+  secret you read or mint with `set_vendor_credential(vendor, credential, project, reason)` rather
+  than leaving it in chat/scratch/shell; Memophant approves, creates the record if missing, and
+  stores it in the Keychain (never the file). Fetch it back with `get_vendor_credential`. (Don't
+  relocate a secret the project deliberately keeps in a gitignored `.env` it already loads.)
+- Search via `search_memories(query: "<text>", project: "harness-vendors")`.
 
 **7. Templates (`templates/`) — reusable integration recipes.** Folder-per-template at
-`templates/<slug>/` with a required `manifest.md` (YAML frontmatter + canonical body
-sections: Prerequisites / Steps / Variables / Verification) and an optional
-`reference/` subfolder of verbatim source files from the originating project — kept
-as worked examples for the next agent to study, not as substrate to mechanically
-`cp` + `sed` into a new project. Templates capture "how we wired Paddle into this
-project" so the next project's agent reads the recipe and adapts the patterns to
-its own codebase.
-- **A template is documentation + recipe, NOT a turn-key install.** The manifest's
-  Steps section is narrative prose with 5–10 line inline code snippets for the
-  critical signatures, plus pointers at `reference/<file>` for the full
-  implementation. The Variables section documents which concepts vary between
-  projects (e.g. "BUNDLE_ID — your target project's bundle id; the source project
-  used `com.example`"), NOT a substitution table. The next agent reads both and
-  decides where in ITS codebase the equivalents go, adapting to its conventions.
-- **The `/memophant-template <description>` convention.** When the user types a
-  message beginning with `/memophant-template`, treat the remainder as a brief naming
-  the integration they want applied to THIS project. Steps: (1) list the repo's `templates/`
-  folder to see the available template slugs (or `search_memories(query: "<the integration>",
-  project: "harness-templates")` to find the best match — the templates tier isn't
-  reachable via `list_directory`/`read_memory`, which only resolve `.memory/`, `wiki/`,
-  `design/`, `code/`, and `sessions/`); (2) read the chosen `templates/<slug>/manifest.md`
-  directly; (3) read any `reference/` files the Steps point at
-  so you understand the shape; (4) confirm the Prerequisites with the user; (5)
-  ADAPT each step to this project's codebase — file layout, naming conventions,
-  framework choices may differ from the source project; (6) run the Verification
-  checks. Plan-first convention applies — write the apply plan to
-  `documents/plans/` before executing.
-- Search via `search_memories(query: "<text>", project: "harness-templates")` —
-  the tier registers its own engine index, so hybrid search ("set up Paddle
-  payments") returns the right hit even when the slug is something generic like
-  `payments-1`.
-- **No raw credentials in manifests or references.** The manifest can carry
-  PLACEHOLDER guidance (`{{ PADDLE_API_TOKEN }}`, `<your-key-here>`) in its
-  Variables section. Reference files are verbatim source — they SHOULD NOT
-  contain real credentials because the original source didn't either (credentials
-  live in Vendors/Keychain). On save, the writer secret-scans the manifest and blocks
-  a key/JWT/token match — overridable PER HIT for placeholder/example values (verify
-  each hit and "Save anyway"). Reference files stay a HARD block with no override. When
-  a template needs a credential,
-  it points at a Vendor record via `vendor_refs:` in the manifest frontmatter —
-  the Vendor owns the Keychain item; the template just references it.
-- **Creating a template** from an existing project: in the Memophant app, click
-  "Extract template from this project…" in the Templates tier header. Pick the
-  folders/files that make up the integration; describe what it is in one line;
-  Claude reads the source, drafts the four manifest sections (with inline
-  snippets for the critical signatures), and includes every selected file as a
-  verbatim reference. You review, accept/edit/reject per section, and save.
-- **Sharing a template** between projects: copy the `templates/<slug>/` folder from
-  one repo into another. The Memophant app surfaces a "Copy to another project…"
-  action in a later phase; for now, plain filesystem copy works.
+`templates/<slug>/` with a `manifest.md` (Prerequisites / Steps / Variables / Verification) +
+an optional `reference/` of verbatim source files. A template is documentation + recipe, NOT a
+turn-key install — the next agent READS it and ADAPTS the patterns to its own codebase.
+- **`/memophant-template <description>`:** find the slug (`search_memories(query, project:
+  "harness-templates")` — the templates tier isn't reachable via `list_directory`/
+  `read_memory`), read its `manifest.md` + the `reference/` files it points at, confirm the
+  Prerequisites with the user, ADAPT each step to THIS project, run the Verification. Plan-first
+  applies — write the apply plan to `documents/plans/` before executing.
+- **No raw credentials in manifests/references** (placeholders only; real secrets live in
+  Vendors/Keychain — a template references one via `vendor_refs:` in its manifest frontmatter).
+  Create/share templates from the Memophant app (Templates tier → "Extract template…").
 
 **8. Tasks (`TASKS.md`) — the work board.** A repo-resident kanban in plain Markdown: `## Todo`,
 `## Doing`, `## Done` sections, each a checklist (`- [ ]` / `- [x]`). It travels with the repo and
 is yours to edit directly.
 - **Read `TASKS.md` at the start of work.** When you pick up a task, move its line into `## Doing`;
   when you finish, move it into `## Done` (and flip the checkbox to `- [x]`).
+- **Prefer the `memophant` MCP task tools** — `create_task` (title + optional description/plan),
+  `move_task(id, status)`, `update_task`, `list_tasks`. They own the `t-xxxxxx` id + the board line
+  + the `tasks/<id>.md` detail file atomically, so a board-only orphan (or prose dumped onto the
+  board) can't happen. Hand-editing `TASKS.md` (below) still works as a fallback when the server's down.
 - Add tasks you discover to `## Todo` with a SHORT imperative title — the board card shows the
   title verbatim, so don't pack a paragraph into it. When a task needs real detail, annotate the
   line `(id: t-xxxxxx)` (`t-` + 6 random hex) and create `tasks/t-xxxxxx.md` with frontmatter
@@ -243,7 +197,7 @@ is yours to edit directly.
   makes the two disagree, Memophant reconciles by last-edit-wins — but the board line is canonical.)
 
 **Commits for `.memory/`, `wiki/`, `design/`, `code/`, `sessions/`, `documents/`,
-`vendors/`, `templates/`, and `TASKS.md` are owned by Memophant.** When you write_memory, edit a wiki/design/code page, move a
+`vendors/`, `templates/`, `TASKS.md`, and `tasks/` are owned by Memophant.** When you write_memory, edit a wiki/design/code page, move a
 task on the board, drop a file into `documents/`, or import a session, those files become dirty
 in git — **do NOT `git add` or `git commit` them yourself.** The user runs each tier's commit
 through Memophant's commit modal, which routes every change through the two-tier secret scan
@@ -252,7 +206,7 @@ commit).
 - **Yours to commit:** application code, configs, scripts, infrastructure — anything OUTSIDE the
   tier folders above. Use plain `git add` / `git commit` like any other repo.
 - **Memophant's to commit:** anything under `.memory/`, `wiki/`, `design/`, `code/`,
-  `sessions/`, `documents/`, `vendors/`, `templates/`, and `TASKS.md`. After your task, **leave these files
+  `sessions/`, `documents/`, `vendors/`, `templates/`, `TASKS.md`, and `tasks/`. After your task, **leave these files
   dirty** if the work touched them — Memophant's commit bar shows per-tier "uncommitted"
   chips with counts so the user decides when to commit each tier with its own secret-scanned
   message.
