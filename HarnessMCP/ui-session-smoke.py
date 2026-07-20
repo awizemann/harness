@@ -15,7 +15,13 @@ surfaces in the mark table after the action (the state change), and that
 NO marked frame ever lands on disk (the CLEAN-only invariant, standard
 14 §6). Exits non-zero on any failure. No API key required.
 
-Usage: ui-session-smoke.py [path-to-harness-mcp-binary]
+Usage: ui-session-smoke.py [path-to-harness-mcp-binary] [absolute-fixture-dir]
+
+The optional second argument is an ABSOLUTE path to the directory holding
+`ui-session-fixture.html`. It defaults to this script's sibling `fixtures/`.
+Passing it lets the standalone-packaging proof point a RELOCATED binary
+(copied outside the checkout, run from a non-repo cwd) at a fixture that is
+likewise outside the repo — proving the binary carries no repo assumptions.
 """
 
 import base64
@@ -145,10 +151,19 @@ def main():
               "-configuration Debug -derivedDataPath ./.build/derived build", file=sys.stderr)
         return 1
 
+    fixture_dir = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else FIXTURE_DIR
+    if not os.path.isfile(os.path.join(fixture_dir, FIXTURE_NAME)):
+        print("fixture %s not found under: %s" % (FIXTURE_NAME, fixture_dir), file=sys.stderr)
+        return 1
+
+    print("binary : %s" % binary)
+    print("fixture: %s" % os.path.join(fixture_dir, FIXTURE_NAME))
+    print("cwd    : %s" % os.getcwd())
+
     signal.alarm(120)   # hard wall-clock guard so a wedge never hangs CI
 
     port = free_port()
-    httpd = serve(FIXTURE_DIR, port)
+    httpd = serve(fixture_dir, port)
     url = "http://127.0.0.1:%d/%s" % (port, FIXTURE_NAME)
     artifact_dir = tempfile.mkdtemp(prefix="harness-ui-smoke-")
 

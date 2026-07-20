@@ -19,9 +19,11 @@ import Foundation
 
 actor MCPServer {
 
-    private let serverName = "harness-mcp"
-    private let serverVersion = "0.6.0"
-    private let defaultProtocolVersion = "2025-06-18"
+    // Single source of truth (`Harness/Core/MCPServerIdentity.swift`) — the
+    // same values the binary prints for `--version`.
+    private let serverName = MCPServerIdentity.name
+    private let serverVersion = MCPServerIdentity.version
+    private let defaultProtocolVersion = MCPServerIdentity.protocolVersion
 
     /// Lazily-opened shared dependency graph. Cached as a `Result` so a
     /// store-open failure is reported once per call (as an `isError`

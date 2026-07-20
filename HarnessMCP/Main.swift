@@ -21,6 +21,21 @@ import Foundation
 @main
 struct HarnessMCPMain {
     static func main() {
+        // Handle `--version` / `--help` BEFORE touching NSApplication so
+        // these flags print + exit without ever spinning the run loop
+        // (a consuming product probes `--version` to sanity-check the
+        // bundled binary; it must not launch a background app).
+        switch MCPCommandLine.mode(for: CommandLine.arguments) {
+        case .version:
+            print(MCPServerIdentity.versionLine)
+            exit(0)
+        case .help:
+            print(MCPCommandLine.usage)
+            exit(0)
+        case .serve:
+            break
+        }
+
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
 

@@ -210,6 +210,15 @@ enum UISessionError: Error, Sendable, LocalizedError {
     case prepareFailed(String)
     case missingWebURL
     case missingIOSTarget
+    /// iOS start on a machine without usable Xcode command-line tooling
+    /// (xcrun/xcodebuild) — e.g. a bare box or a stripped `DEVELOPER_DIR`.
+    /// Web sessions still work; iOS can't build/boot without it.
+    case xcodeToolingUnavailable([Tool])
+    /// iOS start where no WebDriverAgent source resolves (no
+    /// `HARNESS_WDA_PATH`, no bundled copy, no repo checkout).
+    case wdaSourceUnresolved
+    /// `HARNESS_WDA_PATH` is set but the directory has no `WebDriverAgent.xcodeproj`.
+    case wdaEnvPathInvalid(String)
 
     var errorDescription: String? {
         switch self {
@@ -233,6 +242,13 @@ enum UISessionError: Error, Sendable, LocalizedError {
             return "Web sessions require a 'url'."
         case .missingIOSTarget:
             return "iOS sessions require 'project_path' + 'scheme' + 'simulator_udid'."
+        case .xcodeToolingUnavailable(let tools):
+            let names = tools.map(\.displayName).joined(separator: ", ")
+            return "iOS sessions need Xcode command-line tooling, but it's unavailable (missing: \(names.isEmpty ? "xcodebuild" : names)). Install Xcode and run `xcode-select --install`, or point DEVELOPER_DIR at a valid Xcode. Web sessions work without it."
+        case .wdaSourceUnresolved:
+            return "No WebDriverAgent source resolved for the iOS session. Set \(HarnessPaths.wdaSourceEnvVar) to a WebDriverAgent checkout (the directory containing WebDriverAgent.xcodeproj — e.g. the harness repo's vendor/WebDriverAgent) so the standalone binary can build the iOS driver. Web sessions need no such setup."
+        case .wdaEnvPathInvalid(let path):
+            return "\(HarnessPaths.wdaSourceEnvVar) is set to \"\(path)\" but no WebDriverAgent.xcodeproj was found there. Point it at a WebDriverAgent checkout (the directory that contains WebDriverAgent.xcodeproj)."
         }
     }
 }

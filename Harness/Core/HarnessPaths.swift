@@ -100,6 +100,97 @@ enum HarnessPaths {
         return repoRoot?.appendingPathComponent("vendor/WebDriverAgent", isDirectory: true)
     }
 
+    // MARK: WebDriverAgent source resolution (standalone / relocatable)
+
+    /// Environment variable that overrides WebDriverAgent source resolution.
+    /// Point it at a WebDriverAgent checkout (the directory containing
+    /// `WebDriverAgent.xcodeproj` — e.g. this repo's `vendor/WebDriverAgent`)
+    /// when the `harness-mcp` binary runs outside its checkout / .app bundle
+    /// (a consuming product invoking it from an arbitrary path). Takes
+    /// precedence over the bundle + repo-root fallbacks.
+    static let wdaSourceEnvVar = "HARNESS_WDA_PATH"
+
+    /// Outcome of `resolveWDASource(...)`. `resolved` carries a directory to
+    /// hand `WDABuilder`; the other two map to actionable, per-tool session
+    /// errors (never a wedge or a bogus `/dev/null`).
+    enum WDASourceResolution: Equatable {
+        /// A directory to build WDA from. For `env`/`bundle` origins it is
+        /// confirmed to contain `WebDriverAgent.xcodeproj`; for the `repo`
+        /// origin it is returned unconfirmed so `WDABuilder` can emit its
+        /// submodule-specific "run git submodule update" guidance.
+        case resolved(URL)
+        /// `HARNESS_WDA_PATH` was set but has no `WebDriverAgent.xcodeproj`.
+        case envInvalid(String)
+        /// Nothing to try — no env override, no bundled copy, no repo root
+        /// (the standalone/relocated case). Callers surface the
+        /// "set HARNESS_WDA_PATH…" guidance.
+        case unresolved
+    }
+
+    /// Pure, injectable WebDriverAgent-source resolver (unit-tested for
+    /// precedence). Order: `HARNESS_WDA_PATH` → bundled `WebDriverAgent/` →
+    /// `<repoRoot>/vendor/WebDriverAgent`.
+    ///
+    /// - `projectExists`: probes whether a candidate directory holds
+    ///   `WebDriverAgent.xcodeproj`. Used to validate the env override and
+    ///   the bundled copy strictly; the repo-root candidate is returned
+    ///   unvalidated (preserving the pre-existing behaviour where
+    ///   `WDABuilder` reports a missing/uninitialised submodule).
+    static func resolveWDASource(
+        envPath: String?,
+        bundleResourceURL: URL?,
+        repoRoot: URL?,
+        projectExists: (URL) -> Bool
+    ) -> WDASourceResolution {
+        // 1. Explicit env override — highest precedence. A set-but-invalid
+        //    value is a loud misconfiguration, NOT a silent fall-through to a
+        //    bundled copy (that would mask the operator's intent).
+        if let raw = envPath?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let expanded = (raw as NSString).expandingTildeInPath
+            let url = URL(fileURLWithPath: expanded, isDirectory: true)
+            return projectExists(url) ? .resolved(url) : .envInvalid(url.path)
+        }
+
+        // 2. Bundled next to / inside the binary (shipped .app, or a
+        //    consuming product that ships `WebDriverAgent/` beside harness-mcp).
+        if let bundled = bundleResourceURL?
+            .appendingPathComponent("WebDriverAgent", isDirectory: true),
+           projectExists(bundled) {
+            return .resolved(bundled)
+        }
+
+        // 3. Developer working tree. Returned unvalidated so an uninitialised
+        //    submodule reaches WDABuilder's submodule-specific error.
+        if let repoRoot {
+            return .resolved(repoRoot.appendingPathComponent("vendor/WebDriverAgent", isDirectory: true))
+        }
+
+        // 4. Standalone / relocated with nothing to try.
+        return .unresolved
+    }
+
+    /// Resolve the WebDriverAgent source for an iOS session, reading the live
+    /// environment + bundle + repo root. Throws a `UISessionError` carrying
+    /// actionable guidance when no source resolves — the preparer lets it
+    /// propagate as a clean MCP tool error before any adapter is built.
+    static func resolvedWDASource(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> URL {
+        let resolution = resolveWDASource(
+            envPath: environment[wdaSourceEnvVar],
+            bundleResourceURL: Bundle.main.resourceURL,
+            repoRoot: repoRoot,
+            projectExists: { FileManager.default.fileExists(
+                atPath: $0.appendingPathComponent("WebDriverAgent.xcodeproj").path
+            ) }
+        )
+        switch resolution {
+        case .resolved(let url):    return url
+        case .envInvalid(let path): throw UISessionError.wdaEnvPathInvalid(path)
+        case .unresolved:           throw UISessionError.wdaSourceUnresolved
+        }
+    }
+
     // MARK: Per-run paths
 
     /// `<App Support>/Harness/runs/<run-id>/`

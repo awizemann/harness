@@ -84,6 +84,94 @@ Smoke test (serves a local fixture, drives a real web session start→observe→
 HarnessMCP/ui-session-smoke.sh
 ```
 
+## Running standalone
+
+`harness-mcp` is a **relocatable** stdio binary. Copy it anywhere — eventually
+bundled inside a consuming app — and run it from any working directory; it makes
+no assumption that its own source checkout is present. This is how another
+product (e.g. an external QA agent) consumes it.
+
+### Identity — `--version` / `--help`
+
+```sh
+harness-mcp --version   # → "harness-mcp 0.6.0"  (stdout, exit 0)
+harness-mcp --help      # → one-line usage note   (stdout, exit 0)
+```
+
+`--version` prints the **same** `name version` the MCP `initialize` handshake
+reports in `serverInfo` (single source of truth: `MCPServerIdentity`), so a
+consuming product can sanity-check a bundled binary without launching it.
+**Neither flag starts the app run loop** — they print and exit. With no
+recognized flag the binary serves MCP JSON-RPC over stdin/stdout (the default;
+an unrecognized flag is ignored and still serves).
+
+### Web sessions — zero setup
+
+Web UI sessions (`start_ui_session` `platform:"web"`) need nothing beyond the
+binary: no repo checkout, no Xcode. A copied-out binary drives a real WKWebView
+session end-to-end. (Cloud LLM *runs* still need an API key; the step-level UI
+session tools never do.)
+
+### iOS sessions — WebDriverAgent source resolution
+
+iOS sessions build WebDriverAgent from source. The binary resolves that source
+in precedence order:
+
+1. **`HARNESS_WDA_PATH`** (env override — highest precedence): an absolute path
+   to a WebDriverAgent checkout (the directory that contains
+   `WebDriverAgent.xcodeproj`). `~` is expanded. A **set-but-invalid** value is
+   a loud, actionable error — never a silent fall-through to the paths below.
+2. **`WebDriverAgent/` beside the binary** — a folder shipped next to the binary
+   or inside the `.app` bundle (`Bundle.main.resourceURL/WebDriverAgent`).
+3. **`<repoRoot>/vendor/WebDriverAgent`** — only resolves from a developer
+   checkout.
+
+A consuming product with iOS support must **point `HARNESS_WDA_PATH` at a WDA
+checkout it bundles** (or ship `WebDriverAgent/` beside the binary). When none
+resolves, `start_ui_session` `platform:"ios"` returns a clear per-tool error
+telling the operator to set `HARNESS_WDA_PATH` — never a crash or a wedge.
+
+iOS args: `project_path` + `scheme` + `simulator_udid` (all required; pick a
+udid via `xcrun simctl list devices available -j`). Optional `simulator_runtime`
+(e.g. `"iOS 27.0"`) names the WDA build-cache directory. WDA's **first** build
+for a given iOS version takes minutes; later sessions hit the cache at
+`~/Library/Application Support/Harness/wda-build/iOS-<version>/`.
+
+### Graceful degradation without Xcode
+
+On a host without usable Xcode command-line tooling — no `xcodebuild`, or a
+`DEVELOPER_DIR` that points nowhere — **web sessions keep working end-to-end**,
+and `start_ui_session` `platform:"ios"` returns a clean per-tool error naming
+the missing tool (`… missing: xcodebuild … Web sessions work without it.`). The
+tooling probe reports missing tools without throwing, so it never crashes or
+wedges the server; iOS simply degrades to a clear error while web is unaffected.
+
+### What a consuming app must ship / point at
+
+| Capability | Requirement |
+| --- | --- |
+| Web sessions | The `harness-mcp` binary only. No repo, no Xcode. |
+| iOS sessions | Xcode + an iOS simulator on the host; a WebDriverAgent checkout with `HARNESS_WDA_PATH` set to it (or `WebDriverAgent/` beside the binary). |
+| Version check | `harness-mcp --version` (exit 0); matches the handshake `serverInfo`. |
+
+### Reproduce the relocated web proof
+
+`ui-session-smoke.sh` / `ui-session-smoke.py` take an optional **absolute**
+fixture dir, so a copied-out binary can be driven against an out-of-repo fixture
+from a non-repo cwd:
+
+```sh
+mkdir -p /tmp/standalone/bin /tmp/standalone/fixtures
+cp .build/derived/Build/Products/Debug/harness-mcp /tmp/standalone/bin/
+cp HarnessMCP/fixtures/ui-session-fixture.html      /tmp/standalone/fixtures/
+python3 "$PWD/HarnessMCP/ui-session-smoke.py" \
+  /tmp/standalone/bin/harness-mcp /tmp/standalone/fixtures
+```
+
+A minimal iOS fixture app for the iOS proof lives at
+`HarnessMCP/fixtures/ios-app/` (regenerate its `.xcodeproj` with
+`cd HarnessMCP/fixtures/ios-app && xcodegen generate`).
+
 ## Notes & limits (v1)
 
 - **Autonomous runs only** — no per-step approval gate yet (feeding `UserApproval` over MCP is

@@ -244,6 +244,11 @@ targets:
     platform: macOS
     sources:
       - path: HarnessMCP
+        excludes:
+          # The iOS UI-session fixture app is its own iOS target (built via
+          # its own xcodeproj during the standalone iOS proof) — never a
+          # source of THIS macOS tool. Its `@main` would collide otherwise.
+          - "fixtures/ios-app/**"
       - path: Harness
         excludes:
           # Identical exclude set to HarnessCLI: drop the SwiftUI views,

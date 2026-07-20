@@ -8,6 +8,10 @@
 # The source of truth is project.yml.
 Harness.xcodeproj/
 
+# Generated iOS UI-session fixture project — regenerate via `xcodegen generate`
+# in HarnessMCP/fixtures/ios-app/. Source of truth is that dir's project.yml.
+HarnessMCP/fixtures/ios-app/*.xcodeproj/
+
 # Xcode
 build/
 DerivedData/

@@ -86,6 +86,27 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                   let udid = config.iosSimulatorUDID, !udid.isEmpty else {
                 throw UISessionError.missingIOSTarget
             }
+
+            // Preflight (graceful web-only degradation): iOS needs Xcode
+            // command-line tooling to build + boot. Probe up front so a bare
+            // box or a stripped DEVELOPER_DIR yields ONE clear per-tool error
+            // HERE rather than a late, obscure failure deep in the build — and
+            // so web sessions, which never reach this branch, keep working.
+            // `locateAll()` is internally bounded and reports missing tools as
+            // nil (never throws on absence), so it can't wedge; the whole
+            // prepare is also bounded by the supervisor's start timeout.
+            let toolPaths = try await toolLocator.locateAll()
+            let missingTools = toolPaths.allMissing
+            guard missingTools.isEmpty else {
+                throw UISessionError.xcodeToolingUnavailable(missingTools)
+            }
+
+            // Resolve WebDriverAgent source: HARNESS_WDA_PATH → bundled copy →
+            // repo checkout. Throws an actionable UISessionError (clean MCP
+            // tool error) before any adapter is built when nothing resolves,
+            // instead of handing WDABuilder a bogus path.
+            let wdaSource = try HarnessPaths.resolvedWDASource()
+
             let simRef = SimulatorRef(
                 udid: udid,
                 name: config.iosSimulatorName ?? "iOS Simulator",
@@ -114,7 +135,7 @@ struct AdapterUISessionPreparer: UISessionPreparing {
             let wdaBuilder = WDABuilder(
                 processRunner: processRunner,
                 toolLocator: toolLocator,
-                sourceURL: HarnessPaths.wdaSourceURL ?? URL(fileURLWithPath: "/dev/null")
+                sourceURL: wdaSource
             )
             let simulatorDriver = SimulatorDriver(
                 processRunner: processRunner,
