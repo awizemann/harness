@@ -147,7 +147,58 @@ enum ToolRegistry {
             tool("list_agent_tools",
                  "List the UI-driving tools the agent can use on a given platform (tap, type, navigate, fill_credential, mark_goal_done, …).",
                  obj(["platform": enumProp(["web", "ios_simulator", "macos_app"], "Platform (default ios_simulator).")],
-                     required: []))
+                     required: [])),
+
+            // MARK: Step-level UI sessions (no LLM loop, no API key)
+            tool(UISessionTool.startUISession.rawValue,
+                 "Launch a target and open a step-driving session you observe + act on directly (no autonomous run, no API key). Returns session_id, display_label, point_size, platform. Web is zero-setup; iOS builds the project (can take minutes; the call blocks until ready or fails with the xcodebuild tail). macOS is deferred.",
+                 obj(["platform": enumProp(["web", "ios"], "Target platform. \"web\" or \"ios\" (\"macos\" → clear deferred error)."),
+                      "url": prop("string", "Web start URL (platform=web). http(s) or a local server."),
+                      "viewport": enumProp(["desktop", "mobile"], "Web viewport (platform=web): desktop (1280×800, default) or mobile (390×844)."),
+                      "project_path": prop("string", "Absolute path to .xcodeproj/.xcworkspace (platform=ios)."),
+                      "scheme": prop("string", "Xcode scheme (platform=ios)."),
+                      "simulator_udid": prop("string", "Simulator UDID (platform=ios)."),
+                      "simulator_name": prop("string", "Simulator name (optional)."),
+                      "simulator_runtime": prop("string", "Simulator runtime, e.g. \"18.4\" (optional)."),
+                      "app_path": prop("string", "Reserved — prebuilt .app driving is a Phase B item; use project_path + scheme + simulator_udid."),
+                      "artifact_dir": prop("string", "ABSOLUTE path for the artifact bundle (steps/NNN.png CLEAN frames + steps.jsonl). Relative paths are rejected. Omit → a temp dir under Harness's runs root.")],
+                     required: ["platform"])),
+
+            tool(UISessionTool.observeUI.rawValue,
+                 "Capture the current screen of a session. Returns the MARKED screenshot (Set-of-Mark numbered badges over interactive elements, downscaled to point size) as image content, plus a text block with the id→label(role) mark table, point size, and session label. Pass clean:true for the unmarked frame.",
+                 obj(["session_id": prop("string", "The session id (UUID) from start_ui_session."),
+                      "clean": prop("boolean", "Return the unmarked frame instead of the marked one (default false).")],
+                     required: ["session_id"])),
+
+            tool(UISessionTool.actUI.rawValue,
+                 "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, navigate, back, forward, refresh, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, wait). Pass that tool's args at the top level (e.g. tap_mark → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys). Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
+                 obj(["session_id": prop("string", "The session id (UUID)."),
+                      "tool": prop("string", "The action tool name."),
+                      "id": prop("integer", "Set-of-Mark id (tool=tap_mark)."),
+                      "x": prop("integer", "X coordinate (tap/double_tap/right_click/scroll)."),
+                      "y": prop("integer", "Y coordinate (tap/double_tap/right_click/scroll)."),
+                      "dx": prop("integer", "Horizontal scroll pixels (tool=scroll)."),
+                      "dy": prop("integer", "Vertical scroll pixels; positive = down (tool=scroll)."),
+                      "x1": prop("integer", "Swipe start X (tool=swipe, ios)."),
+                      "y1": prop("integer", "Swipe start Y (tool=swipe, ios)."),
+                      "x2": prop("integer", "Swipe end X (tool=swipe, ios)."),
+                      "y2": prop("integer", "Swipe end Y (tool=swipe, ios)."),
+                      "duration_ms": prop("integer", "Swipe duration ms (tool=swipe, ios)."),
+                      "text": prop("string", "Text to type (tool=type)."),
+                      "keys": arrayProp("Modifiers + final key, e.g. [\"cmd\",\"a\"] (tool=key_shortcut).", items: prop("string", "A key name.")),
+                      "url": prop("string", "URL to load (tool=navigate)."),
+                      "button": enumProp(["home", "lock", "side", "siri"], "Hardware button (tool=press_button, ios)."),
+                      "ms": prop("integer", "Milliseconds to wait (tool=wait).")],
+                     required: ["session_id", "tool"])),
+
+            tool(UISessionTool.endUISession.rawValue,
+                 "Close a UI session and tear down its target (WKWebView / simulator). Idempotent — an unknown or already-closed session id returns a calm \"already closed\" status, not an error.",
+                 obj(["session_id": prop("string", "The session id (UUID).")],
+                     required: ["session_id"])),
+
+            tool(UISessionTool.listUISessions.rawValue,
+                 "List open UI sessions: id, platform, label, created time, and idle seconds since the last observe/act.",
+                 obj([:], required: []))
         ]
     }
 

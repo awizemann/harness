@@ -18,6 +18,10 @@ struct MCPContainer: Sendable {
     let history: any RunHistoryStoring
     let keychain: any KeychainStoring
     let supervisor: RunSupervisor
+    /// Step-level UI session registry (`start_ui_session` / `observe_ui` /
+    /// `act_ui` / `end_ui_session` / `list_ui_sessions`). Drives targets
+    /// WITHOUT the LLM loop — no API key on this path.
+    let uiSessions: UISessionSupervisor
     /// Ollama / local-inference base URL (only consulted for `.local` models).
     let localBaseURL: URL
 
@@ -43,12 +47,37 @@ struct MCPContainer: Sendable {
             return LLMClientFactory.defaultLocalBaseURL
         }()
 
+        // UI sessions get their OWN in-memory history store (the CLI
+        // precedent): they never write run rows, and a locked/broken GUI
+        // store must not gate the QA path. Fall back to the shared store if
+        // the in-memory container can't be built.
+        let sessionHistory: any RunHistoryStoring = (try? RunHistoryStore.inMemory()) ?? history
+        let uiSessions = UISessionSupervisor(
+            preparer: AdapterUISessionPreparer(history: sessionHistory, keychain: keychain),
+            idleTimeoutSeconds: Self.envInt("HARNESS_UI_SESSION_IDLE_TIMEOUT_SECONDS") ?? 600,
+            startTimeoutOverrideSeconds: Self.envInt("HARNESS_UI_SESSION_START_TIMEOUT_SECONDS")
+        )
+
         return MCPContainer(
             history: history,
             keychain: keychain,
             supervisor: RunSupervisor(history: history),
+            uiSessions: uiSessions,
             localBaseURL: localBaseURL
         )
+    }
+
+    /// Read a non-negative integer environment override. Returns nil for an
+    /// absent / non-numeric / negative value so callers fall back to their
+    /// default. `HARNESS_UI_SESSION_IDLE_TIMEOUT_SECONDS` (default 600; 0
+    /// disables the idle watchdog) and `HARNESS_UI_SESSION_START_TIMEOUT_SECONDS`
+    /// (default: per-platform — web 120s, iOS 900s) are documented in
+    /// `HarnessMCP/README.md`.
+    private static func envInt(_ key: String) -> Int? {
+        guard let raw = ProcessInfo.processInfo.environment[key],
+              let value = Int(raw.trimmingCharacters(in: .whitespaces)),
+              value >= 0 else { return nil }
+        return value
     }
 }
 

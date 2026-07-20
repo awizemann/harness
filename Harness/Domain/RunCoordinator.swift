@@ -476,10 +476,28 @@ actor RunCoordinator {
     /// distinguish "no stream" from "stream ended" without throwing
     /// inside this helper.
     private func popNextApproval() async -> UserApproval?? {
-        guard var iter = self.approvalIterator else { return nil }
-        let value = await iter.next()
-        self.approvalIterator = iter
+        guard let current = self.approvalIterator else { return nil }
+        // Advance via a Sendable box so the non-`Sendable`
+        // `AsyncStream.AsyncIterator` can cross the `next()` suspension
+        // without tripping Swift 6 region-based isolation ("sending
+        // 'self'-isolated 'iter' to nonisolated 'next()'"). Access is still
+        // serialized by the actor — the `nonisolated(unsafe)` iterator
+        // storage is only ever touched here — so advancing off-actor and
+        // storing the result back is race-free, which the `@unchecked`
+        // on `ApprovalIteratorBox` asserts.
+        let box = ApprovalIteratorBox(current)
+        let value = await box.next()
+        self.approvalIterator = box.iterator
         return .some(value)
+    }
+
+    /// Sendable carrier for the approval-stream iterator — see
+    /// `popNextApproval`. Only ever constructed and drained on the
+    /// `RunCoordinator` actor, one advance at a time.
+    private final class ApprovalIteratorBox: @unchecked Sendable {
+        var iterator: AsyncStream<UserApproval>.AsyncIterator
+        init(_ iterator: AsyncStream<UserApproval>.AsyncIterator) { self.iterator = iterator }
+        func next() async -> UserApproval? { await iterator.next() }
     }
 
 

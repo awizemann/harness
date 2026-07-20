@@ -50,6 +50,12 @@ extension MCPServer {
         case "get_run_result":       return try await getRunResult(c, args)
         case "get_step_screenshot":  return try await getStepScreenshot(c, args)
         case "list_agent_tools":     return try listAgentTools(args)
+        // Step-level UI sessions (no LLM loop, no API key).
+        case UISessionTool.startUISession.rawValue: return try await startUISession(c, args)
+        case UISessionTool.observeUI.rawValue:      return try await observeUI(c, args)
+        case UISessionTool.actUI.rawValue:          return try await actUI(c, args)
+        case UISessionTool.endUISession.rawValue:   return try await endUISession(c, args)
+        case UISessionTool.listUISessions.rawValue: return await listUISessions(c, args)
         default:                     return .error("Unknown tool: '\(tool)'")
         }
     }

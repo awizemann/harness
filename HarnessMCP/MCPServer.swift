@@ -20,7 +20,7 @@ import Foundation
 actor MCPServer {
 
     private let serverName = "harness-mcp"
-    private let serverVersion = "0.5.0"
+    private let serverVersion = "0.6.0"
     private let defaultProtocolVersion = "2025-06-18"
 
     /// Lazily-opened shared dependency graph. Cached as a `Result` so a
@@ -45,6 +45,13 @@ actor MCPServer {
             }
         } catch {
             log("stdin read error: \(error.localizedDescription)")
+        }
+        // Tear down any open UI sessions before the process exits so no
+        // WKWebView window / booted simulator / WDA process leaks. Only
+        // touch the container if it was actually opened (a UI-session tool
+        // ran) — don't force a store open on the way out.
+        if case .success(let c)? = containerResult {
+            await c.uiSessions.shutdownAll()
         }
         log("stdin closed — exiting")
     }

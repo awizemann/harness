@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness UI Session Smoke Fixture</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 40px; }
+    h1 { font-size: 22px; }
+    input { font-size: 18px; padding: 8px 10px; width: 240px; }
+    button { font-size: 18px; padding: 8px 16px; margin-left: 12px; }
+    #echo { min-width: 220px; }
+  </style>
+</head>
+<body>
+  <h1>Harness UI Session Smoke Fixture</h1>
+  <p>Focus the field, type, and the button's label mirrors what you typed —
+     a state change that shows up in the Set-of-Mark table.</p>
+  <!-- The input carries an aria-label so the first observe can locate its
+       mark by a stable label. The button's visible text ("waiting") is its
+       accessible label; typing updates it live via the `input` event, so the
+       NEXT observe's mark table shows the new label. -->
+  <input id="name" aria-label="name field" autocomplete="off">
+  <button id="echo" type="button">waiting</button>
+  <script>
+    const inp = document.getElementById('name');
+    const btn = document.getElementById('echo');
+    inp.addEventListener('input', function () {
+      btn.textContent = inp.value ? ('typed: ' + inp.value) : 'waiting';
+    });
+    btn.addEventListener('click', function () {
+      btn.textContent = 'clicked';
+    });
+  </script>
+</body>
+</html>
