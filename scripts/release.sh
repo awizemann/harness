@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+
+# --- Xcode toolchain guard: build with a real Xcode.app (not the Command Line Tools), resolved via
+#     DEVELOPER_DIR (no sudo). Survives an Xcode swap that left `xcode-select` on CommandLineTools. ---
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+  case "$(xcode-select -p 2>/dev/null)" in
+    */Xcode*.app/Contents/Developer) : ;;
+    *) for _xc in /Applications/Xcode.app /Applications/Xcode-*.app; do
+         [ -x "$_xc/Contents/Developer/usr/bin/xcodebuild" ] && { export DEVELOPER_DIR="$_xc"; break; }
+       done ;;
+  esac
+fi
 #
 # Harness release pipeline — local, manual, repeatable.
 #

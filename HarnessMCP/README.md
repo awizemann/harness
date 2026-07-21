@@ -94,7 +94,7 @@ product (e.g. an external QA agent) consumes it.
 ### Identity — `--version` / `--help`
 
 ```sh
-harness-mcp --version   # → "harness-mcp 0.6.0"  (stdout, exit 0)
+harness-mcp --version   # → "harness-mcp 0.7.0"  (stdout, exit 0)
 harness-mcp --help      # → one-line usage note   (stdout, exit 0)
 ```
 
