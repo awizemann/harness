@@ -2,7 +2,7 @@
 
 A native macOS developer tool that drives an **iOS Simulator, a macOS app, or a web app** with an AI agent so you can run real-user-style tests against in-development software. Goal in plain language; persona; an agent that reads the screen and acts; a replayable log of what happened and where the experience fell down.
 
-> **v0.6.0 shipped 2026-06-16** — drive Harness from an agent via the new MCP server, agent-driven runs surfaced as first-class history, and Sparkle auto-update. See [the release](https://github.com/awizemann/harness/releases/tag/v0.6.0).
+> **v0.7.0 shipped 2026-07-21** — agents now drive a web or iOS target directly via **step-level MCP UI sessions** (no LLM loop, no API key), and `harness-mcp` became a **standalone, relocatable** binary. See [HarnessMCP](HarnessMCP) and [the release](https://github.com/awizemann/harness/releases/tag/v0.7.0).
 
 This wiki is the dev reference for **where things live, why they work that way, and how to extend them**. It's maintained per-PR alongside code. For development standards, see [`standards/`](https://github.com/awizemann/harness/tree/main/standards).
 
@@ -32,7 +32,7 @@ This wiki is the dev reference for **where things live, why they work that way, 
 ### Working in the codebase
 - [Build-and-Run](Build-and-Run) — prerequisites, `xcodebuild`, smoke tests
 - [HarnessCLI](HarnessCLI) — dev-time command-line driver for the web run path; iterate on prompts / models without rebuilding the Mac app
-- [HarnessMCP](https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md) — drive Harness from an agent: an MCP server that creates personas/applications, stages credentials, and starts/polls/cancels runs against the shared store
+- [HarnessMCP](HarnessMCP) — drive Harness from an agent: an MCP server with two surfaces — autonomous runs (personas/applications, staged credentials, start/poll/cancel) and **step-level UI sessions** that see-and-act on a target with no LLM loop and no API key; also a standalone, relocatable binary
 - [Adding-a-Feature](Adding-a-Feature) — recipe for a new feature module
 - [Adding-a-Service](Adding-a-Service) — recipe for a new service
 - [Testing](Testing) — Swift Testing patterns specific to Harness
@@ -42,9 +42,11 @@ This wiki is the dev reference for **where things live, why they work that way, 
 
 ## Status
 
-**v0.6.0 alpha.** All three target platforms wired end-to-end with feature-parity scaffolding for the agent. Highlights since 0.1:
+**v0.7.0 alpha.** All three target platforms wired end-to-end with feature-parity scaffolding for the agent. Highlights since 0.1:
 
-- **Drive from an agent — MCP (0.6).** `harness-mcp`, a stdio MCP server built from the same source as the app, lets Claude (or any MCP client) create Applications / Personas / Actions, stage credentials, and start/poll/cancel runs against the same on-disk store the GUI uses. See [`HarnessMCP/README.md`](https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md).
+- **Step-level MCP UI sessions (0.7).** Five tools (`start_ui_session` / `observe_ui` / `act_ui` / `end_ui_session` / `list_ui_sessions`) let an external client drive a web or iOS target directly — see the screen, act on it, one step at a time — with **no LLM loop and no API key**. See [HarnessMCP](HarnessMCP) § Step-level UI sessions.
+- **Standalone `harness-mcp` (0.7).** The binary is relocatable — copy it anywhere (eventually bundled in another product) and run it from any directory. `--version` matches the `initialize` handshake; WebDriverAgent source resolves via `HARNESS_WDA_PATH`; web keeps working on a host without Xcode. See [HarnessMCP](HarnessMCP) § Running standalone.
+- **Drive from an agent — MCP (0.6).** `harness-mcp`, a stdio MCP server built from the same source as the app, lets Claude (or any MCP client) create Applications / Personas / Actions, stage credentials, and start/poll/cancel runs against the same on-disk store the GUI uses. See [HarnessMCP](HarnessMCP).
 - **Agent runs are first-class (0.6).** Runs carry an origin — You / Agent / CLI. History badges and titles the non-you ones; a dedicated **Agent Sessions** view shows live sessions with a step counter plus recent agent runs; a global banner appears while an agent drives the app. Ad-hoc agent runs match-or-create an Application from their target, so they thread into per-app History.
 - **Sparkle auto-update (0.6).** Check for Updates in the app menu plus scheduled checks; EdDSA-signed and delivered over the notarized, Developer-ID-signed release pipeline.
 - **Local Mac inference (0.5).** New `Local Mac` provider runs a vision LLM on your Mac via Ollama. Curated picker (Qwen3-VL 8B recommended) plus a custom-model field. Screenshots never leave the machine. See [Local-vs-Cloud-Models](Local-vs-Cloud-Models) for a same-goal-same-site head-to-head with numbers.
@@ -54,8 +56,8 @@ This wiki is the dev reference for **where things live, why they work that way, 
 - **Per-Application credential storage (0.3).** Pre-stage username/password pairs against any Application; the agent gets a `fill_credential` tool. Passwords never enter the model's context or the JSONL log.
 - **Multi-provider LLM support (0.2-0.3).** Anthropic, OpenAI, Google — seven cloud models across three providers, per-provider Keychain storage, per-run picker.
 
-Known limits in v0.5: web is WebKit only (Chrome via CDP is a future opt-in); macOS needs Screen Recording + Accessibility permission; real iPhones still unsupported (Simulator only); 2FA / SMS / CAPTCHA interrupts unsupported (planned `request_user_input` tool on the [Roadmap](Roadmap)); local-model wall-clock is ~5-10× slower per step than cloud-class Sonnet.
+Known limits in v0.7: web is WebKit only (Chrome via CDP is a future opt-in); macOS needs Screen Recording + Accessibility permission, and step-level `macos` UI sessions are deferred; real iPhones still unsupported (Simulator only); 2FA / SMS / CAPTCHA interrupts unsupported (planned `request_user_input` tool on the [Roadmap](Roadmap)); local-model wall-clock is ~5-10× slower per step than cloud-class Sonnet.
 
 ---
 
-_Last updated: 2026-06-16 — v0.6.0 release_
+_Last updated: 2026-07-21 — v0.7.0 release_

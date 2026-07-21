@@ -23,6 +23,7 @@
 - [Run Logger](Run-Logger)
 - [Build and Run](Build-and-Run)
 - [HarnessCLI](HarnessCLI)
+- [HarnessMCP](HarnessMCP)
 - [Adding a Feature](Adding-a-Feature)
 - [Adding a Service](Adding-a-Service)
 - [SwiftData Migrations](SwiftData-Migrations)

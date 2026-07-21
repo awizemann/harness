@@ -26,10 +26,15 @@ The wiki is meant to be publishable, so every commit/publish runs a two-tier sec
 
 Never put real keys, tokens, private keys, `.env` contents, or personal hostnames/IPs in the wiki.
 
-## Future: publishing to a GitHub Wiki
+## Publishing to the GitHub Wiki
 
-The wiki currently lives in-repo. Publishing the same pages to a GitHub Wiki
-(`<repo>.wiki.git`) is a planned addition; the secret-scan will gate that push too.
+Publishing is automatic and owned by Memophant. Committing the `wiki/` tier through Memophant runs
+the two-tier secret-scan above, then mirrors `wiki/` to the GitHub Wiki
+(`awizemann/harness.wiki.git`) as a `docs(wiki): sync from wiki/ (<sha>)` commit.
+
+`wiki/` is the **single source of truth**; the live Wiki is a pure mirror of it. Edit only `wiki/`
+— never the published copy directly, or the next sync reverts your change. There is no separate
+publish script.
 
 ---
-_Last updated: 2026-06-15 — stub_
+_Last updated: 2026-07-21 — Memophant is the sole publish pipeline_
