@@ -151,16 +151,16 @@ enum ToolRegistry {
 
             // MARK: Step-level UI sessions (no LLM loop, no API key)
             tool(UISessionTool.startUISession.rawValue,
-                 "Launch a target and open a step-driving session you observe + act on directly (no autonomous run, no API key). Returns session_id, display_label, point_size, platform. Web is zero-setup; iOS builds the project (can take minutes; the call blocks until ready or fails with the xcodebuild tail). macOS is deferred.",
-                 obj(["platform": enumProp(["web", "ios"], "Target platform. \"web\" or \"ios\" (\"macos\" → clear deferred error)."),
+                 "Launch a target and open a step-driving session you observe + act on directly (no autonomous run, no API key). Returns session_id, display_label, point_size, platform. Web is zero-setup; iOS builds the project (can take minutes; the call blocks until ready or fails with the xcodebuild tail). macOS drives a built .app in a contained backend (AX actions + postToPid — the real pointer never moves, focus is never stolen); pass app_path (preferred) or project_path + scheme.",
+                 obj(["platform": enumProp(["web", "ios", "macos"], "Target platform: \"web\", \"ios\", or \"macos\"."),
                       "url": prop("string", "Web start URL (platform=web). http(s) or a local server."),
                       "viewport": enumProp(["desktop", "mobile"], "Web viewport (platform=web): desktop (1280×800, default) or mobile (390×844)."),
-                      "project_path": prop("string", "Absolute path to .xcodeproj/.xcworkspace (platform=ios)."),
-                      "scheme": prop("string", "Xcode scheme (platform=ios)."),
+                      "project_path": prop("string", "Absolute path to .xcodeproj/.xcworkspace (platform=ios, or platform=macos when not passing app_path)."),
+                      "scheme": prop("string", "Xcode scheme (platform=ios, or platform=macos when not passing app_path)."),
                       "simulator_udid": prop("string", "Simulator UDID (platform=ios)."),
                       "simulator_name": prop("string", "Simulator name (optional)."),
                       "simulator_runtime": prop("string", "Simulator runtime, e.g. \"18.4\" (optional)."),
-                      "app_path": prop("string", "Reserved — prebuilt .app driving is a Phase B item; use project_path + scheme + simulator_udid."),
+                      "app_path": prop("string", "Absolute path to a built .app bundle. platform=macos: the PREFERRED QA flow — drive this build product directly (no xcodebuild). platform=ios: reserved (use project_path + scheme + simulator_udid)."),
                       "artifact_dir": prop("string", "ABSOLUTE path for the artifact bundle (steps/NNN.png CLEAN frames + steps.jsonl). Relative paths are rejected. Omit → a temp dir under Harness's runs root.")],
                      required: ["platform"])),
 
@@ -171,7 +171,7 @@ enum ToolRegistry {
                      required: ["session_id"])),
 
             tool(UISessionTool.actUI.rawValue,
-                 "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, navigate, back, forward, refresh, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, wait). Pass that tool's args at the top level (e.g. tap_mark → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys). Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
+                 "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, navigate, back, forward, refresh, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, wait; macos: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, fill_credential, wait). Pass that tool's args at the top level (e.g. tap_mark → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys). Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
                  obj(["session_id": prop("string", "The session id (UUID)."),
                       "tool": prop("string", "The action tool name."),
                       "id": prop("integer", "Set-of-Mark id (tool=tap_mark)."),
@@ -192,7 +192,7 @@ enum ToolRegistry {
                      required: ["session_id", "tool"])),
 
             tool(UISessionTool.endUISession.rawValue,
-                 "Close a UI session and tear down its target (WKWebView / simulator). Idempotent — an unknown or already-closed session id returns a calm \"already closed\" status, not an error.",
+                 "Close a UI session and tear down its target (WKWebView / simulator / the launched macOS app — a macOS session QUITS the app on close). Idempotent — an unknown or already-closed session id returns a calm \"already closed\" status, not an error.",
                  obj(["session_id": prop("string", "The session id (UUID).")],
                      required: ["session_id"])),
 

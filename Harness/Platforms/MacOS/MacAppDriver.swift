@@ -297,25 +297,32 @@ actor MacAppDriver: UXDriving {
         try await actuateClick(button: .left, count: 1, windowLocal: CGPoint(x: cx, y: cy), info: info, planInput: .tapMark(id: id))
     }
 
+    /// Quit the running SUT: ask it to `terminate()`, wait ~2s, then
+    /// `forceTerminate()` as a fallback so a hung app never blocks the
+    /// caller. Idempotent — a no-op when the app isn't running (already
+    /// quit / never launched). Shared by `relaunchForNewLeg()` (which then
+    /// relaunches) and the ui-session teardown path (which does not), so
+    /// the two can't diverge on how the SUT is killed.
+    func terminateApp() async {
+        let running = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == bundleIdentifier })
+        guard let app = running else { return }
+        app.terminate()
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(100))
+            if !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleIdentifier }) {
+                return
+            }
+        }
+        if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleIdentifier }) {
+            _ = app.forceTerminate()
+        }
+    }
+
     func relaunchForNewLeg() async throws {
         // Quit the running app, then relaunch from the bundle URL (if we
         // have one). NSWorkspace handles "cold relaunch from .app".
-        let running = NSWorkspace.shared.runningApplications
-            .first(where: { $0.bundleIdentifier == bundleIdentifier })
-        if let app = running {
-            app.terminate()
-            // Give it ~2s to quit; force-terminate as a fallback so a
-            // hung app doesn't block the next leg forever.
-            for _ in 0..<20 {
-                try? await Task.sleep(for: .milliseconds(100))
-                if !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleIdentifier }) {
-                    break
-                }
-            }
-            if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleIdentifier }) {
-                _ = app.forceTerminate()
-            }
-        }
+        await terminateApp()
         if let bundleURL = appBundleURL {
             let cfg = NSWorkspace.OpenConfiguration()
             // Contained backend must not steal focus on reopen; only

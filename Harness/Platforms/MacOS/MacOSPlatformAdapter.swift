@@ -24,9 +24,16 @@ struct MacOSPlatformAdapter: PlatformAdapter {
 
     let kind: PlatformKind = .macosApp
     let services: PlatformAdapterServices
+    /// When true, `teardown` (and a failed/leaked start) QUITS the SUT.
+    /// GUI runs leave this false — the user may want the app open for
+    /// inspection after a run. The ui-session preparer sets it true so an
+    /// autonomous QA session (end_ui_session, idle sweep, shutdownAll, or a
+    /// failed/timed-out start) never litters the desktop with running apps.
+    let terminatesOnTeardown: Bool
 
-    init(services: PlatformAdapterServices) {
+    init(services: PlatformAdapterServices, terminatesOnTeardown: Bool = false) {
         self.services = services
+        self.terminatesOnTeardown = terminatesOnTeardown
     }
 
     func prepare(
@@ -93,6 +100,12 @@ struct MacOSPlatformAdapter: PlatformAdapter {
             }
         }
         if !ready {
+            // The app launched but never showed a window. For a ui-session
+            // this is a failed start — quit the SUT before throwing so a
+            // headless / broken app doesn't leak onto the desktop. GUI runs
+            // (terminatesOnTeardown == false) keep the legacy behavior of
+            // leaving it for the user to inspect.
+            if terminatesOnTeardown { await driver.terminateApp() }
             throw MacOSAdapterError.windowNeverAppeared(bundleID: bundleID)
         }
 
@@ -123,10 +136,17 @@ struct MacOSPlatformAdapter: PlatformAdapter {
     }
 
     func teardown(_ session: RunSession) async {
-        // We deliberately do NOT terminate the SUT — for pre-built apps
-        // the user might want to keep the app open for inspection. The
-        // driver's `relaunchForNewLeg()` handles the "start clean" path
-        // between chain legs.
+        // GUI runs deliberately do NOT terminate the SUT — for pre-built
+        // apps the user might want to keep the app open for inspection, and
+        // the driver's `relaunchForNewLeg()` handles the "start clean" path
+        // between chain legs. A ui-session sets `terminatesOnTeardown` so
+        // that ending it (end_ui_session, idle sweep, shutdownAll) quits the
+        // crew-built app and never litters the desktop. Reuses the driver's
+        // own terminate → force-terminate machinery; idempotent, so a
+        // double teardown or an already-quit app is a safe no-op.
+        guard terminatesOnTeardown else { return }
+        guard let driver = session.driver as? MacAppDriver else { return }
+        await driver.terminateApp()
     }
 
     func toolDefinitions(cacheControl: Bool) -> [[String: Any]] {

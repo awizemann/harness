@@ -34,7 +34,13 @@ extension MCPServer {
             iosSimulatorUDID: args.string("simulator_udid"),
             iosSimulatorName: args.string("simulator_name"),
             iosSimulatorRuntime: args.string("simulator_runtime"),
-            iosAppBundlePath: args.string("app_path")
+            iosAppBundlePath: args.string("app_path"),
+            // macOS: app_path (preferred) OR project_path + scheme. The
+            // arg names are shared with the other platforms — the supervisor
+            // reads only the fields that apply to the chosen platform.
+            macAppPath: args.string("app_path"),
+            macProjectPath: args.string("project_path"),
+            macScheme: args.string("scheme")
         )
 
         let info = try await c.uiSessions.start(config)
@@ -138,12 +144,11 @@ extension MCPServer {
         case "ios", "ios_simulator":
             return .iosSimulator
         case "macos", "macos_app", "mac":
-            // Reach the supervisor's clear "deferred" error.
             return .macosApp
         case .none, .some(""):
             throw MCPToolError.missingArgument("platform")
         case .some(let other):
-            throw MCPToolError.invalidArgument("platform", "expected \"web\" or \"ios\" (got \"\(other)\")")
+            throw MCPToolError.invalidArgument("platform", "expected \"web\", \"ios\", or \"macos\" (got \"\(other)\")")
         }
     }
 

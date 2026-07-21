@@ -93,17 +93,14 @@ actor UISessionSupervisor {
     // MARK: - start
 
     func start(_ config: UISessionConfig) async throws -> UISessionInfo {
-        // 1. macOS is deferred.
-        guard config.platform != .macosApp else { throw UISessionError.macosDeferred }
-
-        // 2. artifact_dir, when provided, must be absolute.
+        // 1. artifact_dir, when provided, must be absolute.
         if let raw = config.artifactDirPath, !raw.isEmpty {
             guard (raw as NSString).isAbsolutePath else {
                 throw UISessionError.relativeArtifactDir(raw)
             }
         }
 
-        // 3. Platform target sanity (clearer than letting the adapter throw).
+        // 2. Platform target sanity (clearer than letting the adapter throw).
         switch config.platform {
         case .web:
             guard let url = config.webURL, !url.isEmpty else { throw UISessionError.missingWebURL }
@@ -118,15 +115,29 @@ actor UISessionSupervisor {
                 && (config.iosSimulatorUDID?.isEmpty == false)
             guard hasIOS else { throw UISessionError.missingIOSTarget }
         case .macosApp:
-            throw UISessionError.macosDeferred
+            // Prefer a prebuilt `.app` (the QA flow: drive a worktree build
+            // product directly); otherwise `project_path` + `scheme` to build
+            // from source. Require one of the two so the error is precise HERE
+            // rather than late from `prepare`.
+            let hasApp = (config.macAppPath?.isEmpty == false)
+            let hasProject = (config.macProjectPath?.isEmpty == false)
+                && (config.macScheme?.isEmpty == false)
+            guard hasApp || hasProject else { throw UISessionError.missingMacTarget }
+            // A prebuilt app_path, when given, must be absolute (same rule as
+            // artifact_dir — a relative build product can't be resolved here).
+            if let appPath = config.macAppPath, !appPath.isEmpty {
+                guard (appPath as NSString).isAbsolutePath else {
+                    throw UISessionError.relativeMacAppPath(appPath)
+                }
+            }
         }
 
-        // 4. Concurrency cap — count live sessions AND in-flight starts.
+        // 3. Concurrency cap — count live sessions AND in-flight starts.
         guard sessions.count + pendingStarts < Self.maxConcurrentSessions else {
             throw UISessionError.capReached(Self.maxConcurrentSessions)
         }
 
-        // 5. Prepare (bounded — never wedges). Reserve the slot across the
+        // 4. Prepare (bounded — never wedges). Reserve the slot across the
         //    await so a concurrent start can't overshoot the cap.
         let sessionID = UUID()
         let seconds = startTimeoutOverrideSeconds ?? Self.defaultStartTimeout(for: config.platform)
@@ -140,7 +151,7 @@ actor UISessionSupervisor {
         }
         pendingStarts -= 1   // synchronous from here to the insert below — no reentrancy
 
-        // 6. Resolve the artifact root now that we know the id.
+        // 5. Resolve the artifact root now that we know the id.
         let artifactRoot = resolveArtifactRoot(config: config, sessionID: sessionID)
         try? HarnessPaths.ensureDirectory(artifactRoot)
 
@@ -477,11 +488,15 @@ actor UISessionSupervisor {
         }
     }
 
-    private static func defaultStartTimeout(for platform: PlatformKind) -> Int {
+    /// Per-platform default bound on `start`. `internal` (not `private`) so
+    /// the test suite can pin the contract without a live prepare.
+    /// `HARNESS_UI_SESSION_START_TIMEOUT_SECONDS` overrides at the MCP
+    /// composition root.
+    static func defaultStartTimeout(for platform: PlatformKind) -> Int {
         switch platform {
         case .web:          return 120     // adapter's own waits cap ~30s; generous backstop
         case .iosSimulator: return 900     // xcodebuild + boot + WDA can run minutes
-        case .macosApp:     return 120     // deferred; never reached
+        case .macosApp:     return 600     // xcodebuild (macOS) or prebuilt .app launch + window-appear poll
         }
     }
 }

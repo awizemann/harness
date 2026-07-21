@@ -22,12 +22,12 @@ enum MCPServerIdentity {
     static let name = "harness-mcp"
     /// Reported as `serverInfo.version` and printed by `--version`. Bump in
     /// lockstep with a user-visible change to the MCP surface.
-    static let version = "0.7.0"
+    static let version = "0.8.0"
     /// Default MCP protocol version when the client doesn't pin one.
     static let protocolVersion = "2025-06-18"
 
     /// The exact line `--version` prints (name + version), e.g.
-    /// `harness-mcp 0.7.0`.
+    /// `harness-mcp 0.8.0`.
     static var versionLine: String { "\(name) \(version)" }
 }
 

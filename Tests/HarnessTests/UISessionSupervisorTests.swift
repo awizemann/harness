@@ -5,7 +5,8 @@
 //  Covers the step-level UI session registry (`UISessionSupervisor`) end
 //  to end against a fake `UXDriving` / preparer — no WebKit, no xcodebuild:
 //  lifecycle (start/observe/act/end), concurrency cap, idle teardown,
-//  relative-artifact_dir rejection, macOS rejection, artifact writing
+//  relative-artifact_dir rejection, macOS acceptance + target validation +
+//  start-timeout default + teardown-terminates policy, artifact writing
 //  (CLEAN PNG + jsonl rows, marked image never on disk), tool-arg
 //  validation/mapping, and the cross-repo tool-name + schema contract.
 //
@@ -382,11 +383,73 @@ struct UISessionGuardTests {
         }
     }
 
-    @Test("macOS platform is deferred with a clear error")
-    func macosDeferred() async {
+    @Test("macOS is no longer deferred — an app_path session starts and drives the fake driver")
+    func macosAccepted() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let probe = TeardownProbe()
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 1280, height: 800), pixelSize: CGSize(width: 1280, height: 800),
+            cleanPNG: UISessionTestSupport.solidPNG(width: 40, height: 40, color: .gray),
+            markedPNG: nil, annotation: nil, execDetail: nil
+        )
+        let adapter = FakePlatformAdapter(kind: .macosApp, names: ToolSchema.macOSToolNames, probe: probe)
+        let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
+            platform: .macosApp, label: "MyMacApp", driver: driver,
+            pointSize: CGSize(width: 1280, height: 800), adapter: adapter
+        ))
+        // Prebuilt app_path (absolute) — the preferred QA flow — is accepted.
+        let info = try await sup.start(UISessionConfig(
+            platform: .macosApp, artifactDirPath: dir.path,
+            macAppPath: "/tmp/MyMacApp.app"
+        ))
+        #expect(info.platform == .macosApp)
+        #expect(info.displayLabel == "MyMacApp")
+        // Ending the session tears the adapter down exactly once (the real
+        // adapter's teardown quits the SUT — see MacOSAdapterTeardownTests).
+        let end = await sup.end(id: info.id)
+        #expect(end.wasOpen)
+        #expect(await probe.teardownCount == 1)
+    }
+
+    @Test("macOS project_path + scheme (build-from-source) is also accepted")
+    func macosProjectSchemeAccepted() async throws {
+        let probe = TeardownProbe()
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 800, height: 600), pixelSize: CGSize(width: 800, height: 600),
+            cleanPNG: UISessionTestSupport.solidPNG(width: 20, height: 20, color: .gray),
+            markedPNG: nil, annotation: nil, execDetail: nil
+        )
+        let adapter = FakePlatformAdapter(kind: .macosApp, names: ToolSchema.macOSToolNames, probe: probe)
+        let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
+            platform: .macosApp, label: "Built", driver: driver,
+            pointSize: CGSize(width: 800, height: 600), adapter: adapter
+        ))
+        let info = try await sup.start(UISessionConfig(
+            platform: .macosApp,
+            macProjectPath: "/abs/App.xcodeproj", macScheme: "App"
+        ))
+        #expect(info.platform == .macosApp)
+        await sup.shutdownAll()
+    }
+
+    @Test("macOS with neither app_path nor project+scheme is rejected before prepare")
+    func macosMissingTarget() async {
         let sup = webSupervisor()
         await #expect(throws: UISessionError.self) {
             _ = try await sup.start(UISessionConfig(platform: .macosApp))
+        }
+        // project_path without a scheme is still insufficient.
+        await #expect(throws: UISessionError.self) {
+            _ = try await sup.start(UISessionConfig(platform: .macosApp, macProjectPath: "/abs/App.xcodeproj"))
+        }
+    }
+
+    @Test("macOS app_path must be absolute")
+    func macosRelativeAppPathRejected() async {
+        let sup = webSupervisor()
+        await #expect(throws: UISessionError.self) {
+            _ = try await sup.start(UISessionConfig(platform: .macosApp, macAppPath: "relative/MyApp.app"))
         }
     }
 
@@ -571,7 +634,7 @@ struct UISessionContractTests {
 
     @Test("every non-meta tool each platform advertises maps via LLMShared.toolCall")
     func everyAdvertisedActionToolMaps() throws {
-        for names in [ToolSchema.webToolNames, ToolSchema.iOSToolNames] {
+        for names in [ToolSchema.webToolNames, ToolSchema.iOSToolNames, ToolSchema.macOSToolNames] {
             for name in names where !UIToolPolicy.metaTools.contains(name) {
                 // Empty input is enough — LLMShared defaults every field.
                 let call = try LLMShared.toolCall(name: name, inputData: Data("{}".utf8))
@@ -595,5 +658,103 @@ struct UISessionContractTests {
         #expect(throws: Never.self) {
             try UIToolPolicy.validate(tool: "tap_mark", allowed: ToolSchema.webToolNames)
         }
+    }
+}
+
+// MARK: - Start-timeout defaults (per-platform contract)
+
+@Suite("UISessionSupervisor — start-timeout defaults")
+struct UISessionStartTimeoutTests {
+
+    @Test("per-platform start-timeout defaults are web 120 · iOS 900 · macOS 600")
+    func defaults() {
+        #expect(UISessionSupervisor.defaultStartTimeout(for: .web) == 120)
+        #expect(UISessionSupervisor.defaultStartTimeout(for: .iosSimulator) == 900)
+        #expect(UISessionSupervisor.defaultStartTimeout(for: .macosApp) == 600)
+    }
+}
+
+// MARK: - macOS adapter teardown-terminates policy (seam-level, no live app)
+
+// Minimal no-op fakes so `PlatformAdapterServices` can be built for the
+// macOS adapter — teardown never touches services, so these are never
+// exercised beyond construction.
+private struct TeardownNoopKeychain: KeychainStoring {
+    func read(service: String, account: String) throws -> Data? { nil }
+    func write(_ data: Data, service: String, account: String) throws {}
+    func delete(service: String, account: String) throws {}
+}
+
+private struct TeardownNoopSimulatorDriver: SimulatorDriving {
+    func listDevices() async throws -> [SimulatorRef] { [] }
+    func boot(_ ref: SimulatorRef) async throws {}
+    func install(_ appBundle: URL, on ref: SimulatorRef) async throws {}
+    func launch(bundleID: String, on ref: SimulatorRef) async throws {}
+    func terminate(bundleID: String, on ref: SimulatorRef) async throws {}
+    func erase(_ ref: SimulatorRef) async throws {}
+    func screenshot(_ ref: SimulatorRef, into url: URL) async throws -> URL { url }
+    func screenshotImage(_ ref: SimulatorRef) async throws -> NSImage { NSImage() }
+    func tap(at point: CGPoint, on ref: SimulatorRef) async throws {}
+    func doubleTap(at point: CGPoint, on ref: SimulatorRef) async throws {}
+    func swipe(from: CGPoint, to: CGPoint, duration: Duration, on ref: SimulatorRef) async throws {}
+    func type(_ text: String, on ref: SimulatorRef) async throws {}
+    func pressButton(_ button: SimulatorButton, on ref: SimulatorRef) async throws {}
+    func startInputSession(_ ref: SimulatorRef) async throws {}
+    func endInputSession() async {}
+    func cleanupWDA(udid: String) async {}
+    func probeInteractiveElements(_ ref: SimulatorRef) async -> [InteractiveMark] { [] }
+    func tapMark(id: Int, on ref: SimulatorRef) async throws {}
+}
+
+@Suite("MacOSPlatformAdapter — teardown terminates the SUT")
+struct MacOSAdapterTeardownTests {
+
+    private func services() throws -> PlatformAdapterServices {
+        let processRunner = ProcessRunner()
+        return PlatformAdapterServices(
+            processRunner: processRunner,
+            toolLocator: ToolLocator(processRunner: processRunner),
+            xcodeBuilder: XcodeBuilder(processRunner: processRunner, toolLocator: ToolLocator(processRunner: processRunner)),
+            simulatorDriver: TeardownNoopSimulatorDriver(),
+            promptLibrary: PromptLibrary(),
+            keychain: TeardownNoopKeychain(),
+            runHistory: try RunHistoryStore.inMemory()
+        )
+    }
+
+    /// A macOS RunSession whose driver targets a bundle id that is NOT
+    /// running, so `terminateApp()` takes its idempotent no-op path — the
+    /// policy (does teardown attempt a quit?) is exercised without a live app.
+    private func macSession() -> RunSession {
+        let bundleID = "com.harness.tests.nonexistent-\(UUID().uuidString)"
+        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: nil)
+        return RunSession(
+            kind: .macosApp, driver: driver, pointSize: CGSize(width: 100, height: 100),
+            bundleIdentifier: bundleID, appBundleURL: nil,
+            displayLabel: "Test", credentialLabel: nil, credentialUsername: nil
+        )
+    }
+
+    @Test("the ui-session preparer's adapter carries terminatesOnTeardown; GUI default is false")
+    func flag() throws {
+        #expect(try MacOSPlatformAdapter(services: services()).terminatesOnTeardown == false)
+        #expect(try MacOSPlatformAdapter(services: services(), terminatesOnTeardown: true).terminatesOnTeardown == true)
+    }
+
+    @Test("teardown is a safe no-op when terminatesOnTeardown is false (GUI run leaves the app open)")
+    func guiTeardownDoesNotThrow() async throws {
+        let adapter = MacOSPlatformAdapter(services: try services(), terminatesOnTeardown: false)
+        await adapter.teardown(macSession())   // no crash, no attempt to quit
+    }
+
+    @Test("session teardown attempts termination and is idempotent when the app is already gone")
+    func sessionTeardownIdempotent() async throws {
+        let adapter = MacOSPlatformAdapter(services: try services(), terminatesOnTeardown: true)
+        let session = macSession()
+        // Two teardowns back-to-back (mirrors end + shutdownAll racing): the
+        // driver's terminate → force-terminate machinery no-ops when the
+        // bundle id isn't running, so neither call throws or hangs.
+        await adapter.teardown(session)
+        await adapter.teardown(session)
     }
 }

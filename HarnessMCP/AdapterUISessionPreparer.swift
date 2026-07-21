@@ -156,7 +156,76 @@ struct AdapterUISessionPreparer: UISessionPreparing {
             adapter = IOSPlatformAdapter(services: services)
 
         case .macosApp:
-            throw UISessionError.macosDeferred
+            // Prefer a prebuilt `.app` (the QA flow: drive a worktree build
+            // product directly, no xcodebuild); otherwise build from
+            // project + scheme. The supervisor already validated that one of
+            // the two is present (and that app_path is absolute).
+            let appPath = config.macAppPath
+            let projectPath = config.macProjectPath
+            let scheme = config.macScheme
+            let hasApp = (appPath?.isEmpty == false)
+            let hasProject = (projectPath?.isEmpty == false) && (scheme?.isEmpty == false)
+            guard hasApp || hasProject else { throw UISessionError.missingMacTarget }
+
+            // Build-from-source needs Xcode command-line tooling; preflight so
+            // a bare box yields ONE clear per-tool error HERE rather than a
+            // late, obscure failure deep in xcodebuild. A prebuilt app_path
+            // skips the build entirely, so it needs no such probe.
+            if hasProject && !hasApp {
+                let toolPaths = try await toolLocator.locateAll()
+                let missingTools = toolPaths.allMissing
+                guard missingTools.isEmpty else {
+                    throw UISessionError.xcodeToolingUnavailable(missingTools)
+                }
+            }
+
+            let displayName = scheme
+                ?? appPath.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
+                ?? "macOS app"
+            // ProjectRequest is required by RunRequest; for the prebuilt path
+            // the macOS adapter ignores it (macAppBundlePath wins), so a
+            // placeholder is fine there.
+            let project = ProjectRequest(
+                path: URL(fileURLWithPath: projectPath ?? "/tmp/harness-mcp-ui-session"),
+                scheme: scheme ?? "harness-mcp",
+                displayName: displayName
+            )
+            // The macOS adapter synthesises its own pseudo SimulatorRef for
+            // the `simulatorReady` "target is ready" cue; RunRequest needs a
+            // non-nil one, so pass a placeholder (never used to boot a sim).
+            let pseudoSim = SimulatorRef(
+                udid: "harness-mcp-ui-macos",
+                name: "macOS",
+                runtime: "macOS",
+                pointSize: CGSize(width: 1280, height: 800),
+                scaleFactor: 1.0
+            )
+            request = RunRequest(
+                id: sessionID,
+                name: "mcp-ui-session",
+                goal: "ui-session",
+                persona: "ui-session",
+                payload: .ad_hoc,
+                project: project,
+                simulator: pseudoSim,
+                model: .opus47,
+                mode: .autonomous,
+                platformKindRaw: PlatformKind.macosApp.rawValue,
+                macAppBundlePath: hasApp ? appPath : nil,
+                credentialID: nil
+            )
+            let services = PlatformAdapterServices(
+                processRunner: processRunner,
+                toolLocator: toolLocator,
+                xcodeBuilder: XcodeBuilder(processRunner: processRunner, toolLocator: toolLocator),
+                simulatorDriver: NoopSimulatorDriver(),
+                promptLibrary: PromptLibrary(),
+                keychain: keychain,
+                runHistory: history
+            )
+            // terminatesOnTeardown: a ui-session ending must QUIT the SUT
+            // (unlike a GUI run, which leaves it open for inspection).
+            adapter = MacOSPlatformAdapter(services: services, terminatesOnTeardown: true)
         }
 
         // Drain the adapter's build-progress stream (iOS emits buildStarted /

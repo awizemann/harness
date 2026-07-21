@@ -101,6 +101,17 @@ struct UISessionConfig: Sendable {
     /// current preparer builds from project + scheme.
     var iosAppBundlePath: String?
 
+    // macOS
+    /// Absolute path to a built `.app` bundle — the PREFERRED macOS QA flow
+    /// (drive a worktree build product directly, no xcodebuild). One of
+    /// `macAppPath` OR (`macProjectPath` + `macScheme`) is required.
+    var macAppPath: String?
+    /// Absolute path to a `.xcodeproj`/`.xcworkspace` for the fallback
+    /// build-from-source macOS flow.
+    var macProjectPath: String?
+    /// Xcode scheme for the build-from-source macOS flow.
+    var macScheme: String?
+
     init(
         platform: PlatformKind,
         artifactDirPath: String? = nil,
@@ -112,7 +123,10 @@ struct UISessionConfig: Sendable {
         iosSimulatorUDID: String? = nil,
         iosSimulatorName: String? = nil,
         iosSimulatorRuntime: String? = nil,
-        iosAppBundlePath: String? = nil
+        iosAppBundlePath: String? = nil,
+        macAppPath: String? = nil,
+        macProjectPath: String? = nil,
+        macScheme: String? = nil
     ) {
         self.platform = platform
         self.artifactDirPath = artifactDirPath
@@ -125,6 +139,9 @@ struct UISessionConfig: Sendable {
         self.iosSimulatorName = iosSimulatorName
         self.iosSimulatorRuntime = iosSimulatorRuntime
         self.iosAppBundlePath = iosAppBundlePath
+        self.macAppPath = macAppPath
+        self.macProjectPath = macProjectPath
+        self.macScheme = macScheme
     }
 }
 
@@ -200,7 +217,6 @@ protocol UISessionPreparing: Sendable {
 // MARK: - Errors
 
 enum UISessionError: Error, Sendable, LocalizedError {
-    case macosDeferred
     case relativeArtifactDir(String)
     case capReached(Int)
     case sessionNotFound(UUID)
@@ -210,6 +226,11 @@ enum UISessionError: Error, Sendable, LocalizedError {
     case prepareFailed(String)
     case missingWebURL
     case missingIOSTarget
+    /// macOS start with neither a prebuilt `app_path` nor a
+    /// `project_path` + `scheme` pair to build from.
+    case missingMacTarget
+    /// macOS `app_path` was given but is not an absolute path.
+    case relativeMacAppPath(String)
     /// iOS start on a machine without usable Xcode command-line tooling
     /// (xcrun/xcodebuild) — e.g. a bare box or a stripped `DEVELOPER_DIR`.
     /// Web sessions still work; iOS can't build/boot without it.
@@ -222,8 +243,6 @@ enum UISessionError: Error, Sendable, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .macosDeferred:
-            return "macOS driving is deferred — start a web or iOS session instead."
         case .relativeArtifactDir(let path):
             return "artifact_dir must be an absolute path (got \"\(path)\"). Pass a path starting with \"/\"."
         case .capReached(let cap):
@@ -242,6 +261,10 @@ enum UISessionError: Error, Sendable, LocalizedError {
             return "Web sessions require a 'url'."
         case .missingIOSTarget:
             return "iOS sessions require 'project_path' + 'scheme' + 'simulator_udid'."
+        case .missingMacTarget:
+            return "macOS sessions require an absolute 'app_path' to a built .app (the preferred QA flow), or 'project_path' + 'scheme' to build from source."
+        case .relativeMacAppPath(let path):
+            return "macOS 'app_path' must be an absolute path to a built .app (got \"\(path)\"). Pass a path starting with \"/\"."
         case .xcodeToolingUnavailable(let tools):
             let names = tools.map(\.displayName).joined(separator: ", ")
             return "iOS sessions need Xcode command-line tooling, but it's unavailable (missing: \(names.isEmpty ? "xcodebuild" : names)). Install Xcode and run `xcode-select --install`, or point DEVELOPER_DIR at a valid Xcode. Web sessions work without it."
