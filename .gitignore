@@ -74,8 +74,8 @@ TODO.local.md
 /docs/DESIGN_BACKLOG.md
 .claude/
 
-# Public-surface worktrees — see CLAUDE.md / "Public surfaces".
-.wiki-worktree/
+# Public-surface worktree — see CLAUDE.md / "Public surfaces".
+# (The wiki publishes from wiki/ via Memophant — no separate worktree.)
 .gh-pages-worktree/
 
 # Release artefacts — RELEASE_NOTES.md is checked in, but the built

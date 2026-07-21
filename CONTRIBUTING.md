@@ -65,13 +65,10 @@ The PR template includes a "Public surfaces touched" checklist.
 
 ## Working with the Wiki
 
-The Wiki is its own git repo. Clone it as a worktree once:
-
-```bash
-git worktree add .wiki-worktree git@github.com:awizemann/harness.wiki.git
-```
-
-Edit pages in `.wiki-worktree/`, then push via `scripts/wiki.sh` (which runs a secret-scan first).
+The Wiki lives in the `wiki/` folder in this repo and is managed by **Memophant**. Edit the Markdown
+there; committing the `wiki/` tier through Memophant runs a secret-scan and then publishes the pages
+to the GitHub Wiki. `wiki/` is the single source of truth and the live Wiki is a pure mirror of it —
+never edit the published copy directly.
 
 ## Pull requests
 

@@ -100,7 +100,7 @@ with open(os.environ["DEST"], "w", encoding="utf-8") as fh:
 '
 }
 
-# ---------- secret-scan (mirrors scripts/wiki.sh) ----------
+# ---------- secret-scan (same two-tier pattern the wiki publish uses) ----------
 hard_regex='(sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|ghs_[A-Za-z0-9]{30,}|ghu_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|ghr_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----|BEGIN OPENSSH PRIVATE KEY)'
 
 scan_hard_source() {
