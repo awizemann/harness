@@ -42,7 +42,7 @@ Three artifacts come out of every run:
 | Kind | How Harness drives it |
 |---|---|
 | **iOS Simulator** | `xcodebuild` your project + scheme; `simctl` boot/install/launch; WebDriverAgent for input. |
-| **macOS app** | NSWorkspace launch (pre-built `.app` *or* xcodebuild macOS scheme); `CGEvent` for input; `CGWindowListCreateImage` for capture. |
+| **macOS app** | NSWorkspace launch (pre-built `.app` *or* xcodebuild macOS scheme). **Contained input by default** — AX actions (`AXPress` / `AXSetValue`) first, then `CGEvent.postToPid` to the app's own queue for scroll / shortcuts / raw clicks; the real pointer never moves, focus is never stolen, no app but the target is touched, and there's no global-HID fallback (unreachable controls fail honestly). Set `HARNESS_MACOS_INPUT=hid` to restore the legacy global-HID + foregrounding backend. `CGWindowListCreateImage` for capture (grabs the window even in the background). |
 | **Web app** | Embedded `WKWebView` at a chosen viewport (default **1280×1600** tall desktop, or 375×812 mobile); JS-synthesised events for input; `WKWebView.takeSnapshot` for capture. The mirror shows a flat browser chrome (no device bezel) so the screenshot fills the full pane and one snapshot covers more page — fewer scrolls per goal, lower API cost. |
 
 Per-app setting: each Application declares its kind once at create time. The agent's tool schema (clicks vs swipes vs key shortcuts vs navigate) and the system-prompt context block re-shape per platform. Run history, replay, and friction reporting are platform-neutral.

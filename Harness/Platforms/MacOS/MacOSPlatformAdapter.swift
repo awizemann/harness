@@ -66,17 +66,21 @@ struct MacOSPlatformAdapter: PlatformAdapter {
             displayLabel = request.project.displayName
         }
 
-        // Launch via NSWorkspace, activated.
+        // Launch via NSWorkspace. The contained backend (default) launches
+        // WITHOUT activation so the run never steals the user's focus;
+        // only legacy HID needs the SUT foregrounded so global-HID events
+        // land on it. Backend is resolved once, from HARNESS_MACOS_INPUT.
+        let backend = MacInputBackendKind.fromEnvironment(ProcessInfo.processInfo.environment)
         let cfg = NSWorkspace.OpenConfiguration()
-        cfg.activates = true
+        cfg.activates = backend.activatesOnLaunch
         cfg.addsToRecentItems = false
         let runningApp = try await NSWorkspace.shared.openApplication(at: bundleURL, configuration: cfg)
-        Self.logger.info("Launched macOS app pid=\(runningApp.processIdentifier, privacy: .public) bundleID=\(bundleID, privacy: .public)")
+        Self.logger.info("Launched macOS app pid=\(runningApp.processIdentifier, privacy: .public) bundleID=\(bundleID, privacy: .public) backend=\(backend.rawValue, privacy: .public) activates=\(backend.activatesOnLaunch, privacy: .public)")
 
         // Wait for the SUT to expose a frontmost window. Bail with a clear
         // error if it never does — the run can't proceed without one.
         let credential = await services.resolveCredentialBinding(for: request)
-        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: bundleURL, credential: credential)
+        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: bundleURL, credential: credential, backend: backend)
         var pointSize = CGSize(width: 1280, height: 800) // safe default until first capture refines it
         var ready = false
         for _ in 0..<60 {
