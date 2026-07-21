@@ -2,16 +2,12 @@
 title: HarnessMCP: Stdio MCP Server to Drive Harness from Agents
 type: note
 permalink: harness/tools/harnessmcp-stdio-mcp-server-to-drive-harness-from-agents
-tags:
-- mcp
-- tooling
-- cli
-- architecture
+tags: [mcp, tooling, cli, architecture]
 source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
-reviewed: 2026-06-24
-reviewed_by: human
 created: 2026-06-16
 updated: 2026-06-16
+reviewed: 2026-06-24
+reviewed_by: human
 ---
 
 ## Observations
@@ -33,6 +29,7 @@ updated: 2026-06-16
 - relates_to [[Run Lifecycle & Orchestration]]
 - relates_to [[Per-Application Credentials & Persona Library]]
 - relates_to [[Platform Drivers: iOS, macOS, Web]]
+- relates_to [[Release Signing, Notarization & Sparkle Keys]]
 
 
 ## Audit findings & fixes (2026-06-16, multi-agent fresh-eyes review)
