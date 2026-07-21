@@ -70,7 +70,7 @@
       "name": "Can I run Harness in CI, headless?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Partly. Harness ships harness-mcp, a stdio MCP server, so an agent (Claude or any MCP client) can start, poll, and cancel runs programmatically against the same store the GUI uses — that's the automation path today. A first-class headless CI mode that fails PR builds on UX regressions is still on the roadmap."
+        "text": "Partly. Harness ships harness-mcp, a stdio MCP server, so an agent (Claude or any MCP client) can start, poll, and cancel runs programmatically against the same store the GUI uses — that's the automation path today. The same server also exposes step-level UI-session tools that drive a web or iOS target with no LLM loop and no API key, and the binary is standalone and relocatable, so it can be bundled into another product's automation. A first-class headless CI mode that fails PR builds on UX regressions is still on the roadmap."
       }
     },
     {
@@ -102,7 +102,7 @@
       "name": "Can I drive Harness from an agent or Claude?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Yes. Harness ships harness-mcp, a stdio MCP (Model Context Protocol) server built from the same source as the app. Register it in your MCP client and an agent — Claude or any MCP client — can list and create Applications, Personas, and Actions, stage per-app credentials, and start, poll, and cancel runs (start_run, get_run_status, get_run_result, cancel_run, list_runs). It opens the GUI's on-disk store, so agent-created runs appear in the app — badged 'Agent', in a dedicated Agent Sessions view with a live step counter — and vice-versa."
+        "text": "Yes. Harness ships harness-mcp, a stdio MCP (Model Context Protocol) server built from the same source as the app. Register it in your MCP client and an agent — Claude or any MCP client — can list and create Applications, Personas, and Actions, stage per-app credentials, and start, poll, and cancel runs (start_run, get_run_status, get_run_result, cancel_run, list_runs). It opens the GUI's on-disk store, so agent-created runs appear in the app — badged 'Agent', in a dedicated Agent Sessions view with a live step counter — and vice-versa. Beyond full runs, five step-level UI-session tools (start_ui_session, observe_ui, act_ui, end_ui_session, list_ui_sessions) let a client drive a web or iOS target directly — see the screen and act on it, one step at a time — with no LLM loop and no API key. The binary is standalone and relocatable, so another product can bundle it and run it from anywhere."
       }
     }
   ]
@@ -178,7 +178,7 @@
       <li>Cloud or fully-local models</li>
       <li>Replayable runs</li>
       <li>Friction-typed events</li>
-      <li>Agent-drivable (MCP)</li>
+      <li>Agent-drivable (MCP) — runs or step sessions</li>
       <li>Auto-updating</li>
       <li>MIT licensed</li>
     </ul>
@@ -370,7 +370,7 @@
   <section class="band band-alt" aria-labelledby="mcp-title">
     <div class="wrap">
       <h2 id="mcp-title">Run it yourself — or hand it to an agent.</h2>
-      <p class="sub">Harness ships <code>harness-mcp</code>, a stdio <a href="https://modelcontextprotocol.io">MCP</a> server built from the same source as the app. Point Claude — or any MCP client — at it, and an agent composes and launches real user-test runs, then reads back the verdict and friction. Same engine, same on-disk history as the GUI.</p>
+      <p class="sub">Harness ships <code>harness-mcp</code>, a stdio <a href="https://modelcontextprotocol.io">MCP</a> server built from the same source as the app. Drive it two ways: <strong>hand an agent a goal</strong> and let it compose and launch a full user-test run, or <strong>open a step-level UI session</strong> and drive the target yourself — see the screen, act on it, one step at a time, with <strong>no LLM loop and no API key</strong>. Same engine, same on-disk history as the GUI — and the binary is standalone and relocatable, so another product can bundle it and run it from anywhere.</p>
       <div class="get-started-grid">
         <div>
           <pre class="code"><code># Register harness-mcp in your MCP client, then an agent can:
@@ -384,7 +384,7 @@ start_run {
   model:      "claude-haiku-4-5"
 }
 get_run_status · get_run_result · cancel_run</code></pre>
-          <p class="cta-inline">Runs execute asynchronously with an idle watchdog; results land in the shared store. More in <a href="https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md">HarnessMCP</a>.</p>
+          <p class="cta-inline">Runs execute asynchronously with an idle watchdog; results land in the shared store. Prefer to drive it yourself? <code>start_ui_session → observe_ui → act_ui → end_ui_session</code> is a see-and-act loop over web or the iOS Simulator with no API key — <code>observe_ui</code> returns a Set-of-Mark screenshot plus an <code>id → label (role)</code> table; <code>act_ui</code> runs one action and auto-observes. More in <a href="https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md">HarnessMCP</a>.</p>
         </div>
         <div>
           <h3 class="h3-tight">Agent runs are first-class</h3>
@@ -515,7 +515,7 @@ open Harness.xcodeproj</code></pre>
         <details>
           <summary>Can I run Harness in CI, headless?</summary>
           <div>
-            <p>Partly, today. Harness ships <code>harness-mcp</code> (see above), so an agent can start, poll, and cancel runs programmatically against the same store the GUI uses — that's the automation path right now. A first-class headless CI mode that fails PR builds on UX regressions is still on the roadmap; watch <a href="https://github.com/awizemann/harness/issues">the issue tracker</a>.</p>
+            <p>Partly, today. Harness ships <code>harness-mcp</code> (see above), so an agent can start, poll, and cancel runs programmatically against the same store the GUI uses — that's the automation path right now. The same server also exposes step-level UI-session tools that drive a web or iOS target with <strong>no LLM loop and no API key</strong>, and the binary is standalone and relocatable, so it can be bundled into another product's automation. A first-class headless CI mode that fails PR builds on UX regressions is still on the roadmap; watch <a href="https://github.com/awizemann/harness/issues">the issue tracker</a>.</p>
           </div>
         </details>
         <details>
@@ -540,7 +540,8 @@ open Harness.xcodeproj</code></pre>
         <details>
           <summary>Can I drive Harness from an agent or Claude?</summary>
           <div>
-            <p>Yes. Harness ships <code>harness-mcp</code>, a stdio <a href="https://modelcontextprotocol.io">MCP</a> server built from the same source as the app. Register it in your MCP client and an agent — Claude or any MCP client — can list and create Applications, Personas, and Actions, stage per-app credentials, and <strong>start, poll, and cancel runs</strong> (<code>start_run</code>, <code>get_run_status</code>, <code>get_run_result</code>, <code>cancel_run</code>, <code>list_runs</code>). It opens the GUI's on-disk store, so agent-created runs appear in the app — badged <strong>Agent</strong>, in a dedicated Agent Sessions view — and vice-versa. See <a href="https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md">HarnessMCP</a>.</p>
+            <p>Yes. Harness ships <code>harness-mcp</code>, a stdio <a href="https://modelcontextprotocol.io">MCP</a> server built from the same source as the app. Register it in your MCP client and an agent — Claude or any MCP client — can list and create Applications, Personas, and Actions, stage per-app credentials, and <strong>start, poll, and cancel runs</strong> (<code>start_run</code>, <code>get_run_status</code>, <code>get_run_result</code>, <code>cancel_run</code>, <code>list_runs</code>). It opens the GUI's on-disk store, so agent-created runs appear in the app — badged <strong>Agent</strong>, in a dedicated Agent Sessions view — and vice-versa.</p>
+            <p>Beyond full runs, five <strong>step-level UI-session</strong> tools (<code>start_ui_session</code>, <code>observe_ui</code>, <code>act_ui</code>, <code>end_ui_session</code>, <code>list_ui_sessions</code>) let a client drive a web or iOS target directly — see the screen and act on it, one step at a time — with <strong>no LLM loop and no API key</strong>. The binary is standalone and relocatable, so another product can bundle it. See <a href="https://github.com/awizemann/harness/blob/main/HarnessMCP/README.md">HarnessMCP</a>.</p>
           </div>
         </details>
       </div>
