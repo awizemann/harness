@@ -35,6 +35,12 @@ actor MCPServer {
     /// empty the first time an agent lists or runs. Set once per process.
     var didSeedBuiltIns = false
 
+    /// The single in-flight (or completed) UI-session teardown, so the
+    /// graceful stdin-closed path and a SIGTERM/SIGINT handler share ONE
+    /// `shutdownAll()`: whoever arrives second awaits the same task's
+    /// completion instead of racing `exit(0)` past a still-running teardown.
+    private var shutdownTask: Task<Void, Never>?
+
     private let stdout = FileHandle.standardOutput
 
     // MARK: - Run loop
@@ -48,14 +54,34 @@ actor MCPServer {
         } catch {
             log("stdin read error: \(error.localizedDescription)")
         }
-        // Tear down any open UI sessions before the process exits so no
-        // WKWebView window / booted simulator / WDA process leaks. Only
-        // touch the container if it was actually opened (a UI-session tool
-        // ran) — don't force a store open on the way out.
-        if case .success(let c)? = containerResult {
-            await c.uiSessions.shutdownAll()
-        }
+        await shutdownIfNeeded()
         log("stdin closed — exiting")
+    }
+
+    /// Tear down any open UI sessions before the process exits so no
+    /// WKWebView window / booted simulator / WDA process / macOS SUT leaks.
+    /// The teardown runs exactly once; concurrent callers (graceful
+    /// stdin-close vs. a SIGTERM/SIGINT handler) all await the SAME task, so
+    /// none exits the process while another's `shutdownAll()` is still in
+    /// flight. Only touches the container if a UI-session tool actually
+    /// opened it — never forces a store open on the way out.
+    func shutdownIfNeeded() async {
+        if let existing = shutdownTask {
+            await existing.value
+            return
+        }
+        // Read the container on the actor, then hand the (Sendable) value to
+        // the shared task. The assignment happens before the first `await`,
+        // so a second caller entering later always sees this task.
+        let opened: MCPContainer? = {
+            if case .success(let c)? = containerResult { return c }
+            return nil
+        }()
+        let task = Task {
+            if let opened { await opened.uiSessions.shutdownAll() }
+        }
+        shutdownTask = task
+        await task.value
     }
 
     func container() throws -> MCPContainer {

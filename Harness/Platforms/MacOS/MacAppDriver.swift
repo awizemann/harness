@@ -68,6 +68,17 @@ actor MacAppDriver: UXDriving {
     /// before capture/input.
     let backend: MacInputBackendKind
 
+    /// The launched SUT's process id. EVERY SUT operation (terminate,
+    /// foreground, window lookup, input delivery) binds to this pid, never
+    /// to a bundle-id match — a same-bundle-id stranger (e.g. the
+    /// developer's own running copy of the crew-built app) must never be
+    /// touched. Mutable because `relaunchForNewLeg()` quits this instance
+    /// and adopts the freshly-launched instance's pid from the launch
+    /// result. Bundle-id resolution is legitimate in exactly one place
+    /// (`relaunchForNewLeg`), and even there only to find a `.app` path to
+    /// launch FROM — the authoritative pid always comes from the launch.
+    private var launchedPID: pid_t
+
     /// Set-of-Mark cache for the most recent screenshot's probe.
     /// `tap_mark(id)` resolves against this; refreshed on every
     /// `screenshot(into:)` call so marks reflect the same DOM state
@@ -78,12 +89,14 @@ actor MacAppDriver: UXDriving {
         bundleIdentifier: String,
         appBundleURL: URL?,
         credential: CredentialBinding? = nil,
-        backend: MacInputBackendKind? = nil
+        backend: MacInputBackendKind? = nil,
+        processIdentifier: pid_t
     ) {
         self.bundleIdentifier = bundleIdentifier
         self.appBundleURL = appBundleURL
         self.credential = credential
         self.backend = backend ?? .fromEnvironment(ProcessInfo.processInfo.environment)
+        self.launchedPID = processIdentifier
     }
 
     // MARK: - UXDriving
@@ -304,41 +317,57 @@ actor MacAppDriver: UXDriving {
     /// relaunches) and the ui-session teardown path (which does not), so
     /// the two can't diverge on how the SUT is killed.
     func terminateApp() async {
-        let running = NSWorkspace.shared.runningApplications
-            .first(where: { $0.bundleIdentifier == bundleIdentifier })
-        guard let app = running else { return }
+        // Resolve strictly by the launched pid — a same-bundle-id stranger
+        // (the developer's own copy) must never be the one we quit. nil ⇒
+        // already gone (idempotent no-op).
+        guard let app = NSRunningApplication(processIdentifier: launchedPID) else { return }
         app.terminate()
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(100))
-            if !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleIdentifier }) {
-                return
-            }
+            if app.isTerminated { return }
         }
-        if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleIdentifier }) {
+        if !app.isTerminated {
             _ = app.forceTerminate()
         }
     }
 
     func relaunchForNewLeg() async throws {
-        // Quit the running app, then relaunch from the bundle URL (if we
-        // have one). NSWorkspace handles "cold relaunch from .app".
+        // Quit THIS instance (by its pid), then launch a fresh one and adopt
+        // the NEW instance's pid straight from the launch result.
+        // `terminateApp()` has already driven the old pid to termination
+        // (terminate → force-terminate), so the old instance is gone before
+        // any bundle-id-based rediscovery below — we can never re-adopt the
+        // instance we just killed, nor bind to a same-bundle-id stranger:
+        // the pid we store comes only from `openApplication`.
         await terminateApp()
+        let cfg = NSWorkspace.OpenConfiguration()
+        // Contained backend must not steal focus on reopen; only legacy HID
+        // relaunches activated.
+        cfg.activates = backend.activatesOnLaunch
+        // Force a genuinely new process. Without this, if a same-bundle-id
+        // stranger (the dev's own copy) is running, LaunchServices would just
+        // activate IT and hand its NSRunningApplication back — and we'd bind
+        // `launchedPID` to the stranger. A new instance guarantees the pid we
+        // adopt is the one we launched.
+        cfg.createsNewApplicationInstance = true
+        let launched: NSRunningApplication
         if let bundleURL = appBundleURL {
-            let cfg = NSWorkspace.OpenConfiguration()
-            // Contained backend must not steal focus on reopen; only
-            // legacy HID relaunches activated.
-            cfg.activates = backend.activatesOnLaunch
-            _ = try await NSWorkspace.shared.openApplication(at: bundleURL, configuration: cfg)
+            // NSWorkspace handles "cold relaunch from .app".
+            launched = try await NSWorkspace.shared.openApplication(at: bundleURL, configuration: cfg)
+        } else if let runningURL = appBundleURLByLookup() {
+            // No stored bundle URL → user provided an already-running app via
+            // bundle id. This is the ONE legitimate bundle-id lookup, and it
+            // only supplies a `.app` path to launch FROM; the authoritative
+            // pid still comes from the launch result below.
+            launched = try await NSWorkspace.shared.openApplication(at: runningURL, configuration: cfg)
         } else {
-            // No bundle URL → user provided an already-running app via
-            // bundle id. Best effort: ask LaunchServices to launch it
-            // again by bundle id.
-            let cfg = NSWorkspace.OpenConfiguration()
-            cfg.activates = backend.activatesOnLaunch
-            if let runningURL = appBundleURLByLookup() {
-                _ = try await NSWorkspace.shared.openApplication(at: runningURL, configuration: cfg)
-            }
+            // Nothing left to relaunch from (old instance gone, no URL, no
+            // same-bundle-id copy to borrow a path from). Surface the standard
+            // not-running error rather than silently binding to a stale pid.
+            throw MacDriverError.appNotRunning(bundleID: bundleIdentifier)
         }
+        // Bind every subsequent SUT operation to the freshly-launched pid.
+        launchedPID = launched.processIdentifier
         // Wait briefly for the app's main window to come back. If it
         // doesn't, the next screenshot() will throw `windowNotFound`
         // and surface a clean error.
@@ -351,11 +380,10 @@ actor MacAppDriver: UXDriving {
     // MARK: - Internals
 
     /// Bring the SUT to the front so screenshots and CGEvents target it.
-    /// Idempotent — safe to call before every step.
+    /// Idempotent — safe to call before every step. Resolves strictly by
+    /// the launched pid; nil ⇒ the SUT died (surfaced as `appNotRunning`).
     private func ensureFront() throws {
-        guard let app = NSWorkspace.shared.runningApplications
-            .first(where: { $0.bundleIdentifier == bundleIdentifier })
-        else {
+        guard let app = NSRunningApplication(processIdentifier: launchedPID) else {
             throw MacDriverError.appNotRunning(bundleID: bundleIdentifier)
         }
         if !app.isActive {
@@ -365,24 +393,30 @@ actor MacAppDriver: UXDriving {
 
     /// Resolve the SUT's frontmost on-screen window from the CG window list.
     /// Returns nil when nothing matches (app is hidden, mid-launch, etc.).
-    private struct WindowInfo {
+    struct WindowInfo {
         let windowNumber: Int
         let bounds: CGRect      // global screen coordinates, top-left origin in macOS-y space
         let ownerPID: Int
     }
 
     private func findFrontWindow() throws -> WindowInfo? {
-        guard let app = NSWorkspace.shared.runningApplications
-            .first(where: { $0.bundleIdentifier == bundleIdentifier })
-        else {
+        // Liveness check binds to the launched pid — a dead SUT throws
+        // `appNotRunning`; we never adopt a same-bundle-id stranger.
+        guard NSRunningApplication(processIdentifier: launchedPID) != nil else {
             throw MacDriverError.appNotRunning(bundleID: bundleIdentifier)
         }
-        let pid = app.processIdentifier
         guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
-        // Pick the topmost on-screen window owned by this PID with non-trivial size.
-        for entry in raw {
+        return Self.selectFrontWindow(rows: raw, pid: launchedPID)
+    }
+
+    /// Pick the topmost on-screen window owned by `pid` with non-trivial
+    /// size. Pure over the CGWindowList rows so the pid-binding invariant —
+    /// rows owned by a same-bundle-id stranger are ignored — is unit-testable
+    /// without a live app.
+    nonisolated static func selectFrontWindow(rows: [[String: Any]], pid: pid_t) -> WindowInfo? {
+        for entry in rows {
             guard let ownerPID = entry[kCGWindowOwnerPID as String] as? Int,
                   ownerPID == Int(pid),
                   let windowNumber = entry[kCGWindowNumber as String] as? Int,
@@ -395,8 +429,10 @@ actor MacAppDriver: UXDriving {
         return nil
     }
 
-    /// Last-ditch lookup for the running app's bundle URL — used when the
-    /// caller never gave us one (raw bundle-id run mode).
+    /// Last-ditch lookup for the running app's bundle URL — used ONLY by
+    /// `relaunchForNewLeg()` to find a `.app` path to launch from in raw
+    /// bundle-id run mode (no stored URL). This is the single sanctioned
+    /// bundle-id resolution; it yields a launch path, never a pid.
     private func appBundleURLByLookup() -> URL? {
         NSWorkspace.shared.runningApplications
             .first(where: { $0.bundleIdentifier == bundleIdentifier })?

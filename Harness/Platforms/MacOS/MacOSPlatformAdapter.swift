@@ -87,7 +87,11 @@ struct MacOSPlatformAdapter: PlatformAdapter {
         // Wait for the SUT to expose a frontmost window. Bail with a clear
         // error if it never does — the run can't proceed without one.
         let credential = await services.resolveCredentialBinding(for: request)
-        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: bundleURL, credential: credential, backend: backend)
+        // Bind the driver to the launched instance's pid — every SUT op
+        // (terminate, foreground, window lookup, input) scopes to THIS pid,
+        // never a bundle-id match, so a same-bundle-id stranger (the dev's
+        // own copy) is never touched.
+        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: bundleURL, credential: credential, backend: backend, processIdentifier: runningApp.processIdentifier)
         var pointSize = CGSize(width: 1280, height: 800) // safe default until first capture refines it
         var ready = false
         for _ in 0..<60 {

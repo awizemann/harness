@@ -727,7 +727,9 @@ struct MacOSAdapterTeardownTests {
     /// policy (does teardown attempt a quit?) is exercised without a live app.
     private func macSession() -> RunSession {
         let bundleID = "com.harness.tests.nonexistent-\(UUID().uuidString)"
-        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: nil)
+        // pid -1 is never a live process, so `terminateApp()` takes its
+        // idempotent no-op path (NSRunningApplication(processIdentifier:) → nil).
+        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: nil, processIdentifier: -1)
         return RunSession(
             kind: .macosApp, driver: driver, pointSize: CGSize(width: 100, height: 100),
             bundleIdentifier: bundleID, appBundleURL: nil,
@@ -758,3 +760,46 @@ struct MacOSAdapterTeardownTests {
         await adapter.teardown(session)
     }
 }
+
+#if canImport(AppKit)
+@Suite("MacAppDriver — SUT window resolution binds to the launched pid")
+struct MacAppDriverPidScopingTests {
+
+    /// Build a CGWindowList-shaped row the way `selectFrontWindow` reads it.
+    private func windowRow(ownerPID: Int, windowNumber: Int, w: CGFloat, h: CGFloat) -> [String: Any] {
+        [
+            kCGWindowOwnerPID as String: ownerPID,
+            kCGWindowNumber as String: windowNumber,
+            kCGWindowBounds as String: ["X": 0.0, "Y": 0.0, "Width": w, "Height": h] as [String: CGFloat]
+        ]
+    }
+
+    @Test("picks the window owned by the launched pid, ignoring a same-bundle-id stranger's window")
+    func picksOwnPidOverStranger() {
+        let sutPID: pid_t = 4242
+        let strangerPID = 9999   // the developer's own copy of the same app
+        // Stranger's window is listed FIRST (topmost) — a bundle-id match would
+        // wrongly grab it; a pid match must skip past it to the SUT's window.
+        let rows: [[String: Any]] = [
+            windowRow(ownerPID: strangerPID, windowNumber: 1, w: 800, h: 600),
+            windowRow(ownerPID: Int(sutPID), windowNumber: 2, w: 640, h: 480)
+        ]
+        let info = MacAppDriver.selectFrontWindow(rows: rows, pid: sutPID)
+        #expect(info?.ownerPID == Int(sutPID))
+        #expect(info?.windowNumber == 2)
+    }
+
+    @Test("returns nil when only a same-bundle-id stranger has a window (SUT has none)")
+    func nilWhenOnlyStrangerHasWindow() {
+        let rows = [windowRow(ownerPID: 9999, windowNumber: 1, w: 800, h: 600)]
+        #expect(MacAppDriver.selectFrontWindow(rows: rows, pid: 4242) == nil)
+    }
+
+    @Test("rejects sub-threshold (chrome/shadow) windows owned by the launched pid")
+    func rejectsTinyWindows() {
+        let sutPID: pid_t = 4242
+        let rows = [windowRow(ownerPID: Int(sutPID), windowNumber: 7, w: 20, h: 20)]
+        #expect(MacAppDriver.selectFrontWindow(rows: rows, pid: sutPID) == nil)
+    }
+}
+#endif
