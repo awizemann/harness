@@ -138,6 +138,15 @@ private enum UISessionTestSupport {
             .appendingPathComponent("uisession-test-\(UUID().uuidString)", isDirectory: true)
     }
 
+    /// A per-test default artifact root (temp dir) for sessions started
+    /// WITHOUT an explicit `artifact_dir`. Injected into every supervisor so
+    /// a suite run never litters the real `~/Library/Application Support/
+    /// Harness/runs/ui-sessions/`. Cleaned up by the caller's `defer`.
+    static func tempArtifactRoot() -> URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("uisession-artifacts-\(UUID().uuidString)", isDirectory: true)
+    }
+
     /// A preparer whose sessions all share one driver + adapter + probe.
     static func preparer(
         platform: PlatformKind,
@@ -178,11 +187,14 @@ struct UISessionLifecycleTests {
             annotation: annotation, execDetail: "scrolled 0 → 100 (12%)"
         )
         let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         let sup = UISessionSupervisor(
             preparer: UISessionTestSupport.preparer(
                 platform: .web, label: "example.com", driver: driver,
                 pointSize: CGSize(width: 100, height: 100), adapter: adapter
-            )
+            ),
+            defaultArtifactRoot: artifactRoot
         )
 
         // start
@@ -266,10 +278,12 @@ struct UISessionLifecycleTests {
             cleanPNG: clean, markedPNG: marked, annotation: nil, execDetail: nil
         )
         let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
             platform: .web, label: "web", driver: driver,
             pointSize: CGSize(width: 60, height: 30), adapter: adapter
-        ))
+        ), defaultArtifactRoot: artifactRoot)
         let info = try await sup.start(UISessionConfig(
             platform: .web, artifactDirPath: dir.path, webURL: "https://x.example",
             viewportWidth: 60, viewportHeight: 30
@@ -284,7 +298,7 @@ struct UISessionLifecycleTests {
         _ = await sup.end(id: info.id)
     }
 
-    @Test("no artifact_dir → CLEAN frame lands under the runs root")
+    @Test("no artifact_dir → CLEAN frame lands under the default artifact root (per-session subdir)")
     func tempArtifactRoot() async throws {
         let clean = UISessionTestSupport.solidPNG(width: 40, height: 40, color: .blue)
         let probe = TeardownProbe()
@@ -293,16 +307,19 @@ struct UISessionLifecycleTests {
             cleanPNG: clean, markedPNG: nil, annotation: nil, execDetail: nil
         )
         let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: probe)
+        // Inject a temp default root: proves the fallback resolves to
+        // <defaultArtifactRoot>/<id>, and keeps the frame out of the real
+        // Application Support runs dir. (Production nil → <runs>/ui-sessions.)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
             platform: .web, label: "web", driver: driver,
             pointSize: CGSize(width: 40, height: 40), adapter: adapter
-        ))
+        ), defaultArtifactRoot: artifactRoot)
         let info = try await sup.start(UISessionConfig(platform: .web, webURL: "https://x.example",
                                                        viewportWidth: 40, viewportHeight: 40))
-        let expectedRoot = HarnessPaths.runsDir
-            .appendingPathComponent("ui-sessions", isDirectory: true)
+        let expectedRoot = artifactRoot
             .appendingPathComponent(info.id.uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: expectedRoot) }
 
         _ = try await sup.observe(id: info.id, clean: false)
         let diskURL = expectedRoot.appendingPathComponent("steps/001.png")
@@ -316,7 +333,10 @@ struct UISessionLifecycleTests {
 @Suite("UISessionSupervisor — guards")
 struct UISessionGuardTests {
 
-    private func webSupervisor(cap probe: TeardownProbe = TeardownProbe()) -> UISessionSupervisor {
+    private func webSupervisor(
+        cap probe: TeardownProbe = TeardownProbe(),
+        artifactRoot: URL = UISessionTestSupport.tempArtifactRoot()
+    ) -> UISessionSupervisor {
         let driver = FakeUXDriver(
             pointSize: CGSize(width: 50, height: 50), pixelSize: CGSize(width: 50, height: 50),
             cleanPNG: UISessionTestSupport.solidPNG(width: 50, height: 50, color: .gray),
@@ -327,12 +347,14 @@ struct UISessionGuardTests {
         return UISessionSupervisor(preparer: UISessionTestSupport.preparer(
             platform: .web, label: "web", driver: driver,
             pointSize: CGSize(width: 50, height: 50), adapter: adapter
-        ))
+        ), defaultArtifactRoot: artifactRoot)
     }
 
     @Test("concurrent-session cap of 2 is enforced")
     func capEnforced() async throws {
-        let sup = webSupervisor()
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
+        let sup = webSupervisor(artifactRoot: artifactRoot)
         _ = try await sup.start(UISessionConfig(platform: .web, webURL: "https://a.example"))
         _ = try await sup.start(UISessionConfig(platform: .web, webURL: "https://b.example"))
         await #expect(throws: UISessionError.self) {
@@ -345,6 +367,8 @@ struct UISessionGuardTests {
     @Test("concurrent starts can't overshoot the cap across the prepare await")
     func concurrentStartsRespectCap() async throws {
         let probe = TeardownProbe()
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         // Preparer sleeps so the three starts overlap at the prepare await —
         // without the pending-start reservation, all three would slip past
         // the cap check (which straddles the await).
@@ -362,7 +386,7 @@ struct UISessionGuardTests {
                 credentialLabel: nil, credentialUsername: nil
             )
             return PreparedUISession(session: session, adapter: adapter)
-        })
+        }, defaultArtifactRoot: artifactRoot)
         async let a = try? sup.start(UISessionConfig(platform: .web, webURL: "https://a.example"))
         async let b = try? sup.start(UISessionConfig(platform: .web, webURL: "https://b.example"))
         async let c = try? sup.start(UISessionConfig(platform: .web, webURL: "https://c.example"))
@@ -394,10 +418,12 @@ struct UISessionGuardTests {
             markedPNG: nil, annotation: nil, execDetail: nil
         )
         let adapter = FakePlatformAdapter(kind: .macosApp, names: ToolSchema.macOSToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
             platform: .macosApp, label: "MyMacApp", driver: driver,
             pointSize: CGSize(width: 1280, height: 800), adapter: adapter
-        ))
+        ), defaultArtifactRoot: artifactRoot)
         // Prebuilt app_path (absolute) — the preferred QA flow — is accepted.
         let info = try await sup.start(UISessionConfig(
             platform: .macosApp, artifactDirPath: dir.path,
@@ -421,10 +447,12 @@ struct UISessionGuardTests {
             markedPNG: nil, annotation: nil, execDetail: nil
         )
         let adapter = FakePlatformAdapter(kind: .macosApp, names: ToolSchema.macOSToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
             platform: .macosApp, label: "Built", driver: driver,
             pointSize: CGSize(width: 800, height: 600), adapter: adapter
-        ))
+        ), defaultArtifactRoot: artifactRoot)
         let info = try await sup.start(UISessionConfig(
             platform: .macosApp,
             macProjectPath: "/abs/App.xcodeproj", macScheme: "App"
@@ -492,12 +520,15 @@ struct UISessionIdleTests {
             markedPNG: nil, annotation: nil, execDetail: nil
         )
         let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         let sup = UISessionSupervisor(
             preparer: UISessionTestSupport.preparer(
                 platform: .web, label: "web", driver: driver,
                 pointSize: CGSize(width: 30, height: 30), adapter: adapter
             ),
-            idleTimeoutSeconds: 600
+            idleTimeoutSeconds: 600,
+            defaultArtifactRoot: artifactRoot
         )
         let info = try await sup.start(UISessionConfig(platform: .web, webURL: "https://a.example"))
 
@@ -522,12 +553,15 @@ struct UISessionIdleTests {
             markedPNG: nil, annotation: nil, execDetail: nil
         )
         let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         let sup = UISessionSupervisor(
             preparer: UISessionTestSupport.preparer(
                 platform: .web, label: "web", driver: driver,
                 pointSize: CGSize(width: 30, height: 30), adapter: adapter
             ),
-            idleTimeoutSeconds: 0
+            idleTimeoutSeconds: 0,
+            defaultArtifactRoot: artifactRoot
         )
         _ = try await sup.start(UISessionConfig(platform: .web, webURL: "https://a.example"))
         let torn = await sup.sweepIdle(now: Date().addingTimeInterval(100_000))
@@ -542,7 +576,10 @@ struct UISessionIdleTests {
 @Suite("UISessionSupervisor — act_ui tool validation & mapping")
 struct UISessionActMappingTests {
 
-    private func webSession() async throws -> (UISessionSupervisor, UUID, FakeUXDriver) {
+    /// Returns the temp artifact root as the last tuple element so the
+    /// caller can `defer`-clean it — keeps started sessions out of the real
+    /// Application Support runs dir.
+    private func webSession() async throws -> (UISessionSupervisor, UUID, FakeUXDriver, URL) {
         let probe = TeardownProbe()
         let driver = FakeUXDriver(
             pointSize: CGSize(width: 80, height: 80), pixelSize: CGSize(width: 80, height: 80),
@@ -551,17 +588,19 @@ struct UISessionActMappingTests {
             annotation: "MARKS:\n  1 → \"x\" (button)", execDetail: nil
         )
         let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
         let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
             platform: .web, label: "web", driver: driver,
             pointSize: CGSize(width: 80, height: 80), adapter: adapter
-        ))
+        ), defaultArtifactRoot: artifactRoot)
         let info = try await sup.start(UISessionConfig(platform: .web, webURL: "https://a.example"))
-        return (sup, info.id, driver)
+        return (sup, info.id, driver, artifactRoot)
     }
 
     @Test("meta tools are rejected by act_ui")
     func metaRejected() async throws {
-        let (sup, id, _) = try await webSession()
+        let (sup, id, _, artifactRoot) = try await webSession()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         for meta in ["read_screen", "note_friction", "mark_goal_done"] {
             await #expect(throws: UISessionError.self) {
                 _ = try await sup.act(id: id, tool: meta, inputData: Data("{}".utf8))
@@ -572,7 +611,8 @@ struct UISessionActMappingTests {
 
     @Test("a tool not in the platform vocabulary is rejected (swipe on web)")
     func unsupportedRejected() async throws {
-        let (sup, id, _) = try await webSession()
+        let (sup, id, _, artifactRoot) = try await webSession()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         await #expect(throws: UISessionError.self) {
             _ = try await sup.act(id: id, tool: "swipe",
                                   inputData: Data(#"{"x1":0,"y1":0,"x2":1,"y2":1}"#.utf8))
@@ -582,7 +622,8 @@ struct UISessionActMappingTests {
 
     @Test("tap_mark / navigate / scroll / type map to the right ToolInput")
     func mapsInputs() async throws {
-        let (sup, id, driver) = try await webSession()
+        let (sup, id, driver, artifactRoot) = try await webSession()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
 
         _ = try await sup.act(id: id, tool: "tap_mark", inputData: Data(#"{"id":7}"#.utf8))
         _ = try await sup.act(id: id, tool: "navigate", inputData: Data(#"{"url":"https://z.example"}"#.utf8))
@@ -602,7 +643,8 @@ struct UISessionActMappingTests {
 
     @Test("a failed driver.execute surfaces actionFailed + the error detail")
     func failedActionSurfaced() async throws {
-        let (sup, id, driver) = try await webSession()
+        let (sup, id, driver, artifactRoot) = try await webSession()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
         await driver.setExecuteError(UISessionError.prepareFailed("boom"))
         let obs = try await sup.act(id: id, tool: "tap_mark", inputData: Data(#"{"id":1}"#.utf8))
         #expect(obs.actionFailed)

@@ -107,7 +107,10 @@ actor MacAppDriver: UXDriving {
         // needs the SUT frontmost so global-HID events land on it.
         if backend.requiresForeground { try ensureFront() }
         guard let info = try findFrontWindow() else {
-            throw MacDriverError.windowNotFound(bundleID: bundleIdentifier)
+            throw MacDriverError.windowNotFound(
+                bundleID: bundleIdentifier,
+                screenAccessGranted: CGPreflightScreenCaptureAccess()
+            )
         }
 
         // Probe AX tree BEFORE capture so marks reflect the same
@@ -128,7 +131,7 @@ actor MacAppDriver: UXDriving {
             CGWindowID(info.windowNumber),
             [.boundsIgnoreFraming, .nominalResolution]
         ) else {
-            throw MacDriverError.captureFailed
+            throw MacDriverError.captureFailed(screenAccessGranted: CGPreflightScreenCaptureAccess())
         }
         let pixelW = cgImage.width
         let pixelH = cgImage.height
@@ -136,7 +139,7 @@ actor MacAppDriver: UXDriving {
 
         let bitmap = NSBitmapImageRep(cgImage: cgImage)
         guard let png = bitmap.representation(using: .png, properties: [:]) else {
-            throw MacDriverError.captureFailed
+            throw MacDriverError.captureFailed(screenAccessGranted: CGPreflightScreenCaptureAccess())
         }
         try png.write(to: url, options: .atomic)
 
@@ -176,7 +179,10 @@ actor MacAppDriver: UXDriving {
         // needs it frontmost so global-HID events reach it.
         if backend.requiresForeground { try ensureFront() }
         guard let info = try findFrontWindow() else {
-            throw MacDriverError.windowNotFound(bundleID: bundleIdentifier)
+            throw MacDriverError.windowNotFound(
+                bundleID: bundleIdentifier,
+                screenAccessGranted: CGPreflightScreenCaptureAccess()
+            )
         }
 
         switch call.input {
@@ -1078,8 +1084,16 @@ actor MacAppDriver: UXDriving {
 
 enum MacDriverError: Error, Sendable, LocalizedError {
     case appNotRunning(bundleID: String)
-    case windowNotFound(bundleID: String)
-    case captureFailed
+    /// No frontmost SUT window resolved. `screenAccessGranted` is a snapshot
+    /// of `CGPreflightScreenCaptureAccess()` taken WHEN the error was built
+    /// (never per-frame) so the message can be honest: window enumeration
+    /// works without the Screen Recording grant, so a missing window WITH
+    /// access is a genuine window problem — not a permissions one.
+    case windowNotFound(bundleID: String, screenAccessGranted: Bool)
+    /// The window resolved but `CGWindowListCreateImage` returned nothing.
+    /// `screenAccessGranted` snapshots preflight at build time so we only
+    /// blame permissions when they're actually the cause.
+    case captureFailed(screenAccessGranted: Bool)
     case eventCreationFailed(action: String)
     case unknownKey(name: String)
     case unknownMark(id: Int)
@@ -1088,14 +1102,35 @@ enum MacDriverError: Error, Sendable, LocalizedError {
     /// is deliberately no global-HID fallback — this is honest failure.
     case unactuatable(action: String, detail: String)
 
+    /// TCC grants attach to the responsible parent process, not this binary,
+    /// so we point the human at the app that launched `harness-mcp`.
+    private static let grantHint = "Grant Harness the Screen Recording permission (Privacy & Security → Screen & System Audio Recording); the grant may attach to the parent app that launched harness-mcp, since macOS attributes it to the responsible process."
+
+    /// Pure message selection for a capture failure — factored out so the
+    /// granted/not-granted branch is unit-testable without real TCC state.
+    static func captureFailureMessage(screenAccessGranted: Bool) -> String {
+        if screenAccessGranted {
+            return "Couldn't capture the target window — it may have just closed or moved off-screen. Re-observe to refresh the window; if it persists the app may have quit. (Screen Recording is granted, so this is not a permissions problem.)"
+        }
+        return "Screen capture failed. \(grantHint)"
+    }
+
+    /// Pure message selection for a missing window — same testable shape.
+    static func windowNotFoundMessage(bundleID: String, screenAccessGranted: Bool) -> String {
+        if screenAccessGranted {
+            return "Couldn't find a frontmost window for '\(bundleID)' — it may be miniaturized, closed, or still launching. Re-observe once the window is visible. (Screen Recording is granted, so this is a window problem, not a permissions one.)"
+        }
+        return "Couldn't find a frontmost window for '\(bundleID)'. \(grantHint)"
+    }
+
     var errorDescription: String? {
         switch self {
         case .appNotRunning(let id):
             return "macOS app '\(id)' isn't running. Launch failed or it quit unexpectedly."
-        case .windowNotFound(let id):
-            return "Couldn't find a frontmost window for '\(id)'. Make sure it has at least one visible window and Harness has Screen Recording permission."
-        case .captureFailed:
-            return "Screen capture failed. Grant Screen Recording permission to Harness in Privacy & Security settings."
+        case .windowNotFound(let id, let granted):
+            return Self.windowNotFoundMessage(bundleID: id, screenAccessGranted: granted)
+        case .captureFailed(let granted):
+            return Self.captureFailureMessage(screenAccessGranted: granted)
         case .eventCreationFailed(let action):
             return "Failed to synthesise input event '\(action)'. Make sure Harness has Accessibility permission if needed."
         case .unknownKey(let name):

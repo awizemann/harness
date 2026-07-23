@@ -178,3 +178,52 @@ struct MacInputBackendTests {
         #expect(text.contains("HARNESS_MACOS_INPUT=hid"))
     }
 }
+
+// MARK: - Preflight-aware capture / window errors
+
+/// The capture and window-not-found messages must not blame Screen Recording
+/// permission when preflight says access IS granted — the incident that
+/// motivated this: a terminated SUT surfaced a "grant permission" message and
+/// cost a diagnostic round. Message selection is a pure function of the
+/// preflight bool, so it is decidable here without any real TCC state.
+@Suite("MacDriverError — preflight-aware capture / window messages")
+struct MacDriverErrorPreflightTests {
+
+    @Test("capture failure with access GRANTED does not blame permissions and suggests re-observing")
+    func captureGrantedIsHonest() {
+        let msg = MacDriverError.captureFailureMessage(screenAccessGranted: true)
+        #expect(!msg.contains("Grant"))
+        #expect(!msg.contains("Screen Recording permission"))
+        #expect(msg.lowercased().contains("re-observe"))
+        // The same message is what the enum surfaces.
+        #expect(MacDriverError.captureFailed(screenAccessGranted: true).errorDescription == msg)
+    }
+
+    @Test("capture failure with access NOT granted keeps the grant instruction + responsible-process note")
+    func captureNotGrantedNudgesGrant() {
+        let msg = MacDriverError.captureFailureMessage(screenAccessGranted: false)
+        #expect(msg.contains("Screen Recording"))
+        #expect(msg.contains("Grant"))
+        // TCC attaches to the responsible parent process.
+        #expect(msg.contains("harness-mcp"))
+        #expect(MacDriverError.captureFailed(screenAccessGranted: false).errorDescription == msg)
+    }
+
+    @Test("missing window with access GRANTED is framed as a window problem, not a permissions one")
+    func windowGrantedIsWindowProblem() {
+        let msg = MacDriverError.windowNotFoundMessage(bundleID: "com.example.App", screenAccessGranted: true)
+        #expect(msg.contains("com.example.App"))
+        #expect(!msg.contains("Grant"))
+        #expect(msg.contains("miniaturized") || msg.contains("still launching") || msg.contains("closed"))
+        #expect(MacDriverError.windowNotFound(bundleID: "com.example.App", screenAccessGranted: true).errorDescription == msg)
+    }
+
+    @Test("missing window with access NOT granted keeps the grant instruction")
+    func windowNotGrantedNudgesGrant() {
+        let msg = MacDriverError.windowNotFoundMessage(bundleID: "com.example.App", screenAccessGranted: false)
+        #expect(msg.contains("com.example.App"))
+        #expect(msg.contains("Grant"))
+        #expect(msg.contains("harness-mcp"))
+        #expect(MacDriverError.windowNotFound(bundleID: "com.example.App", screenAccessGranted: false).errorDescription == msg)
+    }
+}

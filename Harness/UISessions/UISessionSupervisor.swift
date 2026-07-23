@@ -41,6 +41,11 @@ actor UISessionSupervisor {
     /// Optional override for the bounded `start` wait. `nil` → per-platform
     /// defaults (web 120s, iOS 900s). Always finite — `start` can never wedge.
     private let startTimeoutOverrideSeconds: Int?
+    /// Base directory for sessions started WITHOUT an explicit `artifact_dir`.
+    /// `nil` (production default) → `<runs>/ui-sessions/`, byte-identical to
+    /// the historical behavior. Tests inject a per-test temporary root so a
+    /// suite run never litters `~/Library/Application Support/Harness`.
+    private let defaultArtifactRoot: URL?
 
     private var sessions: [UUID: Entry] = [:]
     /// Starts that have passed the cap check but haven't finished `prepare`
@@ -53,11 +58,13 @@ actor UISessionSupervisor {
     init(
         preparer: any UISessionPreparing,
         idleTimeoutSeconds: Int = 600,
-        startTimeoutOverrideSeconds: Int? = nil
+        startTimeoutOverrideSeconds: Int? = nil,
+        defaultArtifactRoot: URL? = nil
     ) {
         self.preparer = preparer
         self.idleTimeoutSeconds = max(0, idleTimeoutSeconds)
         self.startTimeoutOverrideSeconds = startTimeoutOverrideSeconds
+        self.defaultArtifactRoot = defaultArtifactRoot
     }
 
     /// Per-session bookkeeping. Reference type kept strictly on the actor
@@ -322,10 +329,12 @@ actor UISessionSupervisor {
         if let raw = config.artifactDirPath, !raw.isEmpty, (raw as NSString).isAbsolutePath {
             return URL(fileURLWithPath: raw, isDirectory: true)
         }
-        // Temp location under the existing runs-root conventions.
-        return HarnessPaths.runsDir
-            .appendingPathComponent("ui-sessions", isDirectory: true)
-            .appendingPathComponent(sessionID.uuidString, isDirectory: true)
+        // No explicit artifact_dir → per-session dir under the default root.
+        // Production (`defaultArtifactRoot == nil`) resolves to
+        // `<runs>/ui-sessions/`, unchanged; tests inject a temp root.
+        let base = defaultArtifactRoot
+            ?? HarnessPaths.runsDir.appendingPathComponent("ui-sessions", isDirectory: true)
+        return base.appendingPathComponent(sessionID.uuidString, isDirectory: true)
     }
 
     /// Capture one observation: CLEAN PNG → `steps/NNN.png`, append
