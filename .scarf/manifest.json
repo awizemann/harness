@@ -1,0 +1,12 @@
+{
+  "contents" : {
+    "agentsMd" : true,
+    "dashboard" : true
+  },
+  "description" : "",
+  "id" : "scarf\/harness",
+  "kanbanTenant" : "scarf:harness",
+  "name" : "harness",
+  "schemaVersion" : 3,
+  "version" : "0.0.0"
+}
