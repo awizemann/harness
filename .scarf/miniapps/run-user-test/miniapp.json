@@ -1,0 +1,10 @@
+{
+  "id": "run-user-test",
+  "name": "Run a User Test",
+  "version": "1.0.0",
+  "entry": "index.html",
+  "minBridgeVersion": "1.0",
+  "permissions": ["prompt", "events", "store"],
+  "panelHint": { "preferredWidth": 420, "placement": "panel" },
+  "generated": false
+}
