@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "title": "Harness",
+  "description": "Native macOS tool that drives iOS Simulator, macOS, and web apps with an AI agent to run simulated user tests.",
+  "updatedAt": "2026-08-13",
+  "theme": {
+    "accent": "indigo"
+  },
+  "sections": [
+    {
+      "title": "Overview",
+      "columns": 4,
+      "widgets": [
+        {
+          "type": "stat",
+          "title": "Version",
+          "value": "0.7.0",
+          "icon": "shippingbox",
+          "color": "indigo",
+          "subtitle": "alpha · MIT · Swift 6"
+        },
+        {
+          "type": "stat",
+          "title": "Tests",
+          "value": 303,
+          "icon": "checkmark.seal",
+          "color": "green",
+          "subtitle": "@Test functions across 37 suites",
+          "sparkline": [175, 218, 218, 223, 223, 228, 228, 275, 303]
+        },
+        {
+          "type": "stat",
+          "title": "Releases",
+          "value": 8,
+          "icon": "tag",
+          "color": "blue",
+          "subtitle": "v0.1.0 → v0.7.0",
+          "sparkline": [1, 2, 3, 4, 5, 6, 7, 8]
+        },
+        {
+          "type": "stat",
+          "title": "Build Targets",
+          "value": 4,
+          "icon": "square.stack.3d.up",
+          "color": "purple",
+          "subtitle": "App · Tests · CLI · MCP"
+        }
+      ]
+    },
+    {
+      "title": "Signal",
+      "columns": 2,
+      "widgets": [
+        {
+          "type": "chart",
+          "title": "Test suite growth by release",
+          "chartType": "bar",
+          "xLabel": "Release",
+          "yLabel": "@Test functions",
+          "series": [
+            {
+              "name": "Tests",
+              "color": "green",
+              "data": [
+                { "x": "0.1.0", "y": 175 },
+                { "x": "0.2.0", "y": 218 },
+                { "x": "0.2.1", "y": 218 },
+                { "x": "0.3.0", "y": 223 },
+                { "x": "0.3.1", "y": 223 },
+                { "x": "0.5.0", "y": 228 },
+                { "x": "0.6.0", "y": 228 },
+                { "x": "0.7.0", "y": 275 },
+                { "x": "main", "y": 303 }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "status_grid",
+          "title": "Target platforms",
+          "gridColumns": 3,
+          "cells": [
+            { "label": "iOS Simulator", "status": "success", "tooltip": "Driven via WebDriverAgent" },
+            { "label": "macOS apps", "status": "success", "tooltip": "Accessibility-driven control" },
+            { "label": "Web apps", "status": "success", "tooltip": "Browser-driven sessions" },
+            { "label": "harness-mcp", "status": "success", "tooltip": "MCP server: run + step-level UI session tools" },
+            { "label": "HarnessCLI", "status": "info", "tooltip": "Dev-time driver" },
+            { "label": "Physical devices", "status": "pending", "tooltip": "Not yet supported" }
+          ]
+        },
+        {
+          "type": "table",
+          "title": "Recent user-test runs",
+          "columns": ["Persona", "Target", "Goal", "Outcome", "Friction"],
+          "rows": [
+            ["First-time user", "iOS Simulator", "Complete onboarding", "Succeeded", "1"],
+            ["Power user", "macOS app", "Export a run report", "Succeeded", "0"],
+            ["Impatient shopper", "Web", "Checkout with saved card", "Gave up", "4"],
+            ["Screen-reader user", "iOS Simulator", "Find account settings", "Succeeded", "3"],
+            ["Returning user", "macOS app", "Replay a failed run", "Failed", "2"]
+          ]
+        },
+        {
+          "type": "list",
+          "title": "Roadmap",
+          "icon": "list.bullet.rectangle",
+          "items": [
+            { "text": "Step-level UI session tools (start/observe/act/end)", "status": "done" },
+            { "text": "MCP server for external agent clients", "status": "done" },
+            { "text": "Sparkle auto-update in the macOS app", "status": "done" },
+            { "text": "Richer friction taxonomy in run reports", "status": "active" },
+            { "text": "Run comparison across releases", "status": "pending" },
+            { "text": "Physical device targets", "status": "pending" }
+          ]
+        },
+        {
+          "type": "webview",
+          "title": "harness",
+          "url": "https://awizemann.github.io/harness/",
+          "height": 520
+        }
+      ]
+    }
+  ]
+}
