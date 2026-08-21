@@ -2,16 +2,13 @@
 title: Development Setup & First Clone
 type: note
 permalink: harness/core/development-setup-first-clone
-tags:
-- setup
-- dependencies
-- workflow
-source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
-source_paths: CONTRIBUTING.md, README.md, scripts/build-detached.sh, Harness/Services/SimulatorDriver.swift
-reviewed: 2026-06-24
-reviewed_by: human
+tags: [setup, dependencies, workflow]
+source_paths: [CONTRIBUTING.md, README.md, scripts/build-detached.sh, Harness/Services/SimulatorDriver.swift]
+source_sha: 0f314a201100eb3e00b943712ea5906fa4cf9d24
 created: 2026-06-16
 updated: 2026-06-16
+reviewed: 2026-07-23
+reviewed_by: audit:claude-code (background)
 ---
 
 ## Observations

@@ -2,16 +2,13 @@
 title: Contributing Rules & Public Surfaces Sync
 type: note
 permalink: harness/core/contributing-rules-public-surfaces-sync
-tags:
-- contributing
-- review
-- process
-source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
-source_paths: CONTRIBUTING.md
-reviewed: 2026-06-24
-reviewed_by: human
+tags: [contributing, review, process]
+source_paths: [CONTRIBUTING.md]
+source_sha: 0f314a201100eb3e00b943712ea5906fa4cf9d24
 created: 2026-06-16
-updated: 2026-06-16
+updated: 2026-07-21
+reviewed: 2026-07-23
+reviewed_by: audit:claude-code (background)
 ---
 
 ## Observations
@@ -20,7 +17,7 @@ updated: 2026-06-16
 - [rule] Skip public surface sync for: bug fixes with no observable contract change, pure refactors, typos, internal cleanups, test-only changes. #exceptions
 - [rule] PR guidelines: one topic per PR. Title in conventional-commit style (feat:, fix:, chore:, refactor:, docs:, test:). Body names standards touched (e.g., 'Standards: 03, 13, 14'). Build + tests must pass. For non-trivial changes, run standards/AUDIT_CHECKLIST.md and confirm in PR. #pr-process
 - [rule] Swift 6 strict concurrency. No synchronous file I/O on @MainActor. One subprocess actor: all Process() goes through ProcessRunner. Design tokens only (no magic numbers). Logging via os.Logger (no print() in production). Swift Testing framework (@Suite/@Test), no timing-dependent tests. #code-style
-- [workflow] Wiki is a separate git repo. Clone once as worktree: git worktree add .wiki-worktree git@github.com:awizemann/harness.wiki.git. Edit pages in .wiki-worktree/, push via scripts/wiki.sh (secret-scan first). #wiki
+- [workflow] Wiki lives in wiki/ (in-repo), managed by Memophant. Edit pages there; committing the wiki/ tier via Memophant secret-scans and publishes to the GitHub Wiki. wiki/ is the single source of truth; never edit the published copy directly. (No wiki.sh / .wiki-worktree pipeline.) #wiki
 
 ## Relations
 - relates_to [[Standards Index]]

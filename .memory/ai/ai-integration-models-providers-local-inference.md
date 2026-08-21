@@ -2,16 +2,13 @@
 title: AI Integration: Models, Providers, & Local Inference
 type: note
 permalink: harness/ai/ai-integration-models-providers-local-inference
-tags:
-- ai
-- providers
-- inference
-source_sha: a2d97403b48b392aace75e62c1724ec04c4a2562
-source_paths: Harness/Services/ClaudeClient.swift, standards/07-ai-integration.md, README.md
-reviewed: 2026-06-24
-reviewed_by: human
+tags: [ai, providers, inference]
+source_paths: [Harness/Services/ClaudeClient.swift, standards/07-ai-integration.md, README.md]
+source_sha: 0f314a201100eb3e00b943712ea5906fa4cf9d24
 created: 2026-06-16
 updated: 2026-06-16
+reviewed: 2026-07-23
+reviewed_by: audit:claude-code (background)
 ---
 
 ## Observations
