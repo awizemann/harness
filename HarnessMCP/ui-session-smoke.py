@@ -10,10 +10,12 @@ launches `harness-mcp`, and drives a REAL WKWebView session:
     start → observe → act tap_mark(input) → act type("hello") → observe
           → list_ui_sessions → end_ui_session
 
-Asserts image content + marks are present on observe, that the typed text
-surfaces in the mark table after the action (the state change), and that
-NO marked frame ever lands on disk (the CLEAN-only invariant, standard
-14 §6). Exits non-zero on any failure. No API key required.
+Asserts image content + marks are present on observe, that `structuredContent`
+carries the same marks with real point-space rects plus the page's visible
+text, that the typed text surfaces in BOTH the mark table and the structured
+marks after the action (the state change), and that NO marked frame ever lands
+on disk (the CLEAN-only invariant, standard 14 §6). Exits non-zero on any
+failure. No API key required.
 
 Usage: ui-session-smoke.py [path-to-harness-mcp-binary] [absolute-fixture-dir]
 
@@ -120,6 +122,14 @@ def content_text(result):
     return ""
 
 
+def structured_mark(result, label):
+    """The structuredContent mark whose label contains `label`, or None."""
+    for m in result.get("structuredContent", {}).get("marks", []):
+        if label in m.get("label", ""):
+            return m
+    return None
+
+
 def find_mark_id(mark_text, label):
     # Lines look like:  `  3 → "name field" (input)`
     for line in mark_text.splitlines():
@@ -133,6 +143,11 @@ def find_mark_id(mark_text, label):
 def redact(result):
     """A copy with image bytes summarized, for readable evidence."""
     out = {"isError": result.get("isError", False), "content": []}
+    if "structuredContent" in result:
+        sc = dict(result["structuredContent"])
+        if isinstance(sc.get("page_text"), str):
+            sc["page_text"] = sc["page_text"][:120] + ("…" if len(sc["page_text"]) > 120 else "")
+        out["structuredContent"] = sc
     for c in result.get("content", []):
         if c.get("type") == "image":
             out["content"].append({"type": "image", "mimeType": c.get("mimeType"),
@@ -185,6 +200,16 @@ def main():
         names = {t["name"] for t in tools}
         for t in ["start_ui_session", "observe_ui", "act_ui", "end_ui_session", "list_ui_sessions"]:
             check(t in names, "tools/list advertises %s" % t)
+        by_name = {t["name"]: t for t in tools}
+        for t in ["observe_ui", "act_ui"]:
+            schema = by_name[t].get("outputSchema")
+            check(isinstance(schema, dict) and schema.get("type") == "object",
+                  "%s declares an outputSchema" % t)
+            req = (schema or {}).get("required", [])
+            check(set(["session_id", "step", "point_size", "marks"]).issubset(set(req)),
+                  "%s outputSchema requires session_id/step/point_size/marks" % t)
+        check("outputSchema" not in by_name["list_ui_sessions"],
+              "tools with no structuredContent declare no outputSchema")
 
         print("\n--- start_ui_session ---")
         start = mcp.tool("start_ui_session", {"platform": "web", "url": url, "artifact_dir": artifact_dir})
@@ -207,6 +232,33 @@ def main():
             sig = base64.b64decode(img1["data"])[:8]
             check(sig[:4] == b"\x89PNG", "image bytes carry the PNG signature")
 
+        sc1 = obs1.get("structuredContent")
+        check(isinstance(sc1, dict), "observe returned structuredContent")
+        check(sc1.get("session_id") == session_id, "structuredContent.session_id matches")
+        check(sc1.get("step") == 1, "structuredContent.step is the 1st observation")
+        ps = sc1.get("point_size") or {}
+        check(ps.get("width") == 1280 and ps.get("height") == 800,
+              "structuredContent.point_size is the desktop viewport (%s)" % ps)
+        sm = structured_mark(obs1, "name field")
+        check(sm is not None, "structuredContent has a mark for the input")
+        if sm:
+            r = sm.get("rect") or {}
+            print("  input mark: %s" % json.dumps(sm))
+            check(all(k in r for k in ("x", "y", "width", "height")), "mark rect has all four fields")
+            check(r.get("width", 0) > 0 and r.get("height", 0) > 0, "mark rect has real dimensions")
+            # Rects live in point space, so they must fit the point_size box.
+            check(0 <= r.get("x", -1) and r["x"] + r["width"] <= ps.get("width", 0) + 1,
+                  "mark rect sits inside the viewport horizontally")
+            check(0 <= r.get("y", -1) and r["y"] + r["height"] <= ps.get("height", 0) + 1,
+                  "mark rect sits inside the viewport vertically")
+            check(sm.get("id") == find_mark_id(txt1, "name field"),
+                  "structured mark id agrees with the prose mark table")
+        pt = sc1.get("page_text")
+        check(isinstance(pt, str) and "Harness UI Session Smoke Fixture" in pt,
+              "structuredContent.page_text carries the page's visible text")
+        check("<button" not in (pt or "") and "<h1" not in (pt or ""),
+              "page_text is visible text, not markup")
+
         input_id = find_mark_id(txt1, "name field")
         check(input_id is not None, "resolved the input's mark id (%s)" % input_id)
 
@@ -220,6 +272,12 @@ def main():
         print(json.dumps(redact(act2), indent=2)[:1400])
         check("typed: hello" in txt_act2,
               "state change visible in the mark table after type ('typed: hello')")
+        check(structured_mark(act2, "typed: hello") is not None,
+              "state change ALSO visible in structuredContent.marks")
+        check("typed: hello" in (act2.get("structuredContent", {}).get("page_text") or ""),
+              "state change ALSO visible in structuredContent.page_text")
+        check((act2.get("structuredContent") or {}).get("step") == 3,
+              "act's auto-observe advances structuredContent.step")
 
         print("\n--- observe_ui (after action) ---")
         obs2 = mcp.tool("observe_ui", {"session_id": session_id})

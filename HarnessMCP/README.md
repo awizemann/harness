@@ -55,10 +55,46 @@ required on this path** (`EnvKeychain` is untouched).
 | Tool | Purpose |
 | --- | --- |
 | `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
-| `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content + a text block with the `id → label (role)` mark table, point size, and session label. `clean: true` returns the unmarked frame. |
-| `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `wait`), pass that tool's args at the top level, then auto-observe. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
+| `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content + a text block with the `id → label (role)` mark table, point size, and session label — **plus `structuredContent`** carrying the same marks as machine-readable rects (see below). `clean: true` returns the unmarked frame. |
+| `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `wait`), pass that tool's args at the top level, then auto-observe. Returns the same payload as `observe_ui`, `structuredContent` included. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
 | `end_ui_session` | Tear down the target. Idempotent — an unknown/closed id returns a calm `already closed`. |
 | `list_ui_sessions` | Open sessions: id, platform, label, created time, idle seconds. |
+
+**Structured observation (`structuredContent`).** `observe_ui` and `act_ui` also return an MCP
+`structuredContent` object matching the `outputSchema` they advertise in `tools/list`. It carries
+the geometry the badges were drawn from, which the prose mark table discards — for callout
+annotation, element-scoped visual diffs, and resolving an intent to a target by position:
+
+```json
+{
+  "session_id": "77F248B2-8679-4CC2-9C39-45E36570276B",
+  "step": 1,
+  "point_size": { "width": 1280, "height": 800 },
+  "marks": [
+    { "id": 1, "label": "name field", "role": "input",
+      "rect": { "x": 40, "y": 116, "width": 264, "height": 41 } },
+    { "id": 2, "label": "waiting", "role": "button",
+      "rect": { "x": 320, "y": 116, "width": 220, "height": 41 } }
+  ],
+  "page_text": "Harness UI Session Smoke Fixture\n\nFocus the field, type, …"
+}
+```
+
+- **Coordinate space.** `rect` and `point_size` are both in the platform's **point** space — CSS
+  pixels for web, simulator points for iOS, window points for macOS — the same space `tap(x, y)`
+  takes. **Not** the screenshot's pixel space, which differs by the device scale factor.
+- **`marks`** is the same list, in the same order and with the same ids, that the text mark table
+  and the drawn badges come from. Always present; `[]` when the probe found nothing.
+- **`page_text`** is the frame's visible text, whitespace-normalized and capped at **20 000**
+  characters (a trailing `…` marks truncation). **Web sessions only** — it comes from an
+  `innerText` read of the rendered document. **iOS and macOS omit the key entirely**: their
+  accessibility probes yield per-element labels, not a screen text roll-up, and Harness does not
+  walk the AX tree a second time to synthesize one. An absent key means "not available on this
+  platform", which is not the same claim as "the screen has no text".
+- **Back-compatible.** The `image` and `text` content blocks are unchanged;
+  `structuredContent` is an additive sibling field on the `tools/call` result that clients which
+  don't know it ignore. A failed `act_ui` still returns `structuredContent` alongside
+  `isError: true`, so the caller sees current state as well as the failure.
 
 **Artifacts.** When `artifact_dir` is set (absolute path), each observation's **CLEAN** frame is
 written to `<artifact_dir>/steps/NNN.png` and a row is appended to `<artifact_dir>/steps.jsonl`

@@ -378,7 +378,14 @@ actor UISessionSupervisor {
             guard let text = metadata.markedAnnotationText, !text.isEmpty else { return nil }
             return text
         }()
-        let markCount = UISessionImage.markCount(inAnnotation: markTable)
+        // Prefer the driver's structured mark list for the count — it is the
+        // same data the badges and the table are built from, without the
+        // round-trip through prose. Fall back to counting table rows for a
+        // driver that supplies an annotation but no structured marks.
+        let marks = metadata.marks
+        let markCount = marks.isEmpty
+            ? UISessionImage.markCount(inAnnotation: markTable)
+            : marks.count
 
         let ref = "steps/\(String(format: "%03d.png", n))"
         appendStepsJSONL(
@@ -401,6 +408,8 @@ actor UISessionSupervisor {
             imageIsMarked: isMarked,
             markTable: markTable,
             markCount: markCount,
+            marks: marks,
+            pageText: metadata.pageText,
             stepIndex: n,
             screenshotRef: ref,
             lastExecutionDetail: executed != nil ? lastDetail : nil,

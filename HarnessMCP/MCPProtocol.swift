@@ -115,10 +115,17 @@ enum MCPContent {
 struct MCPToolOutcome {
     var content: [MCPContent]
     var isError: Bool
+    /// Optional MCP `structuredContent`: a machine-readable sibling of the
+    /// `content` blocks, matching the tool's declared `outputSchema`. Nil for
+    /// every tool that doesn't declare one; `content` is unaffected either
+    /// way, so a client that ignores this field sees the historical result
+    /// byte-for-byte.
+    var structuredContent: [String: Any]?
 
-    init(_ content: [MCPContent], isError: Bool = false) {
+    init(_ content: [MCPContent], isError: Bool = false, structuredContent: [String: Any]? = nil) {
         self.content = content
         self.isError = isError
+        self.structuredContent = structuredContent
     }
 
     static func text(_ s: String) -> MCPToolOutcome { MCPToolOutcome([.text(s)]) }

@@ -40,7 +40,7 @@ import AppKit
 /// - macOS: window points
 ///
 /// `id` is 1-based to match the badge text drawn on the snapshot.
-struct InteractiveMark: Sendable, Equatable {
+struct InteractiveMark: Sendable, Hashable {
     let id: Int
     let rect: CGRect
     /// Source-platform role identifier. Web: `a`, `button`, etc.

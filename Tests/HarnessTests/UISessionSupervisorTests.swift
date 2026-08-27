@@ -36,6 +36,11 @@ private actor FakeUXDriver: UXDriving {
     let markedPNG: Data?
     let annotation: String?
     let execDetail: String?
+    /// Structured marks the fake driver reports alongside the annotation.
+    /// Defaulted so the pre-existing tests are untouched.
+    let marks: [InteractiveMark]
+    /// Visible page text the fake driver reports (web-shaped drivers only).
+    let pageText: String?
     private(set) var executed: [ToolCall] = []
     var executeError: (any Error)?
 
@@ -45,7 +50,9 @@ private actor FakeUXDriver: UXDriving {
         cleanPNG: Data,
         markedPNG: Data?,
         annotation: String?,
-        execDetail: String?
+        execDetail: String?,
+        marks: [InteractiveMark] = [],
+        pageText: String? = nil
     ) {
         self.pointSize = pointSize
         self.pixelSize = pixelSize
@@ -53,6 +60,8 @@ private actor FakeUXDriver: UXDriving {
         self.markedPNG = markedPNG
         self.annotation = annotation
         self.execDetail = execDetail
+        self.marks = marks
+        self.pageText = pageText
     }
 
     func screenshot(into url: URL) async throws -> ScreenshotMetadata {
@@ -61,7 +70,9 @@ private actor FakeUXDriver: UXDriving {
             pixelSize: pixelSize,
             pointSize: pointSize,
             markedImageData: markedPNG,
-            markedAnnotationText: annotation
+            markedAnnotationText: annotation,
+            marks: marks,
+            pageText: pageText
         )
     }
 
@@ -800,6 +811,167 @@ struct MacOSAdapterTeardownTests {
         // bundle id isn't running, so neither call throws or hangs.
         await adapter.teardown(session)
         await adapter.teardown(session)
+    }
+}
+
+// MARK: - Structured observation (MCP structuredContent source data)
+
+@Suite("UISessionSupervisor — structured marks reach the observation")
+struct UISessionStructuredObservationTests {
+
+    private func driverMarks() -> [InteractiveMark] {
+        [
+            InteractiveMark(id: 1, rect: CGRect(x: 4, y: 8, width: 40, height: 20),
+                            role: "button", inputType: nil, label: "Submit"),
+            InteractiveMark(id: 2, rect: CGRect(x: 4, y: 40, width: 60, height: 20),
+                            role: "a", inputType: nil, label: "Docs")
+        ]
+    }
+
+    /// Stands up a supervisor over a fake web driver carrying structured
+    /// marks + page text. Returns the supervisor and the started session.
+    private func startedSession(
+        marks: [InteractiveMark],
+        pageText: String?,
+        dir: URL,
+        artifactRoot: URL
+    ) async throws -> (UISessionSupervisor, UISessionInfo) {
+        let clean = UISessionTestSupport.solidPNG(width: 100, height: 100, color: .red)
+        let marked = UISessionTestSupport.solidPNG(width: 100, height: 100, color: .green)
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 100, height: 100),
+            pixelSize: CGSize(width: 100, height: 100),
+            cleanPNG: clean, markedPNG: marks.isEmpty ? nil : marked,
+            annotation: marks.isEmpty ? nil : MarkRenderer.describe(marks),
+            execDetail: nil,
+            marks: marks,
+            pageText: pageText
+        )
+        let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: TeardownProbe())
+        let sup = UISessionSupervisor(
+            preparer: UISessionTestSupport.preparer(
+                platform: .web, label: "example.com", driver: driver,
+                pointSize: CGSize(width: 100, height: 100), adapter: adapter
+            ),
+            defaultArtifactRoot: artifactRoot
+        )
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, artifactDirPath: dir.path, webURL: "https://example.com",
+            viewportWidth: 100, viewportHeight: 100
+        ))
+        return (sup, info)
+    }
+
+    @Test("observe carries the driver's marks and page text through to the observation")
+    func observeCarriesStructuredData() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: artifactRoot)
+        }
+        let marks = driverMarks()
+        let (sup, info) = try await startedSession(
+            marks: marks, pageText: "Submit\nDocs", dir: dir, artifactRoot: artifactRoot
+        )
+
+        let obs = try await sup.observe(id: info.id, clean: false)
+        #expect(obs.marks == marks)
+        #expect(obs.markCount == 2)
+        #expect(obs.pageText == "Submit\nDocs")
+
+        // …and the encoded MCP payload agrees with the prose table's ids.
+        let payload = UIObservationPayload.structuredContent(obs)
+        let encoded = try #require(payload["marks"] as? [[String: Any]])
+        #expect(encoded.map { $0["id"] as? Int } == [1, 2])
+        #expect(encoded.first?["label"] as? String == "Submit")
+        #expect(payload["page_text"] as? String == "Submit\nDocs")
+
+        await sup.shutdownAll()
+    }
+
+    @Test("act's auto-observe carries the same structured data as observe")
+    func actCarriesStructuredData() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: artifactRoot)
+        }
+        let marks = driverMarks()
+        let (sup, info) = try await startedSession(
+            marks: marks, pageText: "Submit\nDocs", dir: dir, artifactRoot: artifactRoot
+        )
+
+        let obs = try await sup.act(id: info.id, tool: "tap_mark", inputData: Data(#"{"id":1}"#.utf8))
+        #expect(obs.marks == marks)
+        #expect(obs.pageText == "Submit\nDocs")
+        #expect(UIObservationPayload.structuredContent(obs)["step"] as? Int == obs.stepIndex)
+
+        await sup.shutdownAll()
+    }
+
+    @Test("a driver with no marks and no page text yields an empty, still-valid payload")
+    func noMarksNoText() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: artifactRoot)
+        }
+        let (sup, info) = try await startedSession(
+            marks: [], pageText: nil, dir: dir, artifactRoot: artifactRoot
+        )
+
+        let obs = try await sup.observe(id: info.id, clean: false)
+        #expect(obs.marks.isEmpty)
+        #expect(obs.markCount == 0)
+        #expect(obs.pageText == nil)
+
+        let payload = UIObservationPayload.structuredContent(obs)
+        #expect((payload["marks"] as? [[String: Any]])?.isEmpty == true)
+        #expect(payload["page_text"] == nil)
+        // Still serializable — the empty case must not produce a broken result.
+        #expect(JSONSerialization.isValidJSONObject(payload))
+
+        await sup.shutdownAll()
+    }
+
+    @Test("mark count falls back to the prose table when a driver supplies no structured marks")
+    func markCountFallback() async throws {
+        // Guards the pre-existing contract: a driver that only fills
+        // `markedAnnotationText` (older shape) still reports a mark count.
+        let dir = UISessionTestSupport.tempDir()
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.removeItem(at: artifactRoot)
+        }
+        let clean = UISessionTestSupport.solidPNG(width: 100, height: 100, color: .red)
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 100, height: 100),
+            pixelSize: CGSize(width: 100, height: 100),
+            cleanPNG: clean, markedPNG: nil,
+            annotation: "MARKS —\n  1 → \"Submit\" (button)\n  2 → \"Docs\" (a)",
+            execDetail: nil
+        )
+        let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: TeardownProbe())
+        let sup = UISessionSupervisor(
+            preparer: UISessionTestSupport.preparer(
+                platform: .web, label: "example.com", driver: driver,
+                pointSize: CGSize(width: 100, height: 100), adapter: adapter
+            ),
+            defaultArtifactRoot: artifactRoot
+        )
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, artifactDirPath: dir.path, webURL: "https://example.com",
+            viewportWidth: 100, viewportHeight: 100
+        ))
+        let obs = try await sup.observe(id: info.id, clean: false)
+        #expect(obs.markCount == 2)
+        #expect(obs.marks.isEmpty)
+
+        await sup.shutdownAll()
     }
 }
 

@@ -114,6 +114,11 @@ extension MCPServer {
     /// Build the shared observe/act payload: the (marked, downscaled) PNG as
     /// image content, plus a text block carrying the mark table, point size,
     /// and session label. Mirrors `get_step_screenshot`'s image shape.
+    ///
+    /// Also attaches `structuredContent` (see `UIObservationPayload`) —
+    /// the same marks as machine-readable geometry plus, on web, the frame's
+    /// visible text. Strictly additive: the image + text blocks above are
+    /// unchanged, so existing clients see the identical result.
     private static func observationOutcome(_ obs: UIObservation) -> MCPToolOutcome {
         let image = MCPContent.image(base64: obs.imageData.base64EncodedString(), mimeType: "image/png")
 
@@ -132,7 +137,11 @@ extension MCPServer {
 
         // A failed action still returns the fresh frame + marks so the agent
         // sees current state, but the MCP result is flagged isError.
-        return MCPToolOutcome([image, .text(lines.joined(separator: "\n"))], isError: obs.actionFailed)
+        return MCPToolOutcome(
+            [image, .text(lines.joined(separator: "\n"))],
+            isError: obs.actionFailed,
+            structuredContent: UIObservationPayload.structuredContent(obs)
+        )
     }
 
     // MARK: - Parsing helpers

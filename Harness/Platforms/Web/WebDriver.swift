@@ -97,6 +97,12 @@ actor WebDriver: UXDriving {
         // the agent can still call `tap(x, y)` with no scaffolding.
         let marks = (try? await probeInteractiveElements()) ?? []
         self.lastMarks = marks
+        // Visible page text, read in the SAME pre-snapshot window as the
+        // marks so the text, the rects, and the pixels all describe one DOM
+        // state. (Reading it after the snapshot would let a late render land
+        // between the two and hand a caller text its frame doesn't show.)
+        // Best-effort and bounded — never fails the screenshot.
+        let pageText = await probeVisibleText()
         Self.logger.info("screenshot probed \(marks.count, privacy: .public) interactive marks (viewport=\(Int(self.viewport.width), privacy: .public)×\(Int(self.viewport.height), privacy: .public))")
 
         let raw = try await captureSnapshot()
@@ -141,7 +147,9 @@ actor WebDriver: UXDriving {
             pixelSize: raw.size,
             pointSize: viewport,
             markedImageData: markedData,
-            markedAnnotationText: annotationText
+            markedAnnotationText: annotationText,
+            marks: marks,
+            pageText: pageText
         )
     }
 
@@ -1235,6 +1243,81 @@ actor WebDriver: UXDriving {
             Self.logger.warning("probeInteractiveElements timed out after 8s (page stuck loading?); returning no marks")
         }
         return marks ?? []
+    }
+
+    // MARK: - Visible page text
+
+    /// Longest `page_text` the driver will hand back, in Characters. A
+    /// content-heavy documentation page can run well past this; 20k keeps
+    /// the MCP result a sane size while comfortably covering the text a
+    /// downstream assertion would look for. Truncation is marked with a
+    /// trailing ellipsis so a consumer can tell a capped read from a
+    /// complete one.
+    static let pageTextCap = 20_000
+
+    /// Read the rendered document's visible text (an `innerText`-equivalent
+    /// of `document.body`, which respects CSS visibility the way
+    /// `textContent` does not), collapse its whitespace, and cap it.
+    ///
+    /// Best-effort by construction: a JS error, an absent body, or a stuck
+    /// page load all return `nil` rather than failing the screenshot.
+    ///
+    /// Bounded at **2s**, deliberately tighter than the mark probe's 8s: this
+    /// runs on EVERY web capture, including the autonomous run loop's, and
+    /// page text is a convenience for downstream text assertions — never
+    /// worth adding a second 8s stall to a step that is already waiting out
+    /// a hung page. A `document.body.innerText` read on a live page returns
+    /// in well under a millisecond, so 2s only ever trips on a wedged one.
+    private func probeVisibleText() async -> String? {
+        let js = """
+        (() => {
+          const el = document.body || document.documentElement;
+          if (!el) return '';
+          return el.innerText || '';
+        })();
+        """
+        let result: String? = await Self.raceAgainstTimeout(.seconds(2)) { [controller] in
+            await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
+                Task { @MainActor in
+                    controller.webView.evaluateJavaScript(js) { value, error in
+                        if error != nil { cont.resume(returning: ""); return }
+                        cont.resume(returning: (value as? String) ?? "")
+                    }
+                }
+            }
+        }
+        guard let raw = result else {
+            Self.logger.warning("probeVisibleText timed out after 2s; omitting page_text")
+            return nil
+        }
+        return Self.normalizePageText(raw, cap: Self.pageTextCap)
+    }
+
+    /// Normalize + cap extracted page text. Trims each line, collapses runs
+    /// of blank lines down to a single separator (browsers emit long blank
+    /// runs from layout gaps), and drops leading/trailing blanks — while
+    /// KEEPING the newlines that carry the page's reading structure.
+    /// Returns `nil` for text that is empty after trimming.
+    /// `internal` so the test suite can pin the capping contract without a
+    /// live WKWebView.
+    static func normalizePageText(_ raw: String, cap: Int) -> String? {
+        let lines = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+
+        var normalized: [String] = []
+        normalized.reserveCapacity(lines.count)
+        for line in lines {
+            if line.isEmpty, normalized.last?.isEmpty ?? true { continue }   // collapse blank runs / leading blanks
+            normalized.append(line)
+        }
+        while normalized.last?.isEmpty == true { normalized.removeLast() }
+
+        let text = normalized.joined(separator: "\n")
+        guard !text.isEmpty else { return nil }
+        guard text.count > cap else { return text }
+        return String(text.prefix(cap)) + "…"
     }
 
     /// Click the element associated with `id` from the most recent

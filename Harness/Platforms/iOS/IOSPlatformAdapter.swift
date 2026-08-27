@@ -150,7 +150,10 @@ struct IOSSimDriver: UXDriving {
         // overlay.
         guard let rawData = try? Data(contentsOf: url),
               let raw = NSImage(data: rawData) else {
-            return ScreenshotMetadata(pixelSize: pixel, pointSize: ref.pointSize)
+            // Badge compositing failed, but the probe's geometry is still
+            // good — hand it back so structured consumers aren't punished
+            // for an image-decode miss.
+            return ScreenshotMetadata(pixelSize: pixel, pointSize: ref.pointSize, marks: marks)
         }
         // `MarkRenderer.draw` handles the point→pixel rect scaling
         // — the source `mark.rect` is in simulator points; the image
@@ -171,11 +174,16 @@ struct IOSSimDriver: UXDriving {
         }
 
         let annotation = MarkRenderer.describe(marks)
+        // `pageText` stays nil on iOS: there is no cheap existing text
+        // roll-up on this path (the WDA probe returns element geometry +
+        // labels, not screen prose), and this change deliberately adds no
+        // new accessibility-tree walking. Documented in HarnessMCP/README.md.
         return ScreenshotMetadata(
             pixelSize: pixel,
             pointSize: ref.pointSize,
             markedImageData: markedData,
-            markedAnnotationText: annotation
+            markedAnnotationText: annotation,
+            marks: marks
         )
     }
 

@@ -154,10 +154,15 @@ actor MCPServer {
             outcome = .error(error.localizedDescription)
         }
 
-        writeResult(id: id, result: [
+        var result: [String: Any] = [
             "content": outcome.content.map { $0.json },
             "isError": outcome.isError
-        ])
+        ]
+        // Additive: present only for tools that declare an `outputSchema`.
+        if let structured = outcome.structuredContent {
+            result["structuredContent"] = structured
+        }
+        writeResult(id: id, result: result)
     }
 
     // MARK: - Output

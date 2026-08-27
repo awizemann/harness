@@ -55,16 +55,39 @@ struct ScreenshotMetadata: Sendable, Hashable {
     /// "no scaffolding to describe."
     let markedAnnotationText: String?
 
+    /// The SAME marks `markedAnnotationText` describes and `markedImageData`
+    /// draws, kept as structured geometry instead of prose. Rects are in
+    /// `pointSize` space (CSS pixels for web, simulator points for iOS,
+    /// window points for macOS) — i.e. the unit the agent's coordinates use,
+    /// NOT `pixelSize`. Empty when the driver produced no marks.
+    ///
+    /// Added so MCP consumers (the step-level UI-session tools) can hand a
+    /// downstream product real rects for callout annotation, element-scoped
+    /// visual diffs, and geometric resolution. The text annotation stays the
+    /// LLM-facing surface; this is the machine-facing one.
+    let marks: [InteractiveMark]
+
+    /// Optional visible page/screen text, normalized and length-capped by
+    /// the driver. Populated by the **web** driver (an `innerText`-equivalent
+    /// read of the rendered document); iOS and macOS leave it `nil` — neither
+    /// has a cheap existing text roll-up, and this type deliberately does not
+    /// grow new accessibility-tree walking to fake one.
+    let pageText: String?
+
     init(
         pixelSize: CGSize,
         pointSize: CGSize,
         markedImageData: Data? = nil,
-        markedAnnotationText: String? = nil
+        markedAnnotationText: String? = nil,
+        marks: [InteractiveMark] = [],
+        pageText: String? = nil
     ) {
         self.pixelSize = pixelSize
         self.pointSize = pointSize
         self.markedImageData = markedImageData
         self.markedAnnotationText = markedAnnotationText
+        self.marks = marks
+        self.pageText = pageText
     }
 }
 

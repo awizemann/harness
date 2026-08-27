@@ -173,6 +173,15 @@ struct UIObservation: Sendable {
     /// a page/screen with no interactive elements).
     let markTable: String?
     let markCount: Int
+    /// The same marks `markTable` describes, kept as structured geometry.
+    /// Rects are in `pointSize` space. Empty when the driver produced no
+    /// marks — and also, for a driver that fills only the older
+    /// `markedAnnotationText`, when a table IS present; `markCount` covers
+    /// both. Encoded into the MCP result's `structuredContent.marks`.
+    let marks: [InteractiveMark]
+    /// Visible page text for the observed frame, normalized + capped by the
+    /// driver. Web only — iOS / macOS leave it nil (see `ScreenshotMetadata`).
+    let pageText: String?
     /// 1-based observation index within the session (the `NNN` in
     /// `steps/NNN.png`).
     let stepIndex: Int

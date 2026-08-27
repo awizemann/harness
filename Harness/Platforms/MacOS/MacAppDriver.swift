@@ -147,7 +147,14 @@ actor MacAppDriver: UXDriving {
         // disk PNG via the standard metadata shape.
         guard !marks.isEmpty,
               let raw = NSImage(data: png) else {
-            return ScreenshotMetadata(pixelSize: CGSize(width: pixelW, height: pixelH), pointSize: pointSize)
+            // `marks` is empty in the common case here; when it isn't (the
+            // PNG failed to decode) the AX geometry is still valid, so pass
+            // it through rather than dropping it.
+            return ScreenshotMetadata(
+                pixelSize: CGSize(width: pixelW, height: pixelH),
+                pointSize: pointSize,
+                marks: marks
+            )
         }
 
         // Render badges. `markSpaceSize` = window point size; the
@@ -166,11 +173,15 @@ actor MacAppDriver: UXDriving {
         }
 
         let annotation = MarkRenderer.describe(marks)
+        // `pageText` stays nil on macOS: the AX probe yields per-element
+        // labels, not a screen text roll-up, and this change adds no new
+        // AX walking. Documented in HarnessMCP/README.md.
         return ScreenshotMetadata(
             pixelSize: CGSize(width: pixelW, height: pixelH),
             pointSize: pointSize,
             markedImageData: markedData,
-            markedAnnotationText: annotation
+            markedAnnotationText: annotation,
+            marks: marks
         )
     }
 

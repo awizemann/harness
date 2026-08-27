@@ -165,10 +165,11 @@ enum ToolRegistry {
                      required: ["platform"])),
 
             tool(UISessionTool.observeUI.rawValue,
-                 "Capture the current screen of a session. Returns the MARKED screenshot (Set-of-Mark numbered badges over interactive elements, downscaled to point size) as image content, plus a text block with the id→label(role) mark table, point size, and session label. Pass clean:true for the unmarked frame.",
+                 "Capture the current screen of a session. Returns the MARKED screenshot (Set-of-Mark numbered badges over interactive elements, downscaled to point size) as image content, plus a text block with the id→label(role) mark table, point size, and session label. ALSO returns structuredContent: the same marks with their rects in point space, plus page_text (visible page text) on web sessions. Pass clean:true for the unmarked frame.",
                  obj(["session_id": prop("string", "The session id (UUID) from start_ui_session."),
                       "clean": prop("boolean", "Return the unmarked frame instead of the marked one (default false).")],
-                     required: ["session_id"])),
+                     required: ["session_id"]),
+                 outputSchema: UIObservationPayload.outputSchema()),
 
             tool(UISessionTool.actUI.rawValue,
                  "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, navigate, back, forward, refresh, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, wait; macos: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, fill_credential, wait). Pass that tool's args at the top level (e.g. tap_mark → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys). Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
@@ -189,7 +190,8 @@ enum ToolRegistry {
                       "url": prop("string", "URL to load (tool=navigate)."),
                       "button": enumProp(["home", "lock", "side", "siri"], "Hardware button (tool=press_button, ios)."),
                       "ms": prop("integer", "Milliseconds to wait (tool=wait).")],
-                     required: ["session_id", "tool"])),
+                     required: ["session_id", "tool"]),
+                 outputSchema: UIObservationPayload.outputSchema()),
 
             tool(UISessionTool.endUISession.rawValue,
                  "Close a UI session and tear down its target (WKWebView / simulator / the launched macOS app — a macOS session QUITS the app on close). Idempotent — an unknown or already-closed session id returns a calm \"already closed\" status, not an error.",
@@ -204,8 +206,19 @@ enum ToolRegistry {
 
     // MARK: - Schema builders
 
-    private static func tool(_ name: String, _ description: String, _ inputSchema: [String: Any]) -> [String: Any] {
-        ["name": name, "description": description, "inputSchema": inputSchema]
+    /// One `tools/list` entry. `outputSchema` is emitted only when the tool
+    /// actually returns `structuredContent` — advertising one for a tool that
+    /// returns only content blocks would make a strict client reject a
+    /// perfectly good result.
+    private static func tool(
+        _ name: String,
+        _ description: String,
+        _ inputSchema: [String: Any],
+        outputSchema: [String: Any]? = nil
+    ) -> [String: Any] {
+        var def: [String: Any] = ["name": name, "description": description, "inputSchema": inputSchema]
+        if let outputSchema { def["outputSchema"] = outputSchema }
+        return def
     }
 
     private static func obj(_ properties: [String: Any], required: [String]) -> [String: Any] {
