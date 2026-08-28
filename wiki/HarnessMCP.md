@@ -36,7 +36,7 @@ Runs execute asynchronously under a supervisor with an **idle watchdog** that au
 
 ## Step-level UI sessions
 
-_New in 0.7._ For a client that wants to drive a target **itself** — see it and act on it — without Harness's autonomous agent. Five tools launch a target, return marked screenshots plus a Set-of-Mark table, and dispatch one action at a time. **No API key is ever required on this path** (the credential Keychain is untouched).
+_New in 0.7._ For a client that wants to drive a target **itself** — see it and act on it — without Harness's autonomous agent. These tools launch a target, return marked screenshots plus a Set-of-Mark table, and dispatch one action at a time. **No API key is ever required on this path** (the credential Keychain is untouched).
 
 | Tool | Purpose |
 | --- | --- |
@@ -45,6 +45,7 @@ _New in 0.7._ For a client that wants to drive a target **itself** — see it an
 | `act_ui` | Perform **one** action (`tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `wait`), validated against the platform vocabulary, then auto-observe. A failed execute is flagged as an error. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
 | `end_ui_session` | Tear down the target. Idempotent — an unknown/closed id returns a calm `already closed`. |
 | `list_ui_sessions` | Open sessions: id, platform, label, created time, idle seconds. |
+| `export_ui_session_state` | **Web only.** The live session's cookies + current-origin `localStorage`, in the same shape `start_ui_session`'s `session_state` takes. **Sensitive** — see [Authenticated apps](#authenticated-apps--session-state). |
 
 The action vocabulary `act_ui` validates against is the same per-platform contract the autonomous agent uses — see [Tool-Schema](Tool-Schema).
 
@@ -58,7 +59,7 @@ _New in 0.8.0._ Alongside the image and text blocks, `observe_ui` and `act_ui` r
   "step": 1,
   "point_size": { "width": 1280, "height": 800 },
   "marks": [
-    { "id": 1, "label": "name field", "role": "input",
+    { "id": 1, "label": "name field", "role": "input", "label_source": "aria-label",
       "rect": { "x": 40, "y": 116, "width": 264, "height": 41 } }
   ],
   "page_text": "Harness UI Session Smoke Fixture\n\nFocus the field, type, …"
@@ -67,8 +68,38 @@ _New in 0.8.0._ Alongside the image and text blocks, `observe_ui` and `act_ui` r
 
 - **Coordinate space** — `rect` and `point_size` are both in **point** space (CSS pixels for web, simulator points for iOS, window points for macOS), the same space `tap(x, y)` takes; *not* the screenshot's pixel space, which differs by the scale factor. The rects come from the same `InteractiveMark` list [MarkRenderer](Web-Driver) draws the badges from, so ids match the table exactly.
 - **`marks`** is always present — `[]` when the probe found nothing.
+- **`label_source`** (web only, added after 0.8.0) names which rule produced the mark's `label`. The web probe resolves an accessible name in priority order — `aria-label` → `labelledby` → `label` (an associated `<label for>` or wrapping `<label>`) → `placeholder` → `title` → `value` → `text` → `name` → `none` — and reports the winner. Before this ordering the probe reached for `placeholder` second, so a field with `<label for="name">Your Name *</label>` and `placeholder="John Doe"` was labelled **"John Doe"**: downstream resolvers keyed on sample data and that text leaked into published guide alt text. Prefer the first three for durable selectors; `placeholder` and `value` move with copy edits. iOS and macOS omit the key — their probes resolve a name without provenance.
 - **`page_text`** is the frame's visible text, whitespace-normalized and capped at 20 000 characters (trailing `…` marks truncation). **Web only**, from an `innerText` read of the rendered document. iOS and macOS **omit the key**: their AX/WDA probes yield per-element labels, not a screen text roll-up, and Harness does not walk the tree again to synthesize one. Absent means "not available on this platform", not "no text on screen".
 - **Additive** — the `image` and `text` content blocks are byte-identical to before, so an existing client that ignores `structuredContent` sees the historical result. A failed `act_ui` returns it too, alongside `isError: true`.
+
+### Settle: when `act_ui` returns
+
+`act_ui` acts, waits for the page to stop changing, then observes. Two envelopes:
+
+| Class | Wait |
+| --- | --- |
+| `navigate` / `back` / `forward` / `refresh`, plus any click that changed `location.href` | quiet 600ms, floor 600ms, ceiling 8s, **and** at least one `childList` mutation (a React Suspense lull is not "settled") |
+| Every other action (`tap`, `tap_mark`, `type`, `scroll`, …) | quiet 250ms, floor 250ms, ceiling 3s, **and** no tracked async work in flight |
+
+For the second class the MutationObserver is armed **before** the action is dispatched, and the gate also tracks the page's pending work — `setTimeout` ≤ 2000ms, in-flight `fetch`, in-flight `XMLHttpRequest`. (`setInterval` and `requestAnimationFrame` are not tracked: a polling loop never drains and would pin every settle to the ceiling.)
+
+This fixed a real miss: a **same-URL** React state swap (form → success screen, landing ~500ms behind an awaited POST) returned the **pre-action** frame at ~481ms, while a route-changing tap settled correctly at 6.5s. The observer was armed after the click and its only test was "quiet for 250ms" — which a page that has not reacted *yet* passes exactly like a page that never will. A page with nothing in flight still returns at the 250ms floor, so idle pages pay nothing. Fixture: `HarnessMCP/fixtures/spa-settle-fixture.html`, asserted by the live smoke.
+
+### Authenticated apps — session state
+
+Web sessions run on a **non-persistent** `WKWebsiteDataStore`: a fresh user every time, nothing inherited, nothing on disk ([Web-Driver](Web-Driver)). That default stands. It also means an SSO-only product has no way in — there is no password to type.
+
+The path through, **web only**:
+
+1. `start_ui_session({ platform: "web", url, visible: true })` — the window comes on screen (titled, key, real mouse + keyboard) instead of sitting off-view at alpha 0. The MCP binary raises its activation policy from `.prohibited` to `.accessory` so the window can take key focus; still no Dock icon.
+2. A **human** logs in there.
+3. `export_ui_session_state({ session_id })` → cookies + the current origin's `localStorage`.
+4. The client stores it in a secret manager / the Keychain — never a repo file or a log.
+5. Later headless runs pass it back as `session_state`, which is injected into the (still non-persistent) store **before the first navigation**. Each `origins` entry costs one extra page load at start; a cookie-only state costs none.
+
+**Secrets.** Cookie and `localStorage` values are credentials and follow the `fill_credential` precedent: never logged (counts only — `3 cookie(s), 1 origin(s) / 2 localStorage item(s) — values redacted`), never in `steps.jsonl`, never on disk, and never in a tool result except `export_ui_session_state`'s, which flags itself `"sensitive": true`. The value types render redacted `description`s so a future stray log interpolation still cannot leak one.
+
+**The fresh-user invariant holds.** A session started without `session_state` inherits nothing — not from the machine's browsers, not from a previous session, not from a sibling session that injected state. The live smoke asserts it. `session_state` / `visible` / `export_ui_session_state` are rejected with a clear error on `ios` and `macos` sessions rather than silently ignored.
 
 ### Artifacts
 

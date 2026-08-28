@@ -28,6 +28,17 @@ WebPlatformAdapter.prepare(_:runID:continuation:)
 
 `teardown(_:)` closes the WebView's hosting window. Idempotent.
 
+### Fresh-user data store (and the two opt-ins)
+
+Every web session is built on `WKWebsiteDataStore.nonPersistent()`: no cookies, no `localStorage`, no IndexedDB, no service workers, nothing inherited from a previous run or from the user's own browser, and nothing written to disk. Two reasons — **reproducibility** (persisted theme / dismissed-banner state would make runs diverge, and the CLI and GUI binaries have separate store directories) and **"what a fresh user sees"**, which is the point of a UX testing tool.
+
+Step-level UI sessions can opt in to two web-only extras without changing that store type:
+
+- **`session_state`** — cookies / `localStorage` seeded into the still-non-persistent store *before the first navigation* (`WebSessionStateIO.inject`). Cookies need no document; each `origins` entry costs one extra page load, because `localStorage` is only reachable from a document on that origin.
+- **`visible: true`** — `WebViewWindowController.makeVisibleForHumanInput(title:)` promotes the window from borderless / `alphaValue = 0` / `ignoresMouseEvents` to a titled, key, input-accepting window (and raises the host process's activation policy from `.prohibited` to `.accessory`, since a prohibited app cannot take key focus). Content size is preserved across the style-mask change so the CSS viewport the driver believes it is snapshotting does not shift.
+
+`WebDriver.exportSessionState()` reads the pair back out for `export_ui_session_state`. Cookie and `localStorage` values are credentials: never logged (counts only), never in `steps.jsonl`, never on disk. A session that does not pass `session_state` is byte-for-byte the historical fresh user. See [HarnessMCP](HarnessMCP#authenticated-apps--session-state).
+
 ## Screenshot pipeline
 
 `WebDriver.screenshot(into:)` runs once per agent step. The path:
@@ -71,6 +82,26 @@ a[href]:not([href=""]):not([href="#"]):not([href^="javascript:"])
 - Dropping decorative anchors (`href=""`, `href="#"`, `javascript:*`)
 - Dropping big interactive containers with no visible label (`< 200×100` rect or has a label)
 - Capping total badges at 80 per screenshot, in reading order
+
+### Label resolution (`label` + `label_source`)
+
+Each mark carries an accessible name plus the rule that produced it, resolved in this order:
+
+| Order | Source | `label_source` |
+|---|---|---|
+| 1 | `aria-label` | `aria-label` |
+| 2 | `aria-labelledby`, dereferenced to the referenced elements' text | `labelledby` |
+| 3 | an associated `<label for>` or a wrapping `<label>` (`el.labels` first, then an id lookup, then `closest('label')`) | `label` |
+| 4 | `placeholder` | `placeholder` |
+| 5 | `title` | `title` |
+| 6 | `el.value` | `value` |
+| 7 | the element's own visible text | `text` |
+| 8 | the `name` attribute | `name` |
+| — | nothing resolved | `none` |
+
+`placeholder` used to sit at position **2**, ahead of the real label. A properly-labelled field — `<label for="name">Your Name *</label>` with `placeholder="John Doe"` — therefore surfaced as **"John Doe"**. Consumers built resolvers keyed on that sample data (which changes whenever a designer edits the copy) and the placeholder text leaked into published guide alt text. Shadow-root elements resolve their references against their own root node before falling back to `document`.
+
+`label_source` rides on `InteractiveMark` and on the MCP `structuredContent` marks (web only — iOS / macOS resolve a name with no provenance and omit the key). The prose mark table's format is unchanged; only the label text improves.
 
 ### Badge rendering
 
@@ -133,11 +164,26 @@ The settle parameters are call-site-tuned:
 |---|---|---|---|---|
 | `WebPlatformAdapter.prepare` (initial load) | 800 | 800 | 10000 | First load needs the most room for hydration. |
 | `WebDriver.settle(afterTool:)` for navigate / back / forward / refresh | 600 | 600 | 8000 | Route changes re-render whole pages. |
-| `WebDriver.settle(afterTool:)` for tap / scroll / type / etc. | 250 | 250 | 2000 | Same-page interactions: paint settle for popovers / drawers / hover transitions. |
+| `WebDriver.settle(afterTool:)` for tap / scroll / type / etc. | 250 | 250 | 3000 | Same-page interactions — **armed** gate, see below. |
 
 `minMs` is the floor: even if `MutationObserver` reports zero mutations immediately (very fast pages), wait at least this long before letting the agent see a screenshot. This prevents the gate from resolving during the moment between "shell parsed" and "hydration started" on SPAs whose hydration arrives in a burst.
 
 Falls back to a fixed `Task.sleep(for: .milliseconds(minMs))` on JS bridge failure (rare — usually means the page was navigated away mid-call).
+
+### Armed observation for non-navigating actions
+
+The envelope alone was not enough for same-URL changes. A tap that swapped a React form for a success screen ~500ms later (behind an awaited POST) returned the **pre-action** frame at ~481ms; a route-changing tap settled correctly at 6.5s. The gate was armed *after* the click, and its only exit test was "quiet for `idleMs`" — a page that has not reacted **yet** passes that exactly like a page that never will.
+
+So `WebDriver.execute(_:)` now calls `armActionObservation()` **before** dispatching any DOM-affecting, non-navigating action (`tap`, `tap_mark`, `double_tap`, `right_click`, `scroll`, `type`, `key_shortcut`, `fill_credential`). Arming installs, in the page world:
+
+- the `MutationObserver` (so mutations made inside the click handler itself are counted), and
+- pending-work accounting: `setTimeout` callbacks with delay ≤ 2000ms, in-flight `fetch`, in-flight `XMLHttpRequest`.
+
+`awaitArmedDOMSettled` then resolves only when the DOM has been quiet for `idleMs` **and** `pending == 0`, with the same `minMs` floor and `maxMs` ceiling. `setInterval` and `requestAnimationFrame` are deliberately untracked — a polling loop or animation never drains and would pin every settle to its ceiling — and long timers are excluded because they cannot finish inside the action's ceiling anyway.
+
+A page with genuinely nothing in flight still returns at the 250ms floor: no cost to idle pages. Arming disposes any previous state first and restores the page's original `setTimeout` / `fetch` / `XHR.send` on dispose, so an `execute` that throws cannot leave the page permanently wrapped. If the armed state is gone when the settle looks (a hard navigation tore down the JS context), the driver falls back to the post-hoc gate rather than skipping the wait.
+
+The policy itself lives in `WebSettleProfile` — a pure value type, unit-tested; the JS gate is covered by the live smoke against `HarnessMCP/fixtures/spa-settle-fixture.html`.
 
 ## Diagnostic env vars (dev-only)
 
