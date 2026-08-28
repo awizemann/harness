@@ -299,7 +299,63 @@ struct UIObservationPayloadSchemaTests {
         let encoded = UIObservationPayload.markJSON(
             PayloadTestSupport.mark(1, "Go", rect: CGRect(x: 1, y: 2, width: 3, height: 4))
         )
-        #expect(Set(encoded.keys) == Set(itemProps.keys))
+        // Every key a mark encodes is described…
+        #expect(Set(encoded.keys).isSubset(of: Set(itemProps.keys)))
+        // …and the always-present ones are exactly the required set. The one
+        // described-but-optional field is `label_source`, which only the web
+        // probe supplies (iOS / macOS resolve a name with no provenance).
         #expect(Set(try #require(items["required"] as? [String])) == Set(encoded.keys))
+        #expect(Set(itemProps.keys).subtracting(encoded.keys) == ["label_source"])
+    }
+
+    @Test("a web mark's label_source is described AND emitted, within the declared enum")
+    func labelSourceEncodesWithinEnum() throws {
+        let properties = try #require(UIObservationPayload.outputSchema()["properties"] as? [String: Any])
+        let items = try #require((properties["marks"] as? [String: Any])?["items"] as? [String: Any])
+        let itemProps = try #require(items["properties"] as? [String: Any])
+        let allowed = Set(try #require((itemProps["label_source"] as? [String: Any])?["enum"] as? [String]))
+
+        for source in ["aria-label", "labelledby", "label", "placeholder",
+                       "title", "value", "text", "name", "none"] {
+            let encoded = UIObservationPayload.markJSON(
+                InteractiveMark(id: 1, rect: CGRect(x: 0, y: 0, width: 10, height: 10),
+                                role: "input", inputType: "text", label: "Your Name",
+                                labelSource: source)
+            )
+            let emitted = try #require(encoded["label_source"] as? String)
+            #expect(allowed.contains(emitted), "'\(emitted)' is not in the declared label_source enum")
+        }
+    }
+
+    @Test("label_source is OMITTED, not nulled, when the driver has no provenance")
+    func labelSourceOmittedWhenAbsent() {
+        // The iOS / macOS shape: a resolved label with no recorded source.
+        let encoded = UIObservationPayload.markJSON(
+            PayloadTestSupport.mark(1, "Sign in", rect: CGRect(x: 0, y: 0, width: 10, height: 10))
+        )
+        #expect(encoded["label_source"] == nil)
+        #expect(encoded["label"] as? String == "Sign in")
+        // An empty source reads the same as no source — never an empty string
+        // on the wire.
+        let empty = UIObservationPayload.markJSON(
+            InteractiveMark(id: 2, rect: .zero, role: "button", inputType: nil,
+                            label: "x", labelSource: "")
+        )
+        #expect(empty["label_source"] == nil)
+    }
+
+    @Test("a payload carrying label_source is still wire-legal JSON")
+    func labelSourceSerializes() throws {
+        let payload = UIObservationPayload.structuredContent(
+            PayloadTestSupport.observation(marks: [
+                InteractiveMark(id: 1, rect: CGRect(x: 4, y: 5, width: 6, height: 7),
+                                role: "input", inputType: "text",
+                                label: "Your Name *", labelSource: "label")
+            ])
+        )
+        let back = try PayloadTestSupport.roundTrip(payload)
+        let marks = try #require(back["marks"] as? [[String: Any]])
+        #expect(marks[0]["label"] as? String == "Your Name *")
+        #expect(marks[0]["label_source"] as? String == "label")
     }
 }

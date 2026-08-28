@@ -38,6 +38,12 @@ enum UISessionTool: String, CaseIterable, Sendable {
     case actUI          = "act_ui"
     case endUISession   = "end_ui_session"
     case listUISessions = "list_ui_sessions"
+    /// Web only. Returns the live session's cookies + current-origin
+    /// localStorage in the SAME shape `start_ui_session(session_state:)`
+    /// accepts, so a human-authenticated visible session round-trips into
+    /// later headless ones. The result is SENSITIVE — see the tool
+    /// description and `WebSessionState`.
+    case exportUISessionState = "export_ui_session_state"
 }
 
 // MARK: - Tool policy (act_ui validation)
@@ -90,6 +96,17 @@ struct UISessionConfig: Sendable {
     var viewportWidth: Int
     var viewportHeight: Int
 
+    /// Web only — cookies / localStorage to seed into the session's still
+    /// NON-PERSISTENT data store before the first navigation. `nil` keeps the
+    /// fresh-user invariant untouched, which is what every session that does
+    /// not explicitly ask for state gets.
+    ///
+    /// SECRET: never log this. Log `redactedSummary` if you must log anything.
+    var webSessionState: WebSessionState?
+    /// Web only — show the session window on screen so a human can interact
+    /// with it (log in by hand, solve an SSO prompt). Default `false`.
+    var webVisible: Bool
+
     // iOS
     var iosProjectPath: String?
     var iosScheme: String?
@@ -118,6 +135,8 @@ struct UISessionConfig: Sendable {
         webURL: String? = nil,
         viewportWidth: Int = 1280,
         viewportHeight: Int = 800,
+        webSessionState: WebSessionState? = nil,
+        webVisible: Bool = false,
         iosProjectPath: String? = nil,
         iosScheme: String? = nil,
         iosSimulatorUDID: String? = nil,
@@ -133,6 +152,8 @@ struct UISessionConfig: Sendable {
         self.webURL = webURL
         self.viewportWidth = viewportWidth
         self.viewportHeight = viewportHeight
+        self.webSessionState = webSessionState
+        self.webVisible = webVisible
         self.iosProjectPath = iosProjectPath
         self.iosScheme = iosScheme
         self.iosSimulatorUDID = iosSimulatorUDID
@@ -249,6 +270,13 @@ enum UISessionError: Error, Sendable, LocalizedError {
     case wdaSourceUnresolved
     /// `HARNESS_WDA_PATH` is set but the directory has no `WebDriverAgent.xcodeproj`.
     case wdaEnvPathInvalid(String)
+    /// A web-only session capability (`session_state`, `visible`,
+    /// `export_ui_session_state`) was asked for on an iOS / macOS session.
+    case webOnlyCapability(String, PlatformKind)
+    /// The session is a web session but its driver isn't the WebKit one —
+    /// only reachable with an injected test double; reported honestly rather
+    /// than returning a silently empty state.
+    case sessionStateUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -281,6 +309,10 @@ enum UISessionError: Error, Sendable, LocalizedError {
             return "No WebDriverAgent source resolved for the iOS session. Set \(HarnessPaths.wdaSourceEnvVar) to a WebDriverAgent checkout (the directory containing WebDriverAgent.xcodeproj — e.g. the harness repo's vendor/WebDriverAgent) so the standalone binary can build the iOS driver. Web sessions need no such setup."
         case .wdaEnvPathInvalid(let path):
             return "\(HarnessPaths.wdaSourceEnvVar) is set to \"\(path)\" but no WebDriverAgent.xcodeproj was found there. Point it at a WebDriverAgent checkout (the directory that contains WebDriverAgent.xcodeproj)."
+        case .webOnlyCapability(let name, let platform):
+            return "'\(name)' applies to web sessions only (this session is \(platform.displayName)). A native app has no cookie jar or localStorage to seed or export."
+        case .sessionStateUnavailable:
+            return "This session's driver does not expose cookie / localStorage state."
         }
     }
 }

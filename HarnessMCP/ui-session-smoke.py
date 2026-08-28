@@ -14,8 +14,21 @@ Asserts image content + marks are present on observe, that `structuredContent`
 carries the same marks with real point-space rects plus the page's visible
 text, that the typed text surfaces in BOTH the mark table and the structured
 marks after the action (the state change), and that NO marked frame ever lands
-on disk (the CLEAN-only invariant, standard 14 §6). Exits non-zero on any
-failure. No API key required.
+on disk (the CLEAN-only invariant, standard 14 §6).
+
+It then drives three more live proofs:
+
+  * **Label priority (W1)** — a field with `<label for>` AND a placeholder
+    must surface the LABEL text, with `label_source: "label"`; no mark may be
+    labelled with the placeholder's sample data.
+  * **Settle on a same-URL async swap (W3)** — `spa-settle-fixture.html`
+    swaps its view 500ms after the click with no route change. The act's own
+    auto-observe must already show the post-swap DOM.
+  * **Session state** — inject a cookie + a localStorage item, export them
+    back out, confirm neither value reaches `steps.jsonl`, and confirm a
+    session started WITHOUT `session_state` inherits nothing.
+
+Exits non-zero on any failure. No API key required.
 
 Usage: ui-session-smoke.py [path-to-harness-mcp-binary] [absolute-fixture-dir]
 
@@ -42,6 +55,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DIR = os.path.join(HERE, "fixtures")
 FIXTURE_NAME = "ui-session-fixture.html"
+SETTLE_FIXTURE_NAME = "spa-settle-fixture.html"
 DEFAULT_BIN = os.path.join(HERE, "..", ".build", "derived", "Build", "Products", "Debug", "harness-mcp")
 
 
@@ -175,7 +189,7 @@ def main():
     print("fixture: %s" % os.path.join(fixture_dir, FIXTURE_NAME))
     print("cwd    : %s" % os.getcwd())
 
-    signal.alarm(120)   # hard wall-clock guard so a wedge never hangs CI
+    signal.alarm(240)   # hard wall-clock guard so a wedge never hangs CI
 
     port = free_port()
     httpd = serve(fixture_dir, port)
@@ -198,7 +212,8 @@ def main():
 
         tools = mcp.call("tools/list")["result"]["tools"]
         names = {t["name"] for t in tools}
-        for t in ["start_ui_session", "observe_ui", "act_ui", "end_ui_session", "list_ui_sessions"]:
+        for t in ["start_ui_session", "observe_ui", "act_ui", "end_ui_session",
+                  "list_ui_sessions", "export_ui_session_state"]:
             check(t in names, "tools/list advertises %s" % t)
         by_name = {t["name"]: t for t in tools}
         for t in ["observe_ui", "act_ui"]:
@@ -253,6 +268,28 @@ def main():
                   "mark rect sits inside the viewport vertically")
             check(sm.get("id") == find_mark_id(txt1, "name field"),
                   "structured mark id agrees with the prose mark table")
+        # W1 — label priority: a properly-labelled field must surface its
+        # <label for> text, NOT its placeholder, and must say which it used.
+        email = structured_mark(obs1, "Your Email")
+        check(email is not None, "labelled field's mark carries the <label for> text")
+        if email:
+            check(email.get("label_source") == "label",
+                  "label_source names the associated <label> (got %r)" % email.get("label_source"))
+        placeholder_labelled = [m for m in (sc1.get("marks") or [])
+                                if "john@example.com" in m.get("label", "")]
+        check(not placeholder_labelled,
+              "no mark is labelled with the placeholder's sample data")
+        aria = structured_mark(obs1, "name field")
+        if aria:
+            check(aria.get("label_source") == "aria-label",
+                  "an aria-labelled field reports label_source 'aria-label' (got %r)"
+                  % aria.get("label_source"))
+        button = structured_mark(obs1, "waiting")
+        if button:
+            check(button.get("label_source") == "text",
+                  "a button labelled by its own text reports label_source 'text' (got %r)"
+                  % button.get("label_source"))
+
         pt = sc1.get("page_text")
         check(isinstance(pt, str) and "Harness UI Session Smoke Fixture" in pt,
               "structuredContent.page_text carries the page's visible text")
@@ -309,6 +346,94 @@ def main():
         check(len(pngs) >= 3, "CLEAN step PNGs written (>=3)")
         check(len(marked) == 0, "NO marked frame on disk (standard 14 §6)")
         check(len(rows) >= 3, "steps.jsonl has a row per observation")
+
+        # ------------------------------------------------------------------
+        # W3 — SAME-URL async state swap. The button's handler returns
+        # immediately and swaps the view 500ms later (no route change), the
+        # shape that used to return the PRE-action frame at ~481ms. The act's
+        # own auto-observe must already show the post-swap DOM.
+        # ------------------------------------------------------------------
+        print("\n--- act_ui on the async-swap fixture (W3 settle proof) ---")
+        settle_dir = tempfile.mkdtemp(prefix="harness-ui-settle-")
+        settle_url = "http://127.0.0.1:%d/%s" % (port, SETTLE_FIXTURE_NAME)
+        s2 = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": settle_url, "artifact_dir": settle_dir})))
+        sid2 = s2.get("session_id")
+        check(bool(sid2), "started the settle-fixture session")
+        obs_pre = mcp.tool("observe_ui", {"session_id": sid2})
+        pre_text = (obs_pre.get("structuredContent", {}) or {}).get("page_text") or ""
+        check("SWAP-COMPLETE" not in pre_text, "pre-action frame does NOT show the swap")
+        go_id = find_mark_id(content_text(obs_pre), "Send Message")
+        check(go_id is not None, "resolved the swap button's mark id (%s)" % go_id)
+
+        t0 = time.time()
+        act_swap = mcp.tool("act_ui", {"session_id": sid2, "tool": "tap_mark", "id": go_id})
+        elapsed_ms = int((time.time() - t0) * 1000)
+        swap_text = (act_swap.get("structuredContent", {}) or {}).get("page_text") or ""
+        print("  act_ui round trip: %dms" % elapsed_ms)
+        print("  post-act page_text: %r" % swap_text[:120])
+        check("SWAP-COMPLETE" in swap_text,
+              "act_ui's own frame shows the POST-swap state (settle waited for the 500ms swap)")
+        check(elapsed_ms >= 500,
+              "the settle actually waited for the pending timer (%dms)" % elapsed_ms)
+        check(elapsed_ms < 8000, "…and did not stall near the ceiling (%dms)" % elapsed_ms)
+        check(structured_mark(act_swap, "Send another") is not None,
+              "the post-swap DOM's new button is in structuredContent.marks")
+        _ = mcp.tool("end_ui_session", {"session_id": sid2})
+
+        # ------------------------------------------------------------------
+        # Session-state injection + export round trip. The injected cookie
+        # value is a stand-in for a real auth cookie: it must come back out of
+        # export_ui_session_state, and must NOT appear in steps.jsonl.
+        # ------------------------------------------------------------------
+        print("\n--- session_state injection + export_ui_session_state ---")
+        state_dir = tempfile.mkdtemp(prefix="harness-ui-state-")
+        secret = "SMOKE-COOKIE-VALUE-9137"
+        storage_secret = "SMOKE-LOCALSTORAGE-VALUE-4471"
+        origin = "http://127.0.0.1:%d" % port
+        s3 = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": url, "artifact_dir": state_dir,
+            "session_state": {
+                "cookies": [{"name": "harness_smoke_sid", "value": secret,
+                             "domain": "127.0.0.1", "path": "/"}],
+                "origins": [{"origin": origin,
+                             "localStorage": [{"name": "harness_smoke_token",
+                                               "value": storage_secret}]}]
+            }})))
+        sid3 = s3.get("session_id")
+        check(bool(sid3), "started a session WITH session_state")
+        check(secret not in json.dumps(s3),
+              "start_ui_session's own result never echoes a cookie value")
+
+        exported = json.loads(content_text(mcp.tool("export_ui_session_state", {"session_id": sid3})))
+        names = [c.get("name") for c in exported.get("cookies", [])]
+        values = [c.get("value") for c in exported.get("cookies", [])]
+        print("  exported cookies: %s" % names)
+        check("harness_smoke_sid" in names, "the injected cookie survives into the live session")
+        check(secret in values, "export returns the cookie's value (the tool's whole purpose)")
+        check(exported.get("sensitive") is True, "export result is flagged sensitive")
+        ls = []
+        for o in exported.get("origins", []):
+            ls += [i.get("value") for i in o.get("localStorage", [])]
+        check(storage_secret in ls, "the injected localStorage item is exported back")
+
+        state_jsonl = os.path.join(state_dir, "steps.jsonl")
+        state_rows = open(state_jsonl).read() if os.path.isfile(state_jsonl) else ""
+        check(secret not in state_rows and storage_secret not in state_rows,
+              "NO injected secret ever reaches steps.jsonl")
+        _ = mcp.tool("end_ui_session", {"session_id": sid3})
+
+        # A fresh session with NO session_state must still be a fresh user.
+        print("\n--- fresh-user invariant (no session_state) ---")
+        fresh_dir = tempfile.mkdtemp(prefix="harness-ui-fresh-")
+        s4 = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": url, "artifact_dir": fresh_dir})))
+        fresh_export = json.loads(content_text(
+            mcp.tool("export_ui_session_state", {"session_id": s4["session_id"]})))
+        fresh_names = [c.get("name") for c in fresh_export.get("cookies", [])]
+        check("harness_smoke_sid" not in fresh_names,
+              "a session started without session_state inherits NOTHING (fresh-user invariant)")
+        _ = mcp.tool("end_ui_session", {"session_id": s4["session_id"]})
 
     finally:
         mcp.close()

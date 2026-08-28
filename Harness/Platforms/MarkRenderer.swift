@@ -53,6 +53,36 @@ struct InteractiveMark: Sendable, Hashable {
     /// Accessible human-readable label. Empty when no label could be
     /// resolved.
     let label: String
+    /// WHICH source produced `label`, so a consuming client can prefer the
+    /// stable ones and treat the weak ones as advisory. Web values, in the
+    /// probe's priority order:
+    ///
+    ///   `aria-label` · `labelledby` · `label` (an associated `<label for>`
+    ///   or a wrapping `<label>`) · `placeholder` · `title` · `value` ·
+    ///   `text` (visible text) · `name` (the `name` attribute) · `none`.
+    ///
+    /// `nil` on iOS / macOS: their accessibility probes hand back a single
+    /// resolved name with no provenance, and inventing one would be a guess.
+    /// A resolver that wants a durable selector should prefer the first three
+    /// and distrust `placeholder` / `value` — those are sample data and move
+    /// with copy edits (the W1 finding this field exists to answer).
+    let labelSource: String?
+
+    init(
+        id: Int,
+        rect: CGRect,
+        role: String,
+        inputType: String?,
+        label: String,
+        labelSource: String? = nil
+    ) {
+        self.id = id
+        self.rect = rect
+        self.role = role
+        self.inputType = inputType
+        self.label = label
+        self.labelSource = labelSource
+    }
 }
 
 enum MarkRenderer {

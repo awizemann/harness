@@ -161,7 +161,9 @@ enum ToolRegistry {
                       "simulator_name": prop("string", "Simulator name (optional)."),
                       "simulator_runtime": prop("string", "Simulator runtime, e.g. \"18.4\" (optional)."),
                       "app_path": prop("string", "Absolute path to a built .app bundle. platform=macos: the PREFERRED QA flow — drive this build product directly (no xcodebuild). platform=ios: reserved (use project_path + scheme + simulator_udid)."),
-                      "artifact_dir": prop("string", "ABSOLUTE path for the artifact bundle (steps/NNN.png CLEAN frames + steps.jsonl). Relative paths are rejected. Omit → a temp dir under Harness's runs root.")],
+                      "artifact_dir": prop("string", "ABSOLUTE path for the artifact bundle (steps/NNN.png CLEAN frames + steps.jsonl). Relative paths are rejected. Omit → a temp dir under Harness's runs root."),
+                      "visible": prop("boolean", "platform=web ONLY. Show the session's window on screen so a HUMAN can interact with it — log in by hand, clear an SSO/MFA prompt — and then hand the result to export_ui_session_state. Default false (the window sits off-view at alpha 0). The website data store stays non-persistent either way."),
+                      "session_state": sessionStateSchema()],
                      required: ["platform"])),
 
             tool(UISessionTool.observeUI.rawValue,
@@ -200,7 +202,65 @@ enum ToolRegistry {
 
             tool(UISessionTool.listUISessions.rawValue,
                  "List open UI sessions: id, platform, label, created time, and idle seconds since the last observe/act.",
-                 obj([:], required: []))
+                 obj([:], required: [])),
+
+            tool(UISessionTool.exportUISessionState.rawValue,
+                 "Web sessions ONLY. Return this session's cookies plus the CURRENT origin's localStorage, in exactly the shape start_ui_session's session_state accepts. Intended flow: start a session with visible:true → a human logs in by hand → export here → the client stores the result in a secret manager → later headless runs pass it back as session_state. **THE RESULT IS SENSITIVE**: session cookies are bearer credentials — treat it like a password, never write it to a repo file, a log, or a transcript you keep. Harness itself never logs or persists it.",
+                 obj(["session_id": prop("string", "The session id (UUID) of an open WEB session.")],
+                     required: ["session_id"]))
+        ]
+    }
+
+    /// Schema for `start_ui_session(session_state:)` — the injectable cookie /
+    /// localStorage bundle. Kept beside the tool so the accepted shape and the
+    /// shape `export_ui_session_state` RETURNS stay identical: an export must
+    /// round-trip into an injection with no client-side transformation.
+    private static func sessionStateSchema() -> [String: Any] {
+        [
+            "type": "object",
+            "description": "platform=web ONLY. Cookies / localStorage to seed into the session BEFORE its first navigation — the authenticated-app path for products that have no password to type (SSO-only apps). SENSITIVE: cookie values are login credentials; Harness never logs them, never writes them to the artifact bundle, and never persists them (the data store stays NON-PERSISTENT, so the state dies with the session). Get this object from export_ui_session_state.",
+            "properties": [
+                "cookies": [
+                    "type": "array",
+                    "description": "Cookies to install in the session's cookie store before the first request.",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "name": ["type": "string"],
+                            "value": ["type": "string", "description": "SENSITIVE — the cookie value."],
+                            "domain": ["type": "string", "description": "Cookie domain, e.g. \".example.com\"."],
+                            "path": ["type": "string", "description": "Cookie path (default \"/\")."],
+                            "expires": ["type": "number", "description": "Expiry in SECONDS since the Unix epoch. Omit for a session cookie."],
+                            "secure": ["type": "boolean"],
+                            "httpOnly": ["type": "boolean"]
+                        ],
+                        "required": ["name", "value", "domain"]
+                    ]
+                ],
+                "origins": [
+                    "type": "array",
+                    "description": "Optional localStorage per origin. Each origin costs one extra page load at start (localStorage is only reachable from a document on that origin); a cookie-only state costs none.",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "origin": ["type": "string", "description": "Scheme + host + port, e.g. \"https://app.example.com\"."],
+                            "localStorage": [
+                                "type": "array",
+                                "items": [
+                                    "type": "object",
+                                    "properties": [
+                                        "name": ["type": "string"],
+                                        "value": ["type": "string", "description": "SENSITIVE — may be a bearer token."]
+                                    ],
+                                    "required": ["name", "value"]
+                                ]
+                            ]
+                        ],
+                        "required": ["origin", "localStorage"]
+                    ]
+                ]
+            ],
+            "required": []
         ]
     }
 

@@ -48,17 +48,18 @@ HarnessMCP/smoke-test.sh
 ### Step-level UI sessions (no LLM loop, no API key)
 
 For an external MCP client that wants to drive a target itself — **see** it and **act** on
-it — without Harness's autonomous agent. These five tools launch a target, return marked
+it — without Harness's autonomous agent. These tools launch a target, return marked
 screenshots + a Set-of-Mark table, and dispatch one action at a time. **No API key is ever
 required on this path** (`EnvKeychain` is untouched).
 
 | Tool | Purpose |
 | --- | --- |
-| `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
+| `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected). Web also accepts `visible: true` (show the window for a human) and `session_state` (inject cookies / `localStorage`) — see [Authenticated apps](#authenticated-apps-session_state--visible). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
 | `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content + a text block with the `id → label (role)` mark table, point size, and session label — **plus `structuredContent`** carrying the same marks as machine-readable rects (see below). `clean: true` returns the unmarked frame. |
 | `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `wait`), pass that tool's args at the top level, then auto-observe. Returns the same payload as `observe_ui`, `structuredContent` included. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
 | `end_ui_session` | Tear down the target. Idempotent — an unknown/closed id returns a calm `already closed`. |
 | `list_ui_sessions` | Open sessions: id, platform, label, created time, idle seconds. |
+| `export_ui_session_state` | **Web only.** The live session's cookies + current-origin `localStorage`, in exactly the shape `session_state` accepts. **The result is SENSITIVE** — see [Authenticated apps](#authenticated-apps-session_state--visible). |
 
 **Structured observation (`structuredContent`).** `observe_ui` and `act_ui` also return an MCP
 `structuredContent` object matching the `outputSchema` they advertise in `tools/list`. It carries
@@ -71,10 +72,12 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   "step": 1,
   "point_size": { "width": 1280, "height": 800 },
   "marks": [
-    { "id": 1, "label": "name field", "role": "input",
+    { "id": 1, "label": "name field", "role": "input", "label_source": "aria-label",
       "rect": { "x": 40, "y": 116, "width": 264, "height": 41 } },
-    { "id": 2, "label": "waiting", "role": "button",
-      "rect": { "x": 320, "y": 116, "width": 220, "height": 41 } }
+    { "id": 2, "label": "waiting", "role": "button", "label_source": "text",
+      "rect": { "x": 320, "y": 116, "width": 220, "height": 41 } },
+    { "id": 3, "label": "Your Email *", "role": "input", "label_source": "label",
+      "rect": { "x": 40, "y": 180, "width": 264, "height": 41 } }
   ],
   "page_text": "Harness UI Session Smoke Fixture\n\nFocus the field, type, …"
 }
@@ -85,6 +88,17 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   takes. **Not** the screenshot's pixel space, which differs by the device scale factor.
 - **`marks`** is the same list, in the same order and with the same ids, that the text mark table
   and the drawn badges come from. Always present; `[]` when the probe found nothing.
+- **`label_source`** (web only) names WHERE each mark's `label` came from, so a client can prefer
+  stable sources. The web probe resolves an accessible name in this order — and reports which step
+  won: `aria-label` → `labelledby` (an `aria-labelledby` reference, resolved to its text) → `label`
+  (an associated `<label for>` or a wrapping `<label>`) → `placeholder` → `title` → `value` →
+  `text` (the element's own visible text) → `name` (the `name` attribute) → `none`.
+  **`placeholder` and `value` are sample data** — they change whenever a designer edits the copy,
+  so a resolver that wants a durable selector should treat them as weak and prefer the first three.
+  (Before this ordering, a field with `<label for="name">Your Name *</label>` and
+  `placeholder="John Doe"` was labelled "John Doe".) **iOS and macOS omit the key entirely**: their
+  accessibility probes resolve a name without recording its provenance, and inventing one would be
+  a guess.
 - **`page_text`** is the frame's visible text, whitespace-normalized and capped at **20 000**
   characters (a trailing `…` marks truncation). **Web sessions only** — it comes from an
   `innerText` read of the rendered document. **iOS and macOS omit the key entirely**: their
@@ -95,6 +109,93 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   `structuredContent` is an additive sibling field on the `tools/call` result that clients which
   don't know it ignore. A failed `act_ui` still returns `structuredContent` alongside
   `isError: true`, so the caller sees current state as well as the failure.
+
+#### When `act_ui` returns — the settle contract
+
+`act_ui` performs its action and then auto-observes. Between the two it waits for the page to
+stop changing, with a per-class envelope:
+
+| Action class | Wait |
+| --- | --- |
+| `navigate` / `back` / `forward` / `refresh`, and any click that changed `location.href` | DOM quiet 600ms, floor 600ms, ceiling 8s, and at least one structural (`childList`) mutation must have been seen — a React Suspense lull is not "settled" |
+| Everything else (`tap`, `tap_mark`, `type`, `scroll`, `key_shortcut`, …) | DOM quiet 250ms, floor 250ms, ceiling 3s, **and** no tracked async work still in flight |
+
+For that second class, observation is armed **before** the action is dispatched, and the gate also
+waits for the page's own pending work to drain: `setTimeout` callbacks scheduled with a delay
+≤ 2000ms, in-flight `fetch`, and in-flight `XMLHttpRequest`. `setInterval` and
+`requestAnimationFrame` are deliberately not tracked (a polling loop or an animation never drains,
+and gating on one would pin every settle to its ceiling).
+
+Why: a same-URL state swap — a React form that awaits a POST and then renders a success screen —
+used to return the **pre-action** frame. The observer was armed after the click, and its only test
+was "quiet for 250ms", which a page that has not reacted *yet* passes exactly like a page that
+never will. A page with genuinely nothing in flight still returns at the 250ms floor, so idle
+pages are not slowed down.
+
+#### Authenticated apps (`session_state` / `visible`)
+
+Web sessions run on a **non-persistent** `WKWebsiteDataStore`: every session is a fresh user, with
+nothing inherited and nothing written to disk. That is deliberate and it is still the default.
+It also means an SSO-only product is unreachable — there is no password to type.
+
+The way through, for **web sessions only**:
+
+1. `start_ui_session({ platform: "web", url, visible: true })` — the session's window comes on
+   screen (titled, key, accepting real mouse + keyboard input) instead of sitting off-view at
+   alpha 0.
+2. A **human** logs in in that window — password, SSO redirect, MFA, whatever the product needs.
+3. `export_ui_session_state({ session_id })` → the resulting cookies plus the current origin's
+   `localStorage`.
+4. The client stores that securely — a secret manager or the macOS Keychain. **Not** a repo file,
+   not a log, not a saved transcript.
+5. Later, headless runs pass it straight back:
+
+```jsonc
+start_ui_session({
+  "platform": "web",
+  "url": "https://app.example.com/dashboard",
+  "session_state": {
+    "cookies": [
+      { "name": "session", "value": "…", "domain": ".example.com", "path": "/",
+        "expires": 1800000000, "secure": true, "httpOnly": true }
+    ],
+    "origins": [
+      { "origin": "https://app.example.com",
+        "localStorage": [ { "name": "auth.token", "value": "…" } ] }
+    ]
+  }
+})
+```
+
+`export_ui_session_state` returns exactly the shape `session_state` accepts, so an export
+round-trips into an injection with no transformation on the client side.
+
+**What is injected, and when.** Cookies go into the session's cookie store **before the first
+navigation**, so the very first request already carries them. Each `origins` entry costs one extra
+page load at start (`localStorage` is only reachable from a document on that origin) — a
+cookie-only state costs none. Only `name`, `value`, and `domain` are required per cookie; `path`
+defaults to `/`, `expires` is epoch **seconds** and omitting it makes a session cookie.
+
+**Secret handling.** Cookie and `localStorage` values are login credentials, and are treated the
+way `fill_credential`'s password is:
+
+- **Never logged.** Harness logs counts (`3 cookie(s), 1 origin(s) / 2 localStorage item(s) —
+  values redacted`), never values. The value types' `description` is redacted by construction, so
+  an accidental interpolation in some future log line still cannot leak one.
+- **Never in `steps.jsonl`.** The artifact writer records `act_ui` calls; `session_state` rides on
+  `start_ui_session`, which writes no row at all. `export_ui_session_state` writes none either.
+- **Never in a tool result** — except `export_ui_session_state`, whose entire job is to return
+  them, and which flags itself `"sensitive": true`.
+- **Never on disk.** The data store stays non-persistent: injected state lives in memory and dies
+  with the session.
+
+**The fresh-user invariant is untouched.** A session started without `session_state` inherits
+nothing — not from the machine's browsers, not from a previous session, not from a sibling session
+that injected state. The live smoke asserts exactly this.
+
+`session_state` and `visible` are rejected (with a clear error) on `ios` / `macos` sessions rather
+than silently ignored, and `export_ui_session_state` is web-only for the same reason: a native app
+has no cookie jar to seed or export.
 
 **Artifacts.** When `artifact_dir` is set (absolute path), each observation's **CLEAN** frame is
 written to `<artifact_dir>/steps/NNN.png` and a row is appended to `<artifact_dir>/steps.jsonl`

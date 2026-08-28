@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness SPA Settle Fixture</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 40px; }
+    h1 { font-size: 22px; }
+    button { font-size: 18px; padding: 8px 16px; }
+    .success { color: #0a7d32; font-size: 20px; }
+  </style>
+</head>
+<body>
+  <!--
+    W3 regression fixture: a SAME-URL, ASYNC state swap.
+
+    The button's handler returns immediately and swaps the view 500ms later,
+    the way a React form does when it awaits a POST and then renders a success
+    screen. The URL never changes, so the driver's route-transition escalation
+    does NOT apply — this is exactly the shape that used to return the
+    PRE-action frame at ~481ms.
+
+    Post-fix the settle must observe the swap: the frame captured by the
+    act_ui that clicks this button has to show the success text, not the form.
+
+    The delay is a `setTimeout`, which the armed observer tracks as pending
+    work; the same guarantee covers `fetch` / `XHR`.
+  -->
+  <h1>Harness SPA Settle Fixture</h1>
+  <div id="view">
+    <p id="prompt">Press the button. The view swaps 500ms later, same URL.</p>
+    <button id="go" type="button">Send Message</button>
+  </div>
+  <script>
+    document.getElementById('go').addEventListener('click', function () {
+      window.setTimeout(function () {
+        document.getElementById('view').innerHTML =
+          '<p class="success" id="done">SWAP-COMPLETE: your message was sent.</p>' +
+          '<button id="again" type="button">Send another</button>';
+      }, 500);
+    });
+  </script>
+</body>
+</html>

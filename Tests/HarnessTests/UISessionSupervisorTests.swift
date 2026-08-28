@@ -669,10 +669,13 @@ struct UISessionActMappingTests {
 @Suite("UI session tool contract")
 struct UISessionContractTests {
 
-    @Test("the five session tool names are exactly the cross-repo contract")
+    @Test("the session tool names are exactly the cross-repo contract")
     func toolNameContract() {
+        // The original five are a FROZEN cross-repo contract; the sixth is
+        // purely additive (a client that doesn't know it never calls it).
         #expect(Set(UISessionTool.allCases.map(\.rawValue)) == [
-            "start_ui_session", "observe_ui", "act_ui", "end_ui_session", "list_ui_sessions"
+            "start_ui_session", "observe_ui", "act_ui", "end_ui_session", "list_ui_sessions",
+            "export_ui_session_state"
         ])
     }
 
@@ -1017,3 +1020,182 @@ struct MacAppDriverPidScopingTests {
     }
 }
 #endif
+
+// MARK: - Session-state injection / export (web-only capabilities)
+
+@Suite("UISessionSupervisor — session state")
+struct UISessionStateCapabilityTests {
+
+    private static let secret = "COOKIE-VALUE-THAT-MUST-NEVER-BE-LOGGED"
+
+    private static func webState() -> WebSessionState {
+        WebSessionState(cookies: [
+            WebSessionCookie(name: "sid", value: secret, domain: ".example.com")
+        ])
+    }
+
+    /// A supervisor whose preparer records the config it was handed, so we
+    /// can assert the state actually reaches the adapter layer.
+    private static func supervisor(
+        platform: PlatformKind,
+        seen: ConfigProbe,
+        root: URL
+    ) -> UISessionSupervisor {
+        let probe = TeardownProbe()
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 10, height: 10),
+            pixelSize: CGSize(width: 10, height: 10),
+            cleanPNG: UISessionTestSupport.solidPNG(width: 10, height: 10, color: .red),
+            markedPNG: nil, annotation: nil, execDetail: nil
+        )
+        let names: [String] = {
+            switch platform {
+            case .web:          return ToolSchema.webToolNames
+            case .iosSimulator: return ToolSchema.iOSToolNames
+            case .macosApp:     return ToolSchema.macOSToolNames
+            }
+        }()
+        let adapter = FakePlatformAdapter(kind: platform, names: names, probe: probe)
+        let preparer = FakeUISessionPreparer { config, _ in
+            await seen.record(config)
+            let session = RunSession(
+                kind: platform, driver: driver, pointSize: CGSize(width: 10, height: 10),
+                bundleIdentifier: nil, appBundleURL: nil, displayLabel: "fake",
+                credentialLabel: nil, credentialUsername: nil
+            )
+            return PreparedUISession(session: session, adapter: adapter)
+        }
+        return UISessionSupervisor(preparer: preparer, idleTimeoutSeconds: 0, defaultArtifactRoot: root)
+    }
+
+    @Test("session_state reaches the preparer untouched for a web session")
+    func webSessionStateReachesPreparer() async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .web, seen: seen, root: root)
+
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, webURL: "https://example.com",
+            webSessionState: Self.webState(), webVisible: true
+        ))
+        let config = try #require(await seen.last)
+        #expect(config.webSessionState?.cookies.first?.value == Self.secret)
+        #expect(config.webVisible)
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("a web session started WITHOUT session_state stays a fresh user")
+    func freshUserByDefault() async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .web, seen: seen, root: root)
+
+        let info = try await sup.start(UISessionConfig(platform: .web, webURL: "https://example.com"))
+        let config = try #require(await seen.last)
+        #expect(config.webSessionState == nil, "the fresh-user invariant must be the default")
+        #expect(!config.webVisible)
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("session_state on a native platform is rejected, not silently dropped")
+    func nativeRejectsSessionState() async {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .macosApp, seen: seen, root: root)
+
+        await #expect(throws: UISessionError.self) {
+            _ = try await sup.start(UISessionConfig(
+                platform: .macosApp, webSessionState: Self.webState(),
+                macAppPath: "/tmp/Fake.app"
+            ))
+        }
+    }
+
+    @Test("visible:true on a native platform is rejected")
+    func nativeRejectsVisible() async {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .macosApp, seen: seen, root: root)
+
+        await #expect(throws: UISessionError.self) {
+            _ = try await sup.start(UISessionConfig(
+                platform: .macosApp, webVisible: true, macAppPath: "/tmp/Fake.app"
+            ))
+        }
+    }
+
+    @Test("export on a non-web session names the capability and the platform")
+    func exportRejectedOnNative() async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .macosApp, seen: seen, root: root)
+        let info = try await sup.start(UISessionConfig(platform: .macosApp, macAppPath: "/tmp/Fake.app"))
+
+        do {
+            _ = try await sup.exportWebSessionState(id: info.id)
+            Issue.record("expected a throw")
+        } catch let error as UISessionError {
+            let message = error.localizedDescription
+            #expect(message.contains("export_ui_session_state"))
+            #expect(message.contains("macOS") || message.contains("Mac"))
+        }
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("export on an unknown session id is a sessionNotFound, not a crash")
+    func exportUnknownSession() async {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .web, seen: seen, root: root)
+        await #expect(throws: UISessionError.self) {
+            _ = try await sup.exportWebSessionState(id: UUID())
+        }
+    }
+
+    @Test("a web session driven by a non-WebKit driver reports that honestly")
+    func exportUnavailableDriver() async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .web, seen: seen, root: root)
+        let info = try await sup.start(UISessionConfig(platform: .web, webURL: "https://example.com"))
+
+        do {
+            _ = try await sup.exportWebSessionState(id: info.id)
+            Issue.record("expected a throw")
+        } catch let error as UISessionError {
+            #expect(error.localizedDescription.contains("does not expose"))
+        }
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("no steps.jsonl row is written by an export attempt")
+    func exportWritesNoArtifacts() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .web, seen: seen, root: dir)
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, artifactDirPath: dir.path, webURL: "https://example.com"
+        ))
+        _ = try? await sup.exportWebSessionState(id: info.id)
+
+        let jsonl = dir.appendingPathComponent("steps.jsonl")
+        let contents = (try? String(contentsOf: jsonl, encoding: .utf8)) ?? ""
+        #expect(!contents.contains(Self.secret))
+        #expect(contents.isEmpty, "an export is not an observation and must append no row")
+        _ = await sup.end(id: info.id)
+    }
+}
+
+/// Captures the last `UISessionConfig` a preparer received.
+private actor ConfigProbe {
+    private(set) var last: UISessionConfig?
+    func record(_ config: UISessionConfig) { last = config }
+}

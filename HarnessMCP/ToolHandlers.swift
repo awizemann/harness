@@ -56,7 +56,9 @@ extension MCPServer {
         case UISessionTool.actUI.rawValue:          return try await actUI(c, args)
         case UISessionTool.endUISession.rawValue:   return try await endUISession(c, args)
         case UISessionTool.listUISessions.rawValue: return await listUISessions(c, args)
-        default:                     return .error("Unknown tool: '\(tool)'")
+        case UISessionTool.exportUISessionState.rawValue:
+            return try await exportUISessionState(c, args)
+        default:                    return .error("Unknown tool: '\(tool)'")
         }
     }
 

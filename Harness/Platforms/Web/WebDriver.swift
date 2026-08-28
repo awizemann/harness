@@ -48,6 +48,11 @@ actor WebDriver: UXDriving {
     /// quietness window — see the rationale on `settle(afterTool:)`.
     /// Reset to `false` after each settle.
     private var lastClickNavigated: Bool = false
+    /// W3 — true between `armActionObservation()` (called by `execute` BEFORE
+    /// dispatching a DOM-affecting, non-navigating action) and the settle that
+    /// consumes it. See `WebSettleProfile` for why arming has to happen before
+    /// the action rather than after it.
+    private var actionObservationArmed: Bool = false
     /// Driver-side diagnostic text for the most recent `execute(_:)`
     /// call. Surfaced into the next turn's `toolResultSummary` via
     /// `lastExecutionDetail()` so the agent's prompt history sees
@@ -80,6 +85,16 @@ actor WebDriver: UXDriving {
     /// Current viewport in CSS pixels. Read by the UI to keep the live
     /// mirror's display math in sync with the WKWebView.
     func currentViewport() async -> CGSize { viewport }
+
+    /// Read this session's cookies + the current origin's `localStorage`.
+    ///
+    /// **The result is a bag of credentials.** It exists to serve exactly one
+    /// caller — the `export_ui_session_state` MCP tool — whose whole job is to
+    /// hand that state back to a client that will store it securely. It is
+    /// never logged, never written to `steps.jsonl`, and never persisted here.
+    func exportSessionState() async -> WebSessionState {
+        await WebSessionStateIO.export(from: controller)
+    }
 
     /// Resize the underlying WKWebView to `newViewport` (CSS pixels). The
     /// next snapshot reflects the new dimensions. Idempotent — a no-op if
@@ -174,6 +189,31 @@ actor WebDriver: UXDriving {
             consecutiveNoProgressScrolls = 0
         }
         lastDriverDetail = nil
+
+        // W3 — arm DOM + async-work observation BEFORE dispatching an action
+        // that can change the page without changing the URL. Arming after the
+        // fact (the historical behaviour) misses every mutation the action's
+        // own handler makes and cannot tell "hasn't reacted yet" from "will
+        // never react". Navigations bring their own gate and skip this.
+        if WebSettleProfile.armsObservation(for: call.input) {
+            await armActionObservation()
+        }
+
+        // A dispatch that THROWS never reaches `settle`, so the armed
+        // observer would otherwise sit installed (with the page's
+        // `setTimeout` / `fetch` still wrapped) until the next arm disposed
+        // it. Tear it down on the way out instead.
+        do {
+            try await dispatch(call)
+        } catch {
+            await disarmActionObservation()
+            throw error
+        }
+    }
+
+    /// The per-tool dispatch switch. Split out of `execute` so the armed
+    /// observer can be disposed on a throwing path.
+    private func dispatch(_ call: ToolCall) async throws {
         switch call.input {
         case .tap(let x, let y):
             try await dispatchClick(x: x, y: y, button: 0, count: 1)
@@ -290,62 +330,260 @@ actor WebDriver: UXDriving {
     /// Router) — clicks on `<Link>` anchors triggered route changes
     /// but the post-click screenshot routinely caught the index page
     /// at the article URL.
+    /// **Non-navigating actions (W3)**: the envelope alone was not enough.
+    /// A same-URL React state swap that lands behind an `await fetch(...)`
+    /// or a short `setTimeout` used to be missed entirely — the observer was
+    /// armed AFTER dispatch and its only exit test was "quiet for `idleMs`",
+    /// which a page that has not reacted YET passes just as well as a page
+    /// that never will. Those actions now use `armActionObservation()`
+    /// (installed BEFORE dispatch, in `execute`) plus a pending-async-work
+    /// gate; see `WebSettleProfile` for the full rationale.
     func settle(afterTool call: ToolCall) async {
-        let idleMs: Int
-        let minMs: Int
-        let maxMs: Int
-        var requireChildListMutation = false
-        switch call.input {
-        // Navigations re-render the whole page — give the most time.
-        // Wide idle window (600ms) plus a long ceiling rides out
-        // hydration + lazy image batches without spinning forever on
-        // pages with persistent low-rate background activity (analytics
-        // beacons, polling, etc.). Hard navigations always require a
-        // childList mutation before resolving — a quiet observer
-        // during the brief window between unmount-old-tree and
-        // mount-new-tree shouldn't be mistaken for "page settled".
-        case .navigate, .back, .forward, .refresh:
-            idleMs = 600
-            minMs = 600
-            maxMs = 8000
-            requireChildListMutation = true
-        // Click-family tools. Default to the tight quietness window;
-        // escalate to the navigation profile when the click triggered
-        // a URL change (Next.js / React Router / etc. push the new
-        // route via pushState inside the click handler, so by the
-        // time settle runs we can already tell whether navigation
-        // happened). SPA route transitions also require a childList
-        // mutation — the original failure mode was the observer
-        // catching a Suspense lull and resolving while React kept
-        // the previous route's DOM mounted; requiring one structural
-        // mutation guarantees the new component tree has begun
-        // rendering before we accept idle.
-        case .tap, .tapMark, .doubleTap, .rightClick,
-             .scroll, .type, .keyShortcut, .fillCredential:
-            if lastClickNavigated {
-                idleMs = 600
-                minMs = 800
-                maxMs = 8000
-                requireChildListMutation = true
-            } else {
-                idleMs = 250
-                minMs = 250
-                maxMs = 2000
-            }
-        // Pure-read / state-emit tools never change the page; no settle.
-        case .wait, .readScreen, .noteFriction, .markGoalDone,
-             .swipe, .pressButton:
+        let profile = WebSettleProfile.profile(for: call.input, clickNavigated: lastClickNavigated)
+        // Reset the navigation flag for the next tool — it only applies to
+        // the immediately-following settle.
+        lastClickNavigated = false
+
+        // Nothing to wait for, but an observer armed for this action must
+        // never outlive it (a stale one would be disposed by the next arm
+        // anyway; this keeps the page clean in the meantime).
+        guard profile != .none else {
+            await disarmActionObservation()
             return
         }
-        // Reset the navigation flag for the next tool — it only
-        // applies to the immediately-following settle.
-        lastClickNavigated = false
+
+        if profile.usesArmedObservation && actionObservationArmed {
+            actionObservationArmed = false
+            let waited = await awaitArmedDOMSettled(profile)
+            if waited >= 0 {
+                Self.logger.info("armed settle waited \(waited, privacy: .public)ms (idle=\(profile.idleMs, privacy: .public), max=\(profile.maxMs, privacy: .public))")
+                return
+            }
+            // The armed state was gone by the time we looked: a hard
+            // navigation tore down the JS context, or arming silently
+            // failed. Fall through to the legacy post-hoc gate rather than
+            // skipping the wait entirely.
+            Self.logger.info("armed settle state absent; falling back to post-hoc DOM settle")
+        } else {
+            await disarmActionObservation()
+        }
+
         _ = await awaitDOMSettled(
-            idleMs: idleMs,
-            minMs: minMs,
-            maxMs: maxMs,
-            requireChildListMutation: requireChildListMutation
+            idleMs: profile.idleMs,
+            minMs: profile.minMs,
+            maxMs: profile.maxMs,
+            requireChildListMutation: profile.requireChildListMutation
         )
+    }
+
+    // MARK: - Pre-armed action observation (W3)
+
+    /// JS global the armed observer parks its state on. One per page context;
+    /// arming disposes any previous instance first, so a driver that armed but
+    /// never awaited (an `execute` that threw) cannot leak a live observer or
+    /// leave the page's `setTimeout` / `fetch` permanently wrapped.
+    private static let armedStateKey = "__harnessSettleState"
+
+    /// Install DOM observation + pending-async-work accounting BEFORE an
+    /// action is dispatched.
+    ///
+    /// Tracks, from this moment on:
+    ///   - every DOM mutation (childList / attributes / characterData, subtree),
+    ///   - `setTimeout` callbacks scheduled with a delay ≤ 2000ms,
+    ///   - in-flight `fetch` calls,
+    ///   - in-flight `XMLHttpRequest` sends.
+    ///
+    /// `setInterval` and `requestAnimationFrame` are deliberately NOT tracked:
+    /// a polling interval or an animation loop never drains, and gating on
+    /// them would pin every settle to its ceiling. Long timers (> 2000ms)
+    /// are excluded for the same reason — they cannot finish inside the
+    /// action's own ceiling, so waiting on them only wastes it.
+    ///
+    /// Best-effort: a failure here leaves `actionObservationArmed == false`
+    /// and `settle` falls back to the historical post-hoc gate.
+    private func armActionObservation() async {
+        let js = """
+        (() => {
+          const KEY = '\(Self.armedStateKey)';
+          try { if (window[KEY] && window[KEY].dispose) window[KEY].dispose(); } catch (e) {}
+          const target = document.documentElement || document.body;
+          if (!target) return false;
+          const now = performance.now();
+          const st = {
+            startedAt: now,
+            lastMut: now,
+            mutations: 0,
+            pending: 0,
+            rawTimeout: window.setTimeout.bind(window),
+            disposed: false
+          };
+          const obs = new MutationObserver(() => {
+            st.lastMut = performance.now();
+            st.mutations++;
+          });
+          obs.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+
+          const origTimeout = window.setTimeout;
+          const origFetch = window.fetch;
+          const origSend = window.XMLHttpRequest && window.XMLHttpRequest.prototype
+            ? window.XMLHttpRequest.prototype.send : null;
+
+          // Short timers: the classic "swap the view in 500ms" shape.
+          try {
+            window.setTimeout = function (fn, delay) {
+              const d = Number(delay) || 0;
+              if (typeof fn === 'function' && d <= 2000 && !st.disposed) {
+                st.pending++;
+                let settled = false;
+                const rest = Array.prototype.slice.call(arguments, 2);
+                return origTimeout.call(window, function () {
+                  if (!settled) { settled = true; st.pending--; }
+                  try { fn.apply(this, rest); } finally { st.lastMut = performance.now(); }
+                }, d);
+              }
+              return origTimeout.apply(window, arguments);
+            };
+          } catch (e) {}
+
+          try {
+            if (typeof origFetch === 'function') {
+              window.fetch = function () {
+                if (st.disposed) return origFetch.apply(this, arguments);
+                st.pending++;
+                let p;
+                try { p = origFetch.apply(this, arguments); }
+                catch (e) { st.pending--; throw e; }
+                return p.then(
+                  (r) => { st.pending--; st.lastMut = performance.now(); return r; },
+                  (e) => { st.pending--; st.lastMut = performance.now(); throw e; }
+                );
+              };
+            }
+          } catch (e) {}
+
+          try {
+            if (origSend) {
+              window.XMLHttpRequest.prototype.send = function () {
+                if (!st.disposed) {
+                  st.pending++;
+                  let settled = false;
+                  this.addEventListener('loadend', function () {
+                    if (!settled) { settled = true; st.pending--; st.lastMut = performance.now(); }
+                  });
+                }
+                return origSend.apply(this, arguments);
+              };
+            }
+          } catch (e) {}
+
+          st.dispose = function () {
+            if (st.disposed) return;
+            st.disposed = true;
+            try { obs.disconnect(); } catch (e) {}
+            try { window.setTimeout = origTimeout; } catch (e) {}
+            try { if (typeof origFetch === 'function') window.fetch = origFetch; } catch (e) {}
+            try { if (origSend) window.XMLHttpRequest.prototype.send = origSend; } catch (e) {}
+            try { delete window[KEY]; } catch (e) { window[KEY] = null; }
+          };
+          window[KEY] = st;
+          return true;
+        })();
+        """
+        let armed: Bool? = await Self.raceAgainstTimeout(.seconds(2)) { [controller] in
+            await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                Task { @MainActor in
+                    controller.webView.evaluateJavaScript(js) { value, error in
+                        if error != nil { cont.resume(returning: false); return }
+                        cont.resume(returning: (value as? NSNumber)?.boolValue ?? false)
+                    }
+                }
+            }
+        }
+        actionObservationArmed = (armed ?? false)
+        if !actionObservationArmed {
+            Self.logger.info("armActionObservation did not arm; settle will use the post-hoc gate")
+        }
+    }
+
+    /// Dispose an armed observer without waiting on it (restores the page's
+    /// original `setTimeout` / `fetch` / `XHR.send`). Idempotent and silent.
+    private func disarmActionObservation() async {
+        guard actionObservationArmed else { return }
+        actionObservationArmed = false
+        let js = """
+        (() => {
+          const st = window['\(Self.armedStateKey)'];
+          if (st && st.dispose) { try { st.dispose(); } catch (e) {} }
+          return true;
+        })();
+        """
+        _ = await Self.raceAgainstTimeout(.seconds(2)) { [controller] in
+            await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                Task { @MainActor in
+                    controller.webView.evaluateJavaScript(js) { _, _ in cont.resume(returning: true) }
+                }
+            }
+        }
+    }
+
+    /// Wait on the pre-armed observer. Resolves once the DOM has been quiet
+    /// for `idleMs` AND the page has no tracked async work in flight, with
+    /// `minMs` as a floor and `maxMs` as a ceiling.
+    ///
+    /// Returns the wall-clock ms waited, or `-1` when the armed state was not
+    /// found (page navigated away / arming failed) so the caller can fall back.
+    private func awaitArmedDOMSettled(_ profile: WebSettleProfile) async -> Int {
+        let js = """
+        return await new Promise((resolve) => {
+          const st = window['\(Self.armedStateKey)'];
+          if (!st || st.disposed) { resolve(-1); return; }
+          const startedAt = performance.now();
+          // Use the ORIGINAL setTimeout captured at arm time — polling through
+          // the wrapped one would count our own ticks as pending page work.
+          const schedule = st.rawTimeout || setTimeout;
+          const tick = () => {
+            const now = performance.now();
+            const elapsed = now - startedAt;
+            const sinceMut = now - st.lastMut;
+            const quiet = elapsed >= minMs && sinceMut >= idleMs && st.pending <= 0;
+            if (elapsed >= maxMs || quiet) {
+              try { st.dispose(); } catch (e) {}
+              resolve(Math.round(elapsed));
+              return;
+            }
+            schedule(tick, 50);
+          };
+          tick();
+        });
+        """
+        let hardCapMs = profile.maxMs + 4000
+        let outcome: Int? = await Self.raceAgainstTimeout(.milliseconds(hardCapMs)) { [controller] in
+            await Task { @MainActor in
+                do {
+                    let value = try await controller.webView.callAsyncJavaScript(
+                        js,
+                        arguments: [
+                            "idleMs": profile.idleMs,
+                            "minMs": profile.minMs,
+                            "maxMs": profile.maxMs
+                        ],
+                        in: nil,
+                        contentWorld: .page
+                    )
+                    if let i = value as? Int { return i }
+                    if let d = value as? Double { return Int(d) }
+                    return -1
+                } catch {
+                    Self.logger.warning("awaitArmedDOMSettled JS bridge failed: \(error.localizedDescription, privacy: .public)")
+                    return -1
+                }
+            }.value
+        }
+        guard let waitedMs = outcome else {
+            Self.logger.warning("awaitArmedDOMSettled hard-timed-out after ~\(hardCapMs)ms; proceeding to capture")
+            return profile.maxMs
+        }
+        return waitedMs
     }
 
     /// Block until the DOM has gone `idleMs` without a mutation, with a
@@ -1144,6 +1382,94 @@ actor WebDriver: UXDriving {
             }
           }
 
+          // Accessible-name resolution, in the order a screen reader (and
+          // any stable automation resolver) would take it. The historical
+          // order put `placeholder` SECOND, which meant a properly-labelled
+          // form field — `<label for="name">Your Name *</label>` with
+          // `placeholder="John Doe"` — surfaced as "John Doe". Resolvers
+          // downstream then keyed on SAMPLE DATA, which changes whenever the
+          // designer edits the placeholder, and that sample text leaked into
+          // published guide alt text (W1, drop-help shakedown).
+          //
+          // Priority: aria-label → aria-labelledby (resolved) → associated
+          // <label for> / wrapping <label> → placeholder → title → value →
+          // visible text → name attribute. Each mark also reports WHICH of
+          // these produced its label (`label_source`) so a client can prefer
+          // the stable sources and treat `placeholder` as a weak signal.
+          const norm = (s) => String(s == null ? '' : s).trim().replace(/\\s+/g, ' ');
+
+          function labelledByText(el) {
+            const ids = norm(el.getAttribute ? el.getAttribute('aria-labelledby') : '');
+            if (!ids) return '';
+            const root = (el.getRootNode && el.getRootNode()) || document;
+            const parts = [];
+            for (const id of ids.split(' ')) {
+              if (!id) continue;
+              let node = null;
+              try { node = root.getElementById ? root.getElementById(id) : null; } catch (e) {}
+              if (!node) { try { node = document.getElementById(id); } catch (e) {} }
+              if (node) parts.push(norm(node.innerText || node.textContent));
+            }
+            return norm(parts.filter(Boolean).join(' '));
+          }
+
+          function associatedLabelText(el) {
+            // `el.labels` is the spec-correct answer for form controls: it
+            // covers BOTH `<label for=…>` and a wrapping `<label>`.
+            let labels = null;
+            try { labels = el.labels; } catch (e) {}
+            if (labels && labels.length) {
+              const texts = [];
+              for (const l of labels) texts.push(norm(l.innerText || l.textContent));
+              const joined = norm(texts.filter(Boolean).join(' '));
+              if (joined) return joined;
+            }
+            // Non-form controls (a [role="textbox"] div, a custom element)
+            // have no `.labels`; look the `for=` association up by id, then
+            // fall back to a wrapping <label>.
+            try {
+              if (el.id) {
+                const root = (el.getRootNode && el.getRootNode()) || document;
+                const sel = 'label[for="' + (window.CSS && CSS.escape ? CSS.escape(el.id) : el.id) + '"]';
+                const byFor = (root.querySelector ? root.querySelector(sel) : null)
+                  || document.querySelector(sel);
+                if (byFor) {
+                  const t = norm(byFor.innerText || byFor.textContent);
+                  if (t) return t;
+                }
+              }
+            } catch (e) {}
+            try {
+              const wrapping = el.closest ? el.closest('label') : null;
+              if (wrapping) {
+                const t = norm(wrapping.innerText || wrapping.textContent);
+                if (t) return t;
+              }
+            } catch (e) {}
+            return '';
+          }
+
+          function resolveLabel(el) {
+            const get = (a) => norm(el.getAttribute ? el.getAttribute(a) : '');
+            let v = get('aria-label');
+            if (v) return { label: v, source: 'aria-label' };
+            v = labelledByText(el);
+            if (v) return { label: v, source: 'labelledby' };
+            v = associatedLabelText(el);
+            if (v) return { label: v, source: 'label' };
+            v = get('placeholder');
+            if (v) return { label: v, source: 'placeholder' };
+            v = get('title');
+            if (v) return { label: v, source: 'title' };
+            v = norm(el.value);
+            if (v) return { label: v, source: 'value' };
+            v = norm(el.innerText);
+            if (v) return { label: v, source: 'text' };
+            v = get('name');
+            if (v) return { label: v, source: 'name' };
+            return { label: '', source: 'none' };
+          }
+
           function consider(el) {
             const cs = window.getComputedStyle(el);
             if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') return;
@@ -1153,14 +1479,9 @@ actor WebDriver: UXDriving {
             const r = el.getBoundingClientRect();
             if (r.width <= 0 || r.height <= 0) return;
             if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) return;
-            let label = el.getAttribute('aria-label')
-              || el.getAttribute('placeholder')
-              || el.getAttribute('title')
-              || el.value
-              || el.innerText
-              || el.getAttribute('name')
-              || '';
-            label = String(label).trim().replace(/\\s+/g, ' ');
+            const resolved = resolveLabel(el);
+            let label = resolved.label;
+            const labelSource = resolved.source;
             // Drop big, label-less interactive containers. They tend
             // to be invisible wrapper "buttons" that span a section
             // (e.g. a `<div role="button">` covering a whole hero
@@ -1184,7 +1505,8 @@ actor WebDriver: UXDriving {
               h: Math.round(r.height),
               role: role,
               type: inputType,
-              label: label
+              label: label,
+              label_source: labelSource
             });
           }
 
@@ -1231,7 +1553,8 @@ actor WebDriver: UXDriving {
                                 ),
                                 role: (dict["role"] as? String) ?? "",
                                 inputType: dict["type"] as? String,
-                                label: (dict["label"] as? String) ?? ""
+                                label: (dict["label"] as? String) ?? "",
+                                labelSource: dict["label_source"] as? String
                             )
                         }
                         cont.resume(returning: marks)

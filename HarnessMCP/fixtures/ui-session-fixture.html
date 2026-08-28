@@ -22,6 +22,14 @@
        NEXT observe's mark table shows the new label. -->
   <input id="name" aria-label="name field" autocomplete="off">
   <button id="echo" type="button">waiting</button>
+  <!-- W1 label-priority fixture: a PROPERLY LABELLED field whose placeholder
+       is sample data. The mark's label must be the <label for> text ("Your
+       Email *"), never the placeholder ("john@example.com"), and the mark
+       must report label_source: "label" so a client can tell which it got. -->
+  <p>
+    <label for="email">Your Email *</label>
+    <input id="email" placeholder="john@example.com" autocomplete="off">
+  </p>
   <script>
     const inp = document.getElementById('name');
     const btn = document.getElementById('echo');

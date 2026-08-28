@@ -22,6 +22,20 @@ struct WebPlatformAdapter: PlatformAdapter {
     let kind: PlatformKind = .web
     let services: PlatformAdapterServices
 
+    /// Optional cookie / localStorage state to seed into the session's
+    /// (still NON-PERSISTENT) data store before the first navigation.
+    /// `nil` — the default, and what every autonomous run uses — leaves the
+    /// fresh-user invariant exactly as it was.
+    ///
+    /// SECRET: cookie values are credentials. This value is never logged;
+    /// only `WebSessionState.redactedSummary` (counts) ever is.
+    let sessionState: WebSessionState?
+
+    /// Show the session's window on screen so a human can drive it. Default
+    /// `false` — the window sits at `alphaValue = 0` behind everything, the
+    /// historical behaviour for every run.
+    let visibleWindow: Bool
+
     /// Initial-load settle envelope passed to
     /// `WebDriver.awaitDOMSettled(idleMs:minMs:maxMs:)` after the first
     /// navigation's `didFinish`. WKWebView fires `didFinish` once the
@@ -43,8 +57,14 @@ struct WebPlatformAdapter: PlatformAdapter {
     private static let firstLoadMinMs = 800
     private static let firstLoadMaxMs = 10_000
 
-    init(services: PlatformAdapterServices) {
+    init(
+        services: PlatformAdapterServices,
+        sessionState: WebSessionState? = nil,
+        visibleWindow: Bool = false
+    ) {
         self.services = services
+        self.sessionState = sessionState
+        self.visibleWindow = visibleWindow
     }
 
     func prepare(
@@ -79,6 +99,27 @@ struct WebPlatformAdapter: PlatformAdapter {
         let controller: WebViewWindowController = await MainActor.run {
             WebViewWindowController(viewport: preferredViewport)
         }
+        // Make the window human-drivable BEFORE the first load when asked, so
+        // the operator sees the page come up rather than a blank frame that
+        // appears late. The data store stays non-persistent either way.
+        if visibleWindow {
+            await MainActor.run {
+                controller.makeVisibleForHumanInput(
+                    title: "Harness session — \(startURL.host ?? startURL.absoluteString)"
+                )
+            }
+            Self.logger.info("web session window made visible for human input")
+        }
+
+        // Seed injected cookies / localStorage BEFORE the first navigation so
+        // the very first request already carries them (an auth cookie applied
+        // after the load would be one redirect too late). Counts only in the
+        // log — cookie values are credentials and never appear anywhere.
+        if let sessionState, !sessionState.isEmpty {
+            let applied = await WebSessionStateIO.inject(sessionState, into: controller)
+            Self.logger.info("injected session_state: \(applied.cookies, privacy: .public) cookie(s), \(applied.storageItems, privacy: .public) localStorage item(s) — values redacted")
+        }
+
         await MainActor.run {
             controller.webView.load(URLRequest(url: startURL))
         }

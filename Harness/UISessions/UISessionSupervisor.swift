@@ -107,6 +107,19 @@ actor UISessionSupervisor {
             }
         }
 
+        // 1b. `session_state` / `visible` are web-only. Reject them loudly on
+        //     a native platform rather than accepting an argument that would
+        //     be silently dropped — a client that thinks it injected an auth
+        //     cookie and got a logged-out session deserves the error.
+        if config.platform != .web {
+            if let state = config.webSessionState, !state.isEmpty {
+                throw UISessionError.webOnlyCapability("session_state", config.platform)
+            }
+            if config.webVisible {
+                throw UISessionError.webOnlyCapability("visible", config.platform)
+            }
+        }
+
         // 2. Platform target sanity (clearer than letting the adapter throw).
         switch config.platform {
         case .web:
@@ -230,6 +243,36 @@ actor UISessionSupervisor {
             entry, executed: call, preferMarked: true,
             lastDetail: resultSummary, actionFailed: execError != nil
         )
+    }
+
+    // MARK: - export session state (web only)
+
+    /// Read the live web session's cookies + current-origin `localStorage`.
+    ///
+    /// **The return value is a bag of credentials.** The supervisor does not
+    /// log it, does not write it to `steps.jsonl`, and does not keep a copy:
+    /// it goes straight to the `export_ui_session_state` tool result and
+    /// nowhere else. `lastActivityAt` is refreshed (this IS activity — a
+    /// human mid-login must not be idle-swept), but no step is captured and
+    /// no artifact row is appended, so nothing about this call touches disk.
+    func exportWebSessionState(id: UUID) async throws -> WebSessionState {
+        guard let entry = sessions[id], !entry.tornDown else {
+            throw UISessionError.sessionNotFound(id)
+        }
+        guard entry.platform == .web else {
+            throw UISessionError.webOnlyCapability(
+                UISessionTool.exportUISessionState.rawValue, entry.platform
+            )
+        }
+        guard let driver = entry.session.driver as? WebDriver else {
+            throw UISessionError.sessionStateUnavailable
+        }
+        entry.lastActivityAt = Date()
+        let state = await driver.exportSessionState()
+        entry.lastActivityAt = Date()
+        // Counts only. Never the values.
+        logger.info("exported session state for \(id.uuidString, privacy: .public): \(state.redactedSummary, privacy: .public)")
+        return state
     }
 
     // MARK: - end / list

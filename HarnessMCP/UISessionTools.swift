@@ -23,12 +23,25 @@ extension MCPServer {
         let platform = try Self.parseSessionPlatform(args.string("platform"))
         let (viewportW, viewportH) = Self.viewport(for: args.string("viewport"))
 
+        // `session_state` carries COOKIE VALUES — credentials. It is parsed
+        // here and handed straight to the supervisor: never echoed into the
+        // result, never logged, never written to steps.jsonl (which records
+        // `act_ui` calls only — `start_ui_session` writes no row at all).
+        // Parse errors name the offending index and field, never the value.
+        let sessionState: WebSessionState? = try {
+            guard let raw = args.raw["session_state"] else { return nil }
+            do { return try WebSessionState.parse(raw) }
+            catch { throw MCPToolError.invalidArgument("session_state", error.localizedDescription) }
+        }()
+
         let config = UISessionConfig(
             platform: platform,
             artifactDirPath: args.string("artifact_dir"),
             webURL: args.string("url"),
             viewportWidth: viewportW,
             viewportHeight: viewportH,
+            webSessionState: sessionState,
+            webVisible: args.bool("visible") ?? false,
             iosProjectPath: args.string("project_path"),
             iosScheme: args.string("scheme"),
             iosSimulatorUDID: args.string("simulator_udid"),
@@ -78,6 +91,25 @@ extension MCPServer {
 
         let obs = try await c.uiSessions.act(id: id, tool: tool, inputData: inputData)
         return Self.observationOutcome(obs)
+    }
+
+    // MARK: - export_ui_session_state
+
+    /// Return the live web session's cookies + current-origin localStorage.
+    ///
+    /// **This result is SENSITIVE** — session cookies are bearer credentials.
+    /// It is the single sanctioned egress point for that data: nothing here
+    /// logs it, nothing writes it to the artifact bundle, and the supervisor
+    /// keeps no copy. The client is responsible for storing it securely (the
+    /// macOS Keychain, a secret manager — not a file in a repo).
+    func exportUISessionState(_ c: MCPContainer, _ args: MCPArguments) async throws -> MCPToolOutcome {
+        let id = try args.requireUUID("session_id")
+        let state = try await c.uiSessions.exportWebSessionState(id: id)
+        var payload = state.exportJSON()
+        payload["session_id"] = id.uuidString
+        payload["sensitive"] = true
+        payload["note"] = "SENSITIVE — these cookies are login credentials. Store them in a secret manager (never a repo file or a log), and pass them back as start_ui_session's session_state to reuse the login headlessly."
+        return jsonText(payload)
     }
 
     // MARK: - end_ui_session

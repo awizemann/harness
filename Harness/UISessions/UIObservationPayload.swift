@@ -37,7 +37,7 @@ enum UIObservationPayload {
     ///   "step": 3,
     ///   "point_size": { "width": 1280, "height": 800 },
     ///   "marks": [
-    ///     { "id": 1, "label": "Sign in", "role": "a",
+    ///     { "id": 1, "label": "Sign in", "role": "a", "label_source": "text",
     ///       "rect": { "x": 24, "y": 16, "width": 72, "height": 32 } }
     ///   ],
     ///   "page_text": "…"          // web only; omitted elsewhere
@@ -76,7 +76,7 @@ enum UIObservationPayload {
     /// driver resolved no accessible name — the caller shouldn't have to
     /// branch on key presence for the common field).
     static func markJSON(_ mark: InteractiveMark) -> [String: Any] {
-        [
+        var out: [String: Any] = [
             "id": mark.id,
             "label": mark.label,
             "role": mark.role,
@@ -87,6 +87,14 @@ enum UIObservationPayload {
                 "height": jsonNumber(mark.rect.size.height)
             ]
         ]
+        // Provenance for `label` (web only). OMITTED — not nulled — on iOS
+        // and macOS: their probes resolve a name without recording where it
+        // came from, and an absent key is the honest form of "unknown", the
+        // same convention `page_text` follows.
+        if let source = mark.labelSource, !source.isEmpty {
+            out["label_source"] = source
+        }
+        return out
     }
 
     /// Emit whole values as `Int` so a rect reads `24` and not `24.0` in
@@ -139,6 +147,11 @@ enum UIObservationPayload {
                             "id": ["type": "integer", "description": "The badge number; the id tap_mark(id) takes."],
                             "label": ["type": "string", "description": "Accessible label; empty string when none resolved."],
                             "role": ["type": "string", "description": "Source-platform role (web: a/button/…; iOS: XCUIElementType…; macOS: AX…)."],
+                            "label_source": [
+                                "type": "string",
+                                "enum": ["aria-label", "labelledby", "label", "placeholder", "title", "value", "text", "name", "none"],
+                                "description": "Where `label` came from, in the probe's priority order. Web sessions only — omitted on iOS/macOS, whose probes report no provenance. Prefer aria-label / labelledby / label for durable resolvers; placeholder and value are sample data that move with copy edits."
+                            ],
                             "rect": [
                                 "type": "object",
                                 "description": "Bounding rect in point space, top-left origin.",

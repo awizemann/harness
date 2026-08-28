@@ -78,7 +78,15 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                 keychain: keychain,
                 runHistory: history
             )
-            adapter = WebPlatformAdapter(services: services)
+            // `sessionState` / `visibleWindow` ride on the ADAPTER, never on
+            // `RunRequest`: RunRequest is the persisted run model, and a
+            // cookie value must not reach a store, a log line, or a run row.
+            // The adapter is a transient value scoped to this session.
+            adapter = WebPlatformAdapter(
+                services: services,
+                sessionState: config.webSessionState,
+                visibleWindow: config.webVisible
+            )
 
         case .iosSimulator:
             guard let projectPath = config.iosProjectPath, !projectPath.isEmpty,

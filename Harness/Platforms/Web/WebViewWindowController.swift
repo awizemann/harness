@@ -141,6 +141,62 @@ final class WebViewWindowController: NSWindowController {
         fatalError("WebViewWindowController is created in code only.")
     }
 
+    /// Bring the window on screen so a HUMAN can see and drive the page —
+    /// the "log in yourself, then export the session state" flow behind
+    /// `start_ui_session(visible: true)`.
+    ///
+    /// Three things must change together for that to actually work:
+    ///
+    ///  1. **Alpha / level / mouse events.** The default window is fully
+    ///     transparent, below every normal window, and `ignoresMouseEvents`
+    ///     — it exists only to satisfy WebKit's "must be in a real window"
+    ///     requirement for snapshots. All three are reversed here.
+    ///  2. **Style mask.** A `.borderless` window answers `false` to
+    ///     `canBecomeKey`, so it would never receive keystrokes — a human
+    ///     could click but not type a password. Promoting it to `.titled`
+    ///     makes it key-eligible and gives the human a window they can
+    ///     recognise and move.
+    ///  3. **Activation policy.** The MCP binary runs `.prohibited` (a true
+    ///     background process), and a prohibited app cannot activate or take
+    ///     key focus. `.accessory` is the minimum that can: windows activate
+    ///     and accept input, with still no Dock icon and no menu bar. The
+    ///     policy is raised only when a visible session is requested, and is
+    ///     deliberately not lowered again at teardown — AppKit makes no
+    ///     promise about a clean round-trip and the process is short-lived.
+    ///
+    /// The website data store is untouched: a visible session is still a
+    /// NON-PERSISTENT, fresh-user session. Nothing the human does here
+    /// survives teardown unless it is explicitly exported.
+    ///
+    /// Idempotent.
+    func makeVisibleForHumanInput(title: String) {
+        guard let window else { return }
+        if NSApp.activationPolicy() == .prohibited {
+            NSApp.setActivationPolicy(.accessory)
+        }
+        // Preserve the CSS-pixel viewport across the style-mask change: a
+        // titled window loses content height to its title bar, which would
+        // silently shrink `window.innerHeight` out from under the driver's
+        // cached viewport (and desynchronise mark rects from the snapshot).
+        // Set the CONTENT size, not the frame size.
+        let viewport = webView.frame.size
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.setContentSize(viewport)
+        window.title = title
+        window.titleVisibility = .visible
+        window.alphaValue = 1
+        window.ignoresMouseEvents = false
+        window.level = .normal
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        // Re-seat the web view: promoting the style mask rebuilds the frame
+        // view, and the content view has to keep filling it at the SAME
+        // viewport the driver believes it is snapshotting.
+        webView.frame = NSRect(origin: .zero, size: viewport)
+        window.makeFirstResponder(webView)
+    }
+
     /// Resize the WebView to a new CSS-pixel viewport. Called when the
     /// run's RunRequest carries a viewport override.
     func resize(_ viewport: CGSize) {
