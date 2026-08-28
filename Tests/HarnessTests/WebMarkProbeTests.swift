@@ -432,3 +432,63 @@ struct WebMarkProbeLabelTests {
         #expect(marks.first(labelled: "Search sites")?.source == "placeholder")
     }
 }
+
+// MARK: - Secret fields (WB-14)
+
+@Suite("Web mark probe — password fields never leak their value", .serialized)
+struct WebMarkProbeSecretFieldTests {
+
+    private static let secret = "PASSWORD-THAT-MUST-NEVER-BE-A-LABEL-3311"
+
+    @Test("an unlabelled password field is named from its type, never from its value")
+    @MainActor
+    func unlabelledPasswordNeverLeaksValue() async throws {
+        // No aria-label, no <label>, no placeholder, no title — the exact
+        // shape that used to fall through to the `value` fallback. WebKit
+        // renders bullets but `el.value` is the PLAINTEXT.
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <input id="pw" type="password" value="\(Self.secret)">
+        </body></html>
+        """)
+        let mark = try #require(marks.first { $0.source == "secure-field" })
+        #expect(mark.label == "Password")
+        #expect(marks.labels().allSatisfy { !$0.contains(Self.secret) },
+                "a password's value must never reach the mark table")
+    }
+
+    @Test("a password field labelled by autocomplete alone is still not value-labelled")
+    @MainActor
+    func autocompletePasswordIsSecret() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <input id="pw" type="text" autocomplete="current-password" value="\(Self.secret)">
+        </body></html>
+        """)
+        #expect(marks.labels().allSatisfy { !$0.contains(Self.secret) })
+        #expect(marks.first { $0.source == "secure-field" } != nil)
+    }
+
+    @Test("a properly labelled password field keeps its real label")
+    @MainActor
+    func labelledPasswordKeepsItsLabel() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <input id="pw" type="password" aria-label="Password field" value="\(Self.secret)">
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Password field")?.source == "aria-label")
+        #expect(marks.labels().allSatisfy { !$0.contains(Self.secret) })
+    }
+
+    @Test("an ordinary text field still labels from its value (the fallback is intact)")
+    @MainActor
+    func ordinaryValueFallbackIntact() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <input id="q" type="text" value="Berlin">
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Berlin")?.source == "value")
+    }
+}

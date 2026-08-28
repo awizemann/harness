@@ -98,8 +98,9 @@ enum LLMShared {
         case .fillCredential:
             // Fall back to .username if the model omits the field — it's
             // the safer of the two slots to retry against (typing the
-            // username doesn't expose anything sensitive). The driver
-            // ignores the call when no credential is staged.
+            // username doesn't expose anything sensitive). With no
+            // credential staged the driver FAILS the step
+            // (`UXDriverError.credentialUnavailable`) — never a silent no-op.
             let raw = (input["field"] as? String) ?? CredentialField.username.rawValue
             let field = CredentialField(rawValue: raw) ?? .username
             payload = .fillCredential(field: field)

@@ -34,6 +34,14 @@ extension MCPServer {
             catch { throw MCPToolError.invalidArgument("session_state", error.localizedDescription) }
         }()
 
+        // `credential_id` names a credential staged with `stage_credential`.
+        // Validate it HERE — the row must exist AND its Keychain password
+        // must be readable — so a caller that mistypes an id learns at start
+        // instead of watching `fill_credential` fail mid-session. Only the id
+        // is carried into the config; the username/password are resolved
+        // inside the adapter and never touch this layer.
+        let credential = try await validatedCredentialID(c, args)
+
         let config = UISessionConfig(
             platform: platform,
             artifactDirPath: args.string("artifact_dir"),
@@ -42,6 +50,7 @@ extension MCPServer {
             viewportHeight: viewportH,
             webSessionState: sessionState,
             webVisible: args.bool("visible") ?? false,
+            credentialID: credential?.id,
             iosProjectPath: args.string("project_path"),
             iosScheme: args.string("scheme"),
             iosSimulatorUDID: args.string("simulator_udid"),
@@ -57,13 +66,63 @@ extension MCPServer {
         )
 
         let info = try await c.uiSessions.start(config)
-        return jsonText([
+        var payload: [String: Any] = [
             "session_id": info.id.uuidString,
             "display_label": info.displayLabel,
             "platform": Self.sessionPlatformName(info.platform),
             "point_size": ["width": Int(info.pointSize.width), "height": Int(info.pointSize.height)],
             "note": "Session is ready. Call observe_ui to see it, act_ui to interact, end_ui_session when done."
-        ])
+        ]
+        if let credential {
+            // Label + username only — the same public-safe identity
+            // `RunLogger` records for an autonomous run. The password is
+            // never part of any result.
+            payload["credential"] = [
+                "credential_id": credential.id.uuidString,
+                "label": credential.label,
+                "username": credential.username
+            ]
+            payload["note"] = "Session is ready, with credential \"\(credential.label)\" available to act_ui(tool: \"fill_credential\", field: \"username\"|\"password\"). Focus the field first, then fill it."
+        }
+        return jsonText(payload)
+    }
+
+    /// Resolve + validate `credential_id`, or nil when the caller passed none.
+    ///
+    /// Two failures are caught here rather than mid-session: an id that names
+    /// no staged credential, and a credential row whose Keychain password is
+    /// missing (a half-staged credential). The password itself is read only to
+    /// prove it exists — the value is discarded immediately and never held,
+    /// logged, or returned; the driver re-resolves its own copy inside
+    /// `resolveCredentialBinding`.
+    private func validatedCredentialID(
+        _ c: MCPContainer,
+        _ args: MCPArguments
+    ) async throws -> CredentialSnapshot? {
+        guard args.raw["credential_id"] != nil else { return nil }
+        let id = try args.requireUUID("credential_id")
+        guard let snapshot = try await c.history.credential(id: id) else {
+            throw UISessionError.credentialNotStaged(id)
+        }
+        // A THROW here is a Keychain failure (locked, access denied) — very
+        // different advice from "never staged", so don't collapse the two.
+        // The value is proven present and immediately dropped; the driver
+        // resolves its own copy inside `resolveCredentialBinding`.
+        do {
+            guard try c.keychain.readPassword(
+                applicationID: snapshot.applicationID,
+                credentialID: snapshot.id
+            ) != nil else {
+                throw UISessionError.credentialPasswordMissing(id: snapshot.id, label: snapshot.label)
+            }
+        } catch let error as UISessionError {
+            throw error
+        } catch {
+            throw MCPToolError.message(
+                "Could not read credential \(snapshot.id.uuidString) (\"\(snapshot.label)\") from the Keychain: \(error.localizedDescription). Unlock the login keychain, or allow harness-mcp access to the \"\(KeychainStore.credentialsService)\" item, and retry."
+            )
+        }
+        return snapshot
     }
 
     // MARK: - observe_ui

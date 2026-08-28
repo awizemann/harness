@@ -107,6 +107,17 @@ struct UISessionConfig: Sendable {
     /// with it (log in by hand, solve an SSO prompt). Default `false`.
     var webVisible: Bool
 
+    /// A credential staged with `stage_credential`, made available to this
+    /// session's `fill_credential` action. ALL platforms.
+    ///
+    /// Only the ID travels here — the username is read from the store and
+    /// the password from the Keychain at prepare time, exactly as an
+    /// autonomous run does (`PlatformAdapterServices.resolveCredentialBinding`).
+    /// The resolved values live on the driver for the session's lifetime and
+    /// never reach a result, a log line, or `steps.jsonl`. `nil` → the
+    /// session has no credential and `fill_credential` FAILS the step.
+    var credentialID: UUID?
+
     // iOS
     var iosProjectPath: String?
     var iosScheme: String?
@@ -137,6 +148,7 @@ struct UISessionConfig: Sendable {
         viewportHeight: Int = 800,
         webSessionState: WebSessionState? = nil,
         webVisible: Bool = false,
+        credentialID: UUID? = nil,
         iosProjectPath: String? = nil,
         iosScheme: String? = nil,
         iosSimulatorUDID: String? = nil,
@@ -154,6 +166,7 @@ struct UISessionConfig: Sendable {
         self.viewportHeight = viewportHeight
         self.webSessionState = webSessionState
         self.webVisible = webVisible
+        self.credentialID = credentialID
         self.iosProjectPath = iosProjectPath
         self.iosScheme = iosScheme
         self.iosSimulatorUDID = iosSimulatorUDID
@@ -273,6 +286,13 @@ enum UISessionError: Error, Sendable, LocalizedError {
     /// A web-only session capability (`session_state`, `visible`,
     /// `export_ui_session_state`) was asked for on an iOS / macOS session.
     case webOnlyCapability(String, PlatformKind)
+    /// `credential_id` doesn't resolve to a staged credential in the shared
+    /// store (wrong id, or staged against a different Harness install).
+    case credentialNotStaged(UUID)
+    /// The credential row exists but its Keychain password doesn't —
+    /// a half-staged credential. Caught at START so the failure lands where
+    /// the caller can fix it, not mid-session on the first fill.
+    case credentialPasswordMissing(id: UUID, label: String)
     /// The session is a web session but its driver isn't the WebKit one —
     /// only reachable with an injected test double; reported honestly rather
     /// than returning a silently empty state.
@@ -311,6 +331,10 @@ enum UISessionError: Error, Sendable, LocalizedError {
             return "\(HarnessPaths.wdaSourceEnvVar) is set to \"\(path)\" but no WebDriverAgent.xcodeproj was found there. Point it at a WebDriverAgent checkout (the directory that contains WebDriverAgent.xcodeproj)."
         case .webOnlyCapability(let name, let platform):
             return "'\(name)' applies to web sessions only (this session is \(platform.displayName)). A native app has no cookie jar or localStorage to seed or export."
+        case .credentialNotStaged(let id):
+            return "No staged credential with id \(id.uuidString). Stage one with stage_credential (its password goes to the Keychain only), or call list_credentials for an application to see the ids it already has."
+        case .credentialPasswordMissing(let id, let label):
+            return "Credential \(id.uuidString) (\"\(label)\") has no password in the Keychain — it was never fully staged, or the Keychain entry was removed. Re-stage it with stage_credential."
         case .sessionStateUnavailable:
             return "This session's driver does not expose cookie / localStorage state."
         }

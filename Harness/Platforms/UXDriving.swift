@@ -194,10 +194,26 @@ enum UXDriverError: Error, Sendable, LocalizedError {
     /// shouldn't expose tools they can't execute.
     case unsupportedTool(name: String, platform: PlatformKind)
 
+    /// `fill_credential` was called but no credential is staged for this
+    /// run / session (none passed, or the DB + Keychain lookup produced
+    /// nothing). Reported as a step-level FAILURE rather than silently
+    /// doing nothing: a caller that believes it filled a login form and
+    /// got an unchanged screen has no way to tell what went wrong.
+    case credentialUnavailable(field: CredentialField)
+
+    /// The staged credential resolved, but typing it failed. `detail` is
+    /// already scrubbed via `CredentialBinding.redacting(_:)` — never
+    /// construct this case with a raw driver message.
+    case credentialFillFailed(field: CredentialField, detail: String)
+
     var errorDescription: String? {
         switch self {
         case .unsupportedTool(let name, let platform):
             return "Tool '\(name)' is not supported on \(platform.displayName)."
+        case .credentialUnavailable(let field):
+            return "fill_credential(field: \"\(field.rawValue)\") failed: no credential is staged. Stage one with stage_credential, then pass its id as start_ui_session's credential_id (or start_run's credential_id); list_credentials shows what an application already has."
+        case .credentialFillFailed(let field, let detail):
+            return "fill_credential(field: \"\(field.rawValue)\") failed: \(detail)"
         }
     }
 }

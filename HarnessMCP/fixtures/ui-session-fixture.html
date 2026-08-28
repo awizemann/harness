@@ -39,7 +39,43 @@
   <div inert>
     <button id="inert-btn" type="button">Inert Only</button>
   </div>
+  <!-- WB-14 fill_credential fixture: a real login pair. `fill_credential`
+       types the SESSION's staged credential into the focused field, so the
+       smoke can prove the value landed without ever printing the password —
+       the status line echoes the username verbatim (not a secret) and, for
+       the password, only its LENGTH and a non-reversible checksum the test
+       recomputes over its own copy. -->
+  <fieldset>
+    <legend>Sign in</legend>
+    <p><input id="username" aria-label="username field" autocomplete="off"></p>
+    <p><input id="password" type="password" aria-label="password field" autocomplete="off"></p>
+    <!-- An UNLABELLED password field: no aria-label, no <label>, no
+         placeholder, no title. The probe's last-resort label is a field's
+         own `value` — and `el.value` on a password input is the PLAINTEXT.
+         This field exists so the smoke proves the probe names it "Password"
+         (label_source "secure-field") instead of leaking what was typed. -->
+    <p><input id="password-bare" type="password" autocomplete="off"></p>
+    <p id="login-status">signed out</p>
+  </fieldset>
   <script>
+    const user = document.getElementById('username');
+    const pass = document.getElementById('password');
+    const loginStatus = document.getElementById('login-status');
+    function pwChecksum(s) {
+      let n = 0;
+      for (let i = 0; i < s.length; i++) { n = (n * 31 + s.charCodeAt(i)) % 9973; }
+      return n;
+    }
+    function renderLogin() {
+      const u = user.value;
+      const p = pass.value;
+      if (!u && !p) { loginStatus.textContent = 'signed out'; return; }
+      loginStatus.textContent = 'user: ' + (u || '(none)') +
+        ' · pw-len: ' + p.length + ' · pw-sum: ' + pwChecksum(p);
+    }
+    user.addEventListener('input', renderLogin);
+    pass.addEventListener('input', renderLogin);
+
     const inp = document.getElementById('name');
     const btn = document.getElementById('echo');
     inp.addEventListener('input', function () {

@@ -43,6 +43,7 @@ extension MCPServer {
         case "list_action_chains":   return try await listActionChains(c, args)
         case "create_action_chain":  return try await createActionChain(c, args)
         case "stage_credential":     return try await stageCredential(c, args)
+        case "list_credentials":     return try await listCredentials(c, args)
         case "start_run":            return try await startRun(c, args)
         case "cancel_run":           return try await cancelRun(c, args)
         case "get_run_status":       return try await getRunStatus(c, args)
@@ -234,6 +235,32 @@ extension MCPServer {
             "label": label,
             "username": username
         ]])
+    }
+
+    /// List an Application's staged credentials — label + id + username only.
+    ///
+    /// **The password is structurally absent**: `CredentialSnapshot` has no
+    /// password field, and nothing here touches the Keychain. This tool
+    /// exists so a client can discover the `credential_id` to hand to
+    /// `start_run` / `start_ui_session` without re-staging (and without
+    /// keeping a password anywhere of its own).
+    private func listCredentials(_ c: MCPContainer, _ args: MCPArguments) async throws -> MCPToolOutcome {
+        let appID = try args.requireUUID("application_id")
+        guard try await c.history.application(id: appID) != nil else {
+            throw MCPToolError.notFound("Application \(appID.uuidString)")
+        }
+        let creds = try await c.history.credentials(forApplication: appID)
+        let arr: [[String: Any]] = creds.map {
+            ["credential_id": $0.id.uuidString,
+             "label": $0.label,
+             "username": $0.username,
+             "created_at": Self.iso($0.createdAt)]
+        }
+        return jsonText([
+            "application_id": appID.uuidString,
+            "credentials": arr,
+            "count": arr.count
+        ])
     }
 
     // MARK: - Run control

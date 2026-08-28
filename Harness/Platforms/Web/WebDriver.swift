@@ -242,16 +242,28 @@ actor WebDriver: UXDriving {
         case .readScreen, .noteFriction, .markGoalDone:
             return
         case .fillCredential(let field):
-            // No staged credential → soft no-op. With a binding, route
-            // through the same JS `dispatchType`-style path as the
-            // ordinary `type` tool: set `value` on the focused input
-            // (or `execCommand('insertText', …)` for contenteditable),
-            // then dispatch input/change events so React-style
-            // listeners see the change. WKWebView's `<input type="password">`
-            // renders bullets natively, so screenshots stay masked.
-            guard let credential else { return }
-            let text = field == .username ? credential.username : credential.password
-            try await dispatchType(text)
+            // No staged credential → THROW (never a silent no-op: the
+            // caller would see an unchanged screen and no reason why).
+            // With a binding, route through the same JS `dispatchType`
+            // path as the ordinary `type` tool: set `value` on the focused
+            // input (or `execCommand('insertText', …)` for contenteditable),
+            // then dispatch input/change events so React-style listeners
+            // see the change. WKWebView's `<input type="password">` renders
+            // bullets natively, so screenshots stay masked.
+            guard let credential else {
+                throw UXDriverError.credentialUnavailable(field: field)
+            }
+            do {
+                try await dispatchType(credential.value(for: field))
+            } catch {
+                // A WebKit JS-evaluation error can echo page/script text;
+                // scrub the credential out of it before it reaches the
+                // tool result and steps.jsonl.
+                throw UXDriverError.credentialFillFailed(
+                    field: field,
+                    detail: credential.redacting(error.localizedDescription)
+                )
+            }
         case .swipe, .pressButton:
             throw UXDriverError.unsupportedTool(name: call.tool.rawValue, platform: .web)
         }

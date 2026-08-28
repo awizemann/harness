@@ -27,6 +27,12 @@ It then drives three more live proofs:
   * **Settle on a same-URL async swap (W3)** — `spa-settle-fixture.html`
     swaps its view 500ms after the click with no route change. The act's own
     auto-observe must already show the post-swap DOM.
+  * **Credentials (WB-14)** — stage a credential, list it back (never the
+    password), and drive `fill_credential` in a session: the staged username
+    and password must actually land in the focused fields (proved via the
+    fixture's echo + a password checksum, never by printing the secret), a
+    session with NO credential must ERROR rather than log a silent "ok", and
+    no password material may appear in any response, artifact, or log.
   * **Session state** — inject a cookie + a localStorage item, export them
     back out, confirm neither value reaches `steps.jsonl`, and confirm a
     session started WITHOUT `session_state` inherits nothing.
@@ -51,6 +57,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 import time
 from functools import partial
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -60,6 +67,15 @@ FIXTURE_DIR = os.path.join(HERE, "fixtures")
 FIXTURE_NAME = "ui-session-fixture.html"
 SETTLE_FIXTURE_NAME = "spa-settle-fixture.html"
 DEFAULT_BIN = os.path.join(HERE, "..", ".build", "derived", "Build", "Products", "Debug", "harness-mcp")
+
+
+def pw_checksum(s):
+    """Mirror of the fixture's JS checksum — lets the smoke prove the exact
+    password was typed without ever printing it."""
+    n = 0
+    for ch in s:
+        n = (n * 31 + ord(ch)) % 9973
+    return n
 
 
 def free_port():
@@ -79,13 +95,14 @@ def serve(directory, port):
 
 
 class MCP:
-    def __init__(self, binary):
+    def __init__(self, binary, env=None):
         self.proc = subprocess.Popen(
             [binary],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,   # protocol channel is stdout only
             bufsize=0,
+            env=env,
         )
         self._id = 0
 
@@ -192,15 +209,24 @@ def main():
     print("fixture: %s" % os.path.join(fixture_dir, FIXTURE_NAME))
     print("cwd    : %s" % os.getcwd())
 
-    signal.alarm(240)   # hard wall-clock guard so a wedge never hangs CI
+    signal.alarm(360)   # hard wall-clock guard so a wedge never hangs CI
 
     port = free_port()
     httpd = serve(fixture_dir, port)
     url = "http://127.0.0.1:%d/%s" % (port, FIXTURE_NAME)
     artifact_dir = tempfile.mkdtemp(prefix="harness-ui-smoke-")
 
-    mcp = MCP(binary)
+    # The credential leg stages a REAL credential (a store row + a Keychain
+    # item), so point the server at a throwaway store: the user's Harness
+    # library must not gain an Application they never made. The Keychain item
+    # is deleted in `finally`.
+    store_dir = tempfile.mkdtemp(prefix="harness-ui-smoke-store-")
+    env = dict(os.environ)
+    env["HARNESS_MCP_STORE_PATH"] = os.path.join(store_dir, "history.store")
+
+    mcp = MCP(binary, env=env)
     failures = []
+    keychain_accounts = []
 
     def check(cond, msg):
         status = "ok  " if cond else "FAIL"
@@ -228,6 +254,18 @@ def main():
                   "%s outputSchema requires session_id/step/point_size/marks" % t)
         check("outputSchema" not in by_name["list_ui_sessions"],
               "tools with no structuredContent declare no outputSchema")
+
+        # WB-14 — the credential surface a client codes against.
+        check("list_credentials" in names, "tools/list advertises list_credentials")
+        start_props = by_name["start_ui_session"]["inputSchema"]["properties"]
+        check("credential_id" in start_props, "start_ui_session accepts credential_id")
+        act_props = by_name["act_ui"]["inputSchema"]["properties"]
+        check("field" in act_props, "act_ui accepts a `field` argument")
+        check(act_props.get("field", {}).get("enum") == ["username", "password"],
+              "act_ui's field is enumerated username|password")
+        act_desc = by_name["act_ui"]["description"]
+        check("fill_credential" in act_desc.split("web:")[1].split(";")[0],
+              "act_ui's description no longer claims fill_credential is macOS-only")
 
         print("\n--- start_ui_session ---")
         start = mcp.tool("start_ui_session", {"platform": "web", "url": url, "artifact_dir": artifact_dir})
@@ -456,9 +494,155 @@ def main():
               "a session started without session_state inherits NOTHING (fresh-user invariant)")
         _ = mcp.tool("end_ui_session", {"session_id": s4["session_id"]})
 
+        # ------------------------------------------------------------------
+        # WB-14 — fill_credential in a STEP-LEVEL SESSION. Stage a real
+        # credential (store row + Keychain item), start a session bound to it,
+        # and prove the staged values actually get typed — the username
+        # verbatim, the password only via the fixture's length + checksum, so
+        # the secret itself is never printed. Then prove the no-credential
+        # case ERRORS instead of quietly logging "ok", and that the password
+        # reaches no response, no artifact, and no log.
+        # ------------------------------------------------------------------
+        print("\n--- stage_credential + list_credentials ---")
+        cred_user = "qa+smoke@harness.test"
+        cred_password = "SMOKE-PASSWORD-VALUE-7734"
+        app = json.loads(content_text(mcp.tool("create_application", {
+            "name": "harness-ui-session-smoke", "platform": "web", "web_url": url})))
+        app_id = app["created"]["id"]
+        staged_raw = mcp.tool("stage_credential", {
+            "application_id": app_id, "label": "smoke user",
+            "username": cred_user, "password": cred_password})
+        staged = json.loads(content_text(staged_raw))
+        cred_id = staged["staged"]["credential_id"]
+        keychain_accounts.append("%s:%s" % (app_id.upper(), cred_id.upper()))
+        check(cred_password not in json.dumps(staged_raw),
+              "stage_credential never echoes the password back")
+
+        listed_creds_raw = mcp.tool("list_credentials", {"application_id": app_id})
+        listed_creds = json.loads(content_text(listed_creds_raw))
+        print(json.dumps(listed_creds, indent=2))
+        check(listed_creds.get("count") == 1, "list_credentials returns the staged credential")
+        row = listed_creds["credentials"][0]
+        check(row.get("credential_id") == cred_id, "list_credentials reports the credential_id")
+        check(row.get("label") == "smoke user" and row.get("username") == cred_user,
+              "list_credentials reports label + username")
+        check("password" not in json.dumps(listed_creds).lower(),
+              "list_credentials NEVER returns password material")
+        check(cred_password not in json.dumps(listed_creds_raw),
+              "the staged password appears nowhere in list_credentials")
+
+        # A credential_id that names nothing must fail AT START.
+        bogus = mcp.tool("start_ui_session", {
+            "platform": "web", "url": url, "credential_id": str(uuid.uuid4())})
+        check(bogus.get("isError") is True, "an unknown credential_id is rejected at start")
+        check("No staged credential" in content_text(bogus),
+              "…with a message naming the fix (got %r)" % content_text(bogus)[:120])
+
+        print("\n--- fill_credential WITHOUT a staged credential (must ERROR) ---")
+        nocred_dir = tempfile.mkdtemp(prefix="harness-ui-nocred-")
+        s5 = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": url, "artifact_dir": nocred_dir})))
+        sid5 = s5["session_id"]
+        obs5 = mcp.tool("observe_ui", {"session_id": sid5})
+        pw_mark = find_mark_id(content_text(obs5), "password field")
+        check(pw_mark is not None, "resolved the password field's mark id (%s)" % pw_mark)
+        _ = mcp.tool("act_ui", {"session_id": sid5, "tool": "tap_mark", "id": pw_mark})
+        nocred = mcp.tool("act_ui", {"session_id": sid5, "tool": "fill_credential",
+                                     "field": "password"})
+        nocred_text = content_text(nocred)
+        check(nocred.get("isError") is True,
+              "fill_credential with no staged credential is an ERROR, not a silent no-op")
+        check("no credential is staged" in nocred_text,
+              "…and says why (got %r)" % nocred_text[:160])
+        nocred_rows = open(os.path.join(nocred_dir, "steps.jsonl")).read()
+        check('"result":"ok"' not in nocred_rows,
+              "the failed fill is NOT logged as an ok step")
+        _ = mcp.tool("end_ui_session", {"session_id": sid5})
+
+        print("\n--- fill_credential WITH a staged credential ---")
+        cred_dir = tempfile.mkdtemp(prefix="harness-ui-cred-")
+        start_raw = mcp.tool("start_ui_session", {
+            "platform": "web", "url": url, "artifact_dir": cred_dir,
+            "credential_id": cred_id})
+        s6 = json.loads(content_text(start_raw))
+        sid6 = s6["session_id"]
+        print(json.dumps(s6, indent=2))
+        check(bool(sid6), "started a session bound to the staged credential")
+        check((s6.get("credential") or {}).get("label") == "smoke user",
+              "start echoes the credential's label")
+        check(cred_password not in json.dumps(start_raw),
+              "start_ui_session never echoes the password")
+
+        obs6 = mcp.tool("observe_ui", {"session_id": sid6})
+        txt6 = content_text(obs6)
+        user_mark = find_mark_id(txt6, "username field")
+        pw_mark = find_mark_id(txt6, "password field")
+        check(user_mark is not None and pw_mark is not None,
+              "resolved both login field marks (%s / %s)" % (user_mark, pw_mark))
+
+        _ = mcp.tool("act_ui", {"session_id": sid6, "tool": "tap_mark", "id": user_mark})
+        fill_user = mcp.tool("act_ui", {"session_id": sid6, "tool": "fill_credential",
+                                        "field": "username"})
+        check(fill_user.get("isError") is not True, "fill_credential(username) succeeded")
+        page = (fill_user.get("structuredContent", {}) or {}).get("page_text") or ""
+        check("user: %s" % cred_user in page,
+              "the STAGED username was actually typed into the focused field")
+
+        _ = mcp.tool("act_ui", {"session_id": sid6, "tool": "tap_mark", "id": pw_mark})
+        fill_pw = mcp.tool("act_ui", {"session_id": sid6, "tool": "fill_credential",
+                                      "field": "password"})
+        check(fill_pw.get("isError") is not True, "fill_credential(password) succeeded")
+        page = (fill_pw.get("structuredContent", {}) or {}).get("page_text") or ""
+        expected = "pw-len: %d · pw-sum: %d" % (len(cred_password), pw_checksum(cred_password))
+        print("  login status expects: %r" % expected)
+        check(expected in page,
+              "the STAGED password was typed EXACTLY (length + checksum match; got %r)"
+              % page[-80:])
+
+        # An UNLABELLED password field: the probe's last-resort label is the
+        # field's own value, and `el.value` on a password input is PLAINTEXT.
+        # Fill that field and prove the mark names the SLOT, not the secret.
+        bare_id = None
+        for m in (fill_pw.get("structuredContent", {}) or {}).get("marks", []):
+            if m.get("label_source") == "secure-field":
+                bare_id = m.get("id")
+        check(bare_id is not None, "an unlabelled password field is named from its type")
+        if bare_id is not None:
+            _ = mcp.tool("act_ui", {"session_id": sid6, "tool": "tap_mark", "id": bare_id})
+            bare_fill = mcp.tool("act_ui", {"session_id": sid6, "tool": "fill_credential",
+                                            "field": "password"})
+            secure = [m for m in (bare_fill.get("structuredContent", {}) or {}).get("marks", [])
+                      if m.get("label_source") == "secure-field"]
+            check(bool(secure) and all(m.get("label") == "Password" for m in secure),
+                  "a FILLED unlabelled password field is still labelled \"Password\"")
+            check(cred_password not in json.dumps(bare_fill),
+                  "the filled password NEVER reaches the mark table / structuredContent")
+
+        # The whole point: none of that may leak anywhere.
+        check(cred_password not in json.dumps(fill_pw) and cred_password not in json.dumps(fill_user),
+              "NO password material in any act_ui response")
+        leaked = []
+        for root_dir, _dirs, files in os.walk(cred_dir):
+            for f in files:
+                path = os.path.join(root_dir, f)
+                with open(path, "rb") as fh:
+                    if cred_password.encode() in fh.read():
+                        leaked.append(path)
+        check(not leaked, "NO password material in ANY artifact file (%s)" % leaked)
+        rows = open(os.path.join(cred_dir, "steps.jsonl")).read()
+        check(cred_password not in rows, "NO password material in steps.jsonl")
+        check('"field":"password"' in rows and '"field":"username"' in rows,
+              "steps.jsonl records only the credential SLOT")
+        _ = mcp.tool("end_ui_session", {"session_id": sid6})
+
     finally:
         mcp.close()
         httpd.shutdown()
+        # The staged password is a real Keychain item — take it back out.
+        for account in keychain_accounts:
+            subprocess.run(["security", "delete-generic-password",
+                            "-s", "com.harness.credentials", "-a", account],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     print("\n================ %s ================" %
           ("ui-session smoke: PASS" if not failures else "ui-session smoke: FAIL"))

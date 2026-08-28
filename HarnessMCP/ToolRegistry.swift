@@ -92,6 +92,11 @@ enum ToolRegistry {
                       "password": prop("string", "Password (stored in Keychain only).")],
                      required: ["application_id", "label", "username", "password"])),
 
+            tool("list_credentials",
+                 "List the credentials staged for an Application: id, label, username, and when it was staged. Passwords are NEVER returned — they live only in the macOS Keychain. Use the returned credential_id as start_run's or start_ui_session's credential_id.",
+                 obj(["application_id": prop("string", "The Application id (UUID) whose credentials to list.")],
+                     required: ["application_id"])),
+
             // MARK: Run control
             tool("start_run",
                  "Start a UI-testing run (autonomous). REQUIRED: (1) goal; (2) exactly one persona — persona_id (an existing persona) OR a raw persona prompt string; (3) a target — either application_id (platform + params derived from it) OR an explicit platform plus its params (web: web_url; ios_simulator: ios_project_path + ios_scheme + ios_simulator_udid; macos_app: mac_app_path). Returns a run_id immediately; the run executes asynchronously — poll get_run_status, fetch results with get_run_result, stop early with cancel_run.",
@@ -163,6 +168,7 @@ enum ToolRegistry {
                       "app_path": prop("string", "Absolute path to a built .app bundle. platform=macos: the PREFERRED QA flow — drive this build product directly (no xcodebuild). platform=ios: reserved (use project_path + scheme + simulator_udid)."),
                       "artifact_dir": prop("string", "ABSOLUTE path for the artifact bundle (steps/NNN.png CLEAN frames + steps.jsonl). Relative paths are rejected. Omit → a temp dir under Harness's runs root."),
                       "visible": prop("boolean", "platform=web ONLY. Show the session's window on screen so a HUMAN can interact with it — log in by hand, clear an SSO/MFA prompt — and then hand the result to export_ui_session_state. Default false (the window sits off-view at alpha 0). The website data store stays non-persistent either way."),
+                      "credential_id": prop("string", "A credential staged with stage_credential (UUID), made available to act_ui(tool: \"fill_credential\"). ALL platforms. Rejected at start if it names no staged credential or its Keychain password is missing. The username/password are read inside the session and never appear in any result, log, or artifact — only the label + username are echoed back."),
                       "session_state": sessionStateSchema()],
                      required: ["platform"])),
 
@@ -174,7 +180,7 @@ enum ToolRegistry {
                  outputSchema: UIObservationPayload.outputSchema()),
 
             tool(UISessionTool.actUI.rawValue,
-                 "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, navigate, back, forward, refresh, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, wait; macos: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, fill_credential, wait). Pass that tool's args at the top level (e.g. tap_mark → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys). Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
+                 "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, navigate, back, forward, refresh, fill_credential, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, fill_credential, wait; macos: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, fill_credential, wait). Pass that tool's args at the top level (e.g. tap_mark → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys; fill_credential → field). fill_credential types the session's staged credential into the FOCUSED field — focus it first (tap_mark), and start the session with credential_id or the step FAILS. Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
                  obj(["session_id": prop("string", "The session id (UUID)."),
                       "tool": prop("string", "The action tool name."),
                       "id": prop("integer", "Set-of-Mark id (tool=tap_mark)."),
@@ -190,6 +196,7 @@ enum ToolRegistry {
                       "text": prop("string", "Text to type (tool=type)."),
                       "keys": arrayProp("Modifiers + final key, e.g. [\"cmd\",\"a\"] (tool=key_shortcut).", items: prop("string", "A key name.")),
                       "url": prop("string", "URL to load (tool=navigate)."),
+                      "field": enumProp(["username", "password"], "Which slot of the session's staged credential to type (tool=fill_credential; default username). The value itself never appears in the request or the result."),
                       "button": enumProp(["home", "lock", "side", "siri"], "Hardware button (tool=press_button, ios)."),
                       "ms": prop("integer", "Milliseconds to wait (tool=wait).")],
                      required: ["session_id", "tool"]),

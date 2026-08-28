@@ -1199,3 +1199,212 @@ private actor ConfigProbe {
     private(set) var last: UISessionConfig?
     func record(_ config: UISessionConfig) { last = config }
 }
+
+// MARK: - Credentials in UI sessions (WB-14)
+
+@Suite("UISessionSupervisor — credentials")
+struct UISessionCredentialTests {
+
+    private static let password = "PASSWORD-THAT-MUST-NEVER-BE-LOGGED-8821"
+
+    /// A supervisor over a fake driver that records what it was asked to do.
+    /// `executeError` lets a test stand in for the real driver's
+    /// `credentialUnavailable` throw without WebKit / a simulator.
+    private static func makeSupervisor(
+        platform: PlatformKind,
+        seen: ConfigProbe,
+        root: URL,
+        driver: FakeUXDriver
+    ) -> UISessionSupervisor {
+        let names: [String] = {
+            switch platform {
+            case .web:          return ToolSchema.webToolNames
+            case .iosSimulator: return ToolSchema.iOSToolNames
+            case .macosApp:     return ToolSchema.macOSToolNames
+            }
+        }()
+        let adapter = FakePlatformAdapter(kind: platform, names: names, probe: TeardownProbe())
+        let preparer = FakeUISessionPreparer { config, _ in
+            await seen.record(config)
+            let session = RunSession(
+                kind: platform, driver: driver, pointSize: CGSize(width: 10, height: 10),
+                bundleIdentifier: nil, appBundleURL: nil, displayLabel: "fake",
+                // Public-safe identity only — a session carries no password here.
+                credentialLabel: "free user", credentialUsername: "qa@example.com"
+            )
+            return PreparedUISession(session: session, adapter: adapter)
+        }
+        return UISessionSupervisor(preparer: preparer, idleTimeoutSeconds: 0, defaultArtifactRoot: root)
+    }
+
+    private static func driver() -> FakeUXDriver {
+        FakeUXDriver(
+            pointSize: CGSize(width: 10, height: 10),
+            pixelSize: CGSize(width: 10, height: 10),
+            cleanPNG: UISessionTestSupport.solidPNG(width: 10, height: 10, color: .red),
+            markedPNG: nil, annotation: nil, execDetail: nil
+        )
+    }
+
+    @Test("credential_id reaches the preparer on every platform", arguments: [
+        PlatformKind.web, .iosSimulator, .macosApp
+    ])
+    func credentialIDReachesPreparer(platform: PlatformKind) async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.makeSupervisor(platform: platform, seen: seen, root: root, driver: Self.driver())
+        let credentialID = UUID()
+
+        let config: UISessionConfig = {
+            switch platform {
+            case .web:
+                return UISessionConfig(platform: .web, webURL: "https://example.com", credentialID: credentialID)
+            case .iosSimulator:
+                return UISessionConfig(
+                    platform: .iosSimulator, credentialID: credentialID,
+                    iosProjectPath: "/tmp/App.xcodeproj", iosScheme: "App",
+                    iosSimulatorUDID: "UDID"
+                )
+            case .macosApp:
+                return UISessionConfig(platform: .macosApp, credentialID: credentialID, macAppPath: "/tmp/Fake.app")
+            }
+        }()
+        let info = try await sup.start(config)
+        #expect(await seen.last?.credentialID == credentialID)
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("no credential_id stays nil — sessions are credential-free by default")
+    func defaultsToNoCredential() async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.makeSupervisor(platform: .web, seen: seen, root: root, driver: Self.driver())
+        let info = try await sup.start(UISessionConfig(platform: .web, webURL: "https://example.com"))
+        #expect(await seen.last?.credentialID == nil)
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("act_ui(fill_credential, field: password) maps to the password slot")
+    func fieldArgumentMapsThrough() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let seen = ConfigProbe()
+        let driver = Self.driver()
+        let sup = Self.makeSupervisor(platform: .web, seen: seen, root: dir, driver: driver)
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, artifactDirPath: dir.path, webURL: "https://example.com",
+            credentialID: UUID()
+        ))
+
+        _ = try await sup.act(id: info.id, tool: "fill_credential",
+                              inputData: Data(#"{"field":"password"}"#.utf8))
+        _ = try await sup.act(id: info.id, tool: "fill_credential", inputData: Data("{}".utf8))
+
+        let calls = await driver.executed
+        #expect(calls.count == 2)
+        if case .fillCredential(let field) = calls.first?.input {
+            #expect(field == .password)
+        } else {
+            Issue.record("expected .fillCredential(.password)")
+        }
+        // Omitted field keeps the safe default (typing a username exposes nothing).
+        if case .fillCredential(let field) = calls.last?.input {
+            #expect(field == .username)
+        } else {
+            Issue.record("expected .fillCredential(.username)")
+        }
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("a fill_credential row in steps.jsonl carries the field and nothing else")
+    func stepsJSONLRecordsOnlyTheField() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let seen = ConfigProbe()
+        let sup = Self.makeSupervisor(platform: .web, seen: seen, root: dir, driver: Self.driver())
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, artifactDirPath: dir.path, webURL: "https://example.com",
+            credentialID: UUID()
+        ))
+        _ = try await sup.act(id: info.id, tool: "fill_credential",
+                              inputData: Data(#"{"field":"password"}"#.utf8))
+
+        let contents = try String(contentsOf: dir.appendingPathComponent("steps.jsonl"), encoding: .utf8)
+        #expect(contents.contains("fill_credential"))
+        #expect(contents.contains("\"field\":\"password\""))
+        #expect(!contents.contains(Self.password))
+        let row = try #require(JSONSerialization.jsonObject(
+            with: Data(contents.split(separator: "\n").map(String.init)[0].utf8)
+        ) as? [String: Any])
+        let input = try #require(row["input"] as? [String: Any])
+        #expect(input.keys.sorted() == ["field"], "only the slot may be logged")
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("fill_credential with no staged credential FAILS the step (never a silent ok)")
+    func noCredentialIsAStepFailure() async throws {
+        let dir = UISessionTestSupport.tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let seen = ConfigProbe()
+        let driver = Self.driver()
+        // What every real driver now throws when `credential` is nil.
+        await driver.setExecuteError(UXDriverError.credentialUnavailable(field: .password))
+        let sup = Self.makeSupervisor(platform: .web, seen: seen, root: dir, driver: driver)
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, artifactDirPath: dir.path, webURL: "https://example.com"
+        ))
+
+        let obs = try await sup.act(id: info.id, tool: "fill_credential",
+                                    inputData: Data(#"{"field":"password"}"#.utf8))
+        #expect(obs.actionFailed, "the caller must see isError, not a green step")
+        let detail = try #require(obs.lastExecutionDetail)
+        #expect(detail.contains("no credential is staged"))
+        #expect(detail.contains("stage_credential"))
+
+        let contents = try String(contentsOf: dir.appendingPathComponent("steps.jsonl"), encoding: .utf8)
+        #expect(contents.contains("no credential is staged"))
+        #expect(!contents.contains("\"result\":\"ok\""))
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("a fill failure reports the slot and never the value")
+    func fillFailureIsRedacted() {
+        let binding = CredentialBinding(
+            id: UUID(), label: "free user", username: "qa@example.com", password: Self.password
+        )
+        let raw = "TypingError: could not insert \(Self.password) into <input> for qa@example.com"
+        let error = UXDriverError.credentialFillFailed(
+            field: .password, detail: binding.redacting(raw)
+        )
+        let message = error.localizedDescription
+        #expect(!message.contains(Self.password))
+        #expect(!message.contains("qa@example.com"))
+        #expect(message.contains("«redacted»"))
+        #expect(message.contains("password"))
+    }
+
+    @Test("redaction also catches the JS-escaped and per-character renderings")
+    func redactionCoversDriverTransforms() {
+        let secret = "pa\"ss\\word"
+        let binding = CredentialBinding(
+            id: UUID(), label: "l", username: "u@example.com", password: secret
+        )
+        // What a WebKit JS-exception echo would carry (WebDriver.jsEscape).
+        let jsEcho = #"SyntaxError near "pa\"ss\\word""#
+        #expect(!binding.redacting(jsEcho).contains("ss"))
+        // What a WDA error body echoing `{"value": [...]}` would carry.
+        let wdaEcho = "400: {\"value\":[" + secret.map { "\"\($0)\"" }.joined(separator: ",") + "]}"
+        #expect(!binding.redacting(wdaEcho).contains("\"s\",\"s\""))
+    }
+
+    @Test("CredentialBinding.value(for:) reads the slot the field names")
+    func bindingSlots() {
+        let binding = CredentialBinding(
+            id: UUID(), label: "free user", username: "qa@example.com", password: Self.password
+        )
+        #expect(binding.value(for: .username) == "qa@example.com")
+        #expect(binding.value(for: .password) == Self.password)
+    }
+}

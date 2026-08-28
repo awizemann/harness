@@ -703,6 +703,52 @@ struct CredentialBinding: Sendable {
     let label: String
     let username: String
     let password: String
+
+    /// The value `fill_credential(field:)` should type. Kept here rather
+    /// than re-derived at each driver's call site so every platform reads
+    /// the same slot for the same field.
+    func value(for field: CredentialField) -> String {
+        switch field {
+        case .username: return username
+        case .password: return password
+        }
+    }
+
+    /// Scrub credential material out of a string before it can reach a tool
+    /// result, a log line, or `steps.jsonl`.
+    ///
+    /// A driver-level failure while filling a credential produces a message
+    /// we did not write (a WebKit JS-evaluation error, an AX error, a
+    /// `simctl` stderr tail), and the value we just tried to type may be
+    /// echoed back inside it. Every fill error therefore passes through here
+    /// before it is thrown, so the redaction invariant holds even when the
+    /// failure text comes from outside Harness.
+    /// Each secret is scrubbed in every rendering a driver could hand back:
+    /// the raw string, its JSON/JS-escaped form (WebKit echoes JS source, and
+    /// `WebDriver.jsEscape` has already escaped quotes / backslashes /
+    /// newlines by the time the exception is raised), and the per-character
+    /// array form (`WDAClient.type` posts `["h","i"]`, and a WDA error body
+    /// can quote the request).
+    func redacting(_ message: String) -> String {
+        var out = message
+        for secret in [password, username] where !secret.isEmpty {
+            for rendering in Self.renderings(of: secret) {
+                out = out.replacingOccurrences(of: rendering, with: "«redacted»")
+            }
+        }
+        return out
+    }
+
+    private static func renderings(of secret: String) -> [String] {
+        let escaped = secret
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
+        let charArray = secret.map { "\"\($0)\"" }.joined(separator: ",")
+        return [secret, escaped, charArray]
+    }
 }
 
 /// Builds the multi-line text injected into the system prompt's

@@ -388,6 +388,19 @@ enum WebMarkProbe {
         return el.getAttribute('role') || el.tagName.toLowerCase();
       }
 
+      // A SECRET field: its `value` must never become a label. WebKit renders
+      // `<input type="password">` as bullets but `el.value` is still the
+      // PLAINTEXT, so the value fallback below would otherwise carry a typed
+      // password into the mark table, `structuredContent.marks`, and the
+      // agent's context — the one place the credential path guarantees it
+      // cannot reach.
+      function isSecretField(el) {
+        const type = (el.getAttribute && el.getAttribute('type') || '').toLowerCase();
+        if (type === 'password') return true;
+        const auto = (el.getAttribute && el.getAttribute('autocomplete') || '').toLowerCase();
+        return auto.indexOf('password') !== -1;
+      }
+
       function resolveLabel(el) {
         const get = (a) => norm(el.getAttribute ? el.getAttribute(a) : '');
         let v = get('aria-label');
@@ -400,6 +413,8 @@ enum WebMarkProbe {
         if (v) return { label: v, source: 'placeholder' };
         v = get('title');
         if (v) return { label: v, source: 'title' };
+        // Value is a last-resort label — but never a secret field's value.
+        if (isSecretField(el)) return { label: 'Password', source: 'secure-field' };
         v = norm(el.value);
         if (v) return { label: v, source: 'value' };
         v = norm(el.innerText);

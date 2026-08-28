@@ -214,14 +214,24 @@ actor MacAppDriver: UXDriving {
         case .readScreen, .noteFriction, .markGoalDone:
             return
         case .fillCredential(let field):
-            // No staged credential → soft no-op; the agent should emit
-            // `auth_required` friction. With a binding, route through the
-            // same text-entry ladder as the ordinary `type` tool — the
-            // macOS app sees a focused text field receive the value,
-            // just like a human typing.
-            guard let credential else { return }
-            let text = field == .username ? credential.username : credential.password
-            try await actuateType(text, info: info, planInput: call.input)
+            // No staged credential → THROW (never a silent no-op: the
+            // caller would see an unchanged screen and no reason why).
+            // With a binding, route through the same text-entry ladder as
+            // the ordinary `type` tool — the macOS app sees a focused text
+            // field receive the value, just like a human typing.
+            guard let credential else {
+                throw UXDriverError.credentialUnavailable(field: field)
+            }
+            do {
+                try await actuateType(credential.value(for: field), info: info, planInput: call.input)
+            } catch {
+                // An AX / input-backend error can quote the text it tried
+                // to insert; scrub the credential before it escapes.
+                throw UXDriverError.credentialFillFailed(
+                    field: field,
+                    detail: credential.redacting(error.localizedDescription)
+                )
+            }
         case .tapMark(let id):
             try await dispatchMarkClick(id: id, info: info)
         case .swipe, .pressButton, .navigate, .back, .forward, .refresh:

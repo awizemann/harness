@@ -13,9 +13,15 @@
 //  bypasses the autonomous loop entirely. The history store handed to
 //  `PlatformAdapterServices` is IN-MEMORY (the CLI precedent): sessions
 //  never write run rows, and a locked on-disk GUI store must not gate the
-//  QA path. Credentials are never staged for sessions, so the keychain is
-//  only a required slot (`resolveCredentialBinding` short-circuits on a nil
-//  `credentialID`).
+//  QA path.
+//
+//  EXCEPT for credentials: `start_ui_session(credential_id:)` names a row
+//  `stage_credential` wrote to the SHARED on-disk store, so a session that
+//  asks for one is handed `credentialHistory` (that shared store) instead —
+//  `resolveCredentialBinding` reads label + username from it and the
+//  password from the Keychain, exactly as an autonomous run does. A session
+//  with no `credentialID` keeps the in-memory store and the keychain stays
+//  an unused slot (`resolveCredentialBinding` short-circuits on nil).
 //
 
 import CoreGraphics
@@ -26,12 +32,34 @@ struct AdapterUISessionPreparer: UISessionPreparing {
 
     private static let logger = Logger(subsystem: "com.harness.app", category: "UISessionPreparer")
 
+    /// In-memory store for the session itself (no run rows ever written).
     let history: any RunHistoryStoring
+    /// The SHARED on-disk store `stage_credential` writes to. Only consulted
+    /// when the session names a `credentialID`. Defaults to `history` so a
+    /// test double needs to inject just one store.
+    let credentialHistory: any RunHistoryStoring
     let keychain: any KeychainStoring
+
+    init(
+        history: any RunHistoryStoring,
+        credentialHistory: (any RunHistoryStoring)? = nil,
+        keychain: any KeychainStoring
+    ) {
+        self.history = history
+        self.credentialHistory = credentialHistory ?? history
+        self.keychain = keychain
+    }
 
     func prepare(_ config: UISessionConfig, sessionID: UUID) async throws -> PreparedUISession {
         let processRunner = ProcessRunner()
         let toolLocator = ToolLocator(processRunner: processRunner)
+
+        // The adapter resolves `request.credentialID` against whichever store
+        // it is handed (`PlatformAdapterServices.resolveCredentialBinding` is
+        // its only reader), so point it at the shared store precisely when a
+        // credential was asked for.
+        let adapterHistory: any RunHistoryStoring =
+            config.credentialID == nil ? history : credentialHistory
 
         let request: RunRequest
         let adapter: any PlatformAdapter
@@ -67,7 +95,7 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                 webStartURL: urlString,
                 webViewportWidthPt: config.viewportWidth,
                 webViewportHeightPt: config.viewportHeight,
-                credentialID: nil
+                credentialID: config.credentialID
             )
             let services = PlatformAdapterServices(
                 processRunner: processRunner,
@@ -76,7 +104,7 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                 simulatorDriver: NoopSimulatorDriver(),
                 promptLibrary: PromptLibrary(),
                 keychain: keychain,
-                runHistory: history
+                runHistory: adapterHistory
             )
             // `sessionState` / `visibleWindow` ride on the ADAPTER, never on
             // `RunRequest`: RunRequest is the persisted run model, and a
@@ -138,7 +166,7 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                 model: .opus47,
                 mode: .autonomous,
                 platformKindRaw: PlatformKind.iosSimulator.rawValue,
-                credentialID: nil
+                credentialID: config.credentialID
             )
             let wdaBuilder = WDABuilder(
                 processRunner: processRunner,
@@ -159,7 +187,7 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                 simulatorDriver: simulatorDriver,
                 promptLibrary: PromptLibrary(),
                 keychain: keychain,
-                runHistory: history
+                runHistory: adapterHistory
             )
             adapter = IOSPlatformAdapter(services: services)
 
@@ -220,7 +248,7 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                 mode: .autonomous,
                 platformKindRaw: PlatformKind.macosApp.rawValue,
                 macAppBundlePath: hasApp ? appPath : nil,
-                credentialID: nil
+                credentialID: config.credentialID
             )
             let services = PlatformAdapterServices(
                 processRunner: processRunner,
@@ -229,7 +257,7 @@ struct AdapterUISessionPreparer: UISessionPreparing {
                 simulatorDriver: NoopSimulatorDriver(),
                 promptLibrary: PromptLibrary(),
                 keychain: keychain,
-                runHistory: history
+                runHistory: adapterHistory
             )
             // terminatesOnTeardown: a ui-session ending must QUIT the SUT
             // (unlike a GUI run, which leaves it open for inspection).

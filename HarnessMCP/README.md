@@ -40,6 +40,7 @@ HarnessMCP/smoke-test.sh
 | `list_actions` / `create_action` | Reusable task prompts. |
 | `list_action_chains` / `create_action_chain` | Ordered multi-leg runs over Actions. |
 | `stage_credential` | Login for an Application (password → **Keychain only**). |
+| `list_credentials` | An Application's staged credentials: `credential_id` + label + username. **Never the password.** |
 | `start_run` | Start an autonomous run; returns a `run_id` immediately. |
 | `get_run_status` / `list_runs` | Poll live status / list recent runs. |
 | `get_run_result` / `get_step_screenshot` | Verdict + summary + cost; per-step PNG. |
@@ -54,9 +55,9 @@ required on this path** (`EnvKeychain` is untouched).
 
 | Tool | Purpose |
 | --- | --- |
-| `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected). Web also accepts `visible: true` (show the window for a human) and `session_state` (inject cookies / `localStorage`) — see [Authenticated apps](#authenticated-apps-session_state--visible). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
+| `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected) and `credential_id` (a `stage_credential` id, all platforms — see [Staged credentials](#staged-credentials-credential_id--fill_credential)). Web also accepts `visible: true` (show the window for a human) and `session_state` (inject cookies / `localStorage`) — see [Authenticated apps](#authenticated-apps-session_state--visible). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
 | `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content + a text block with the `id → label (role)` mark table, point size, and session label — **plus `structuredContent`** carrying the same marks as machine-readable rects (see below). `clean: true` returns the unmarked frame. |
-| `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `wait`), pass that tool's args at the top level, then auto-observe. Returns the same payload as `observe_ui`, `structuredContent` included. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
+| `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `fill_credential` (**all platforms**, arg `field`: `username`|`password`), `wait`), pass that tool's args at the top level, then auto-observe. Returns the same payload as `observe_ui`, `structuredContent` included. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
 | `end_ui_session` | Tear down the target. Idempotent — an unknown/closed id returns a calm `already closed`. |
 | `list_ui_sessions` | Open sessions: id, platform, label, created time, idle seconds. |
 | `export_ui_session_state` | **Web only.** The live session's cookies + current-origin `localStorage`, in exactly the shape `session_state` accepts. **The result is SENSITIVE** — see [Authenticated apps](#authenticated-apps-session_state--visible). |
@@ -145,6 +146,31 @@ was "quiet for 250ms", which a page that has not reacted *yet* passes exactly li
 never will. A page with genuinely nothing in flight still returns at the 250ms floor, so idle
 pages are not slowed down.
 
+#### Staged credentials (`credential_id` + `fill_credential`)
+
+An app with a real login form needs a password typed, not a cookie injected. Stage it once and
+name it per session:
+
+1. `stage_credential({ application_id, label, username, password })` → a `credential_id`. The
+   password goes to the macOS Keychain (`com.harness.credentials`) and nowhere else.
+2. `list_credentials({ application_id })` → the ids, labels, and usernames already staged.
+   **The password is structurally absent from this result.**
+3. `start_ui_session({ …, credential_id })` — **any** platform. The id is validated at start: an
+   unknown id, or one whose Keychain password is missing, fails the call with a message naming the
+   fix rather than dying later mid-session. The result echoes the credential's `label` +
+   `username` (never the password).
+4. Focus the field (`act_ui tap_mark`), then
+   `act_ui({ tool: "fill_credential", field: "username" | "password" })`. `field` defaults to
+   `username`.
+
+**`fill_credential` without a staged credential is an ERROR** (`isError: true`, "no credential is
+staged…"), never a silent no-op — a caller staring at an unchanged screen deserves to know why.
+
+**Secret handling** matches the autonomous run path exactly: the resolved username/password live
+only on the driver for the session's lifetime; `steps.jsonl` records only `{"field": "..."}`; no
+result, log line, or artifact carries the value; and a driver-level fill failure is scrubbed
+through the binding before its message is thrown. The live smoke asserts all of it.
+
 #### Authenticated apps (`session_state` / `visible`)
 
 Web sessions run on a **non-persistent** `WKWebsiteDataStore`: every session is a fresh user, with
@@ -226,7 +252,10 @@ it lives only in the MCP `image` content channel (the "no agent scaffolding on d
 - **Start timeout** — `start_ui_session` is bounded by `HARNESS_UI_SESSION_START_TIMEOUT_SECONDS`
   (default: web **120s**, iOS **900s**) so a hung build/load can't wedge the read loop.
 - **Sessions use an in-memory store** — they never write run rows, so a locked GUI store doesn't
-  gate them.
+  gate them. The one exception is `credential_id`, which is resolved against the **shared** store
+  (where `stage_credential` writes).
+- **`HARNESS_MCP_STORE_PATH`** — point the server at a store other than the GUI's. Used by the
+  live smokes so a staged-credential test leaves no Application in the user's library.
 
 Smoke test (serves a local fixture, drives a real web session start→observe→act→end):
 

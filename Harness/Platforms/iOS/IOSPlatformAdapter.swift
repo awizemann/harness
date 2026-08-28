@@ -210,14 +210,24 @@ struct IOSSimDriver: UXDriving {
             // Non-action tools — RunCoordinator handles them upstream.
             return
         case .fillCredential(let field):
-            // No staged credential → soft no-op. The agent will see no
-            // visible change in the next screenshot and is expected to
-            // emit `auth_required` friction. We deliberately don't throw
-            // here because the run might still be useful for the
-            // pre-login surfaces.
-            guard let credential else { return }
-            let text = field == .username ? credential.username : credential.password
-            try await simulatorDriver.type(text, on: ref)
+            // No staged credential → THROW. It used to be a soft no-op,
+            // which left the caller staring at an unchanged screen with a
+            // step logged "ok"; a step-level failure is the honest report.
+            // The run itself survives — the loop / act_ui surfaces the
+            // error and everything pre-login stays reachable.
+            guard let credential else {
+                throw UXDriverError.credentialUnavailable(field: field)
+            }
+            do {
+                try await simulatorDriver.type(credential.value(for: field), on: ref)
+            } catch {
+                // A `simctl` / WDA error can quote the text it tried to
+                // type; scrub the credential before it escapes.
+                throw UXDriverError.credentialFillFailed(
+                    field: field,
+                    detail: credential.redacting(error.localizedDescription)
+                )
+            }
         case .tapMark(let id):
             try await simulatorDriver.tapMark(id: id, on: ref)
         case .rightClick, .keyShortcut, .scroll, .navigate, .back, .forward, .refresh:

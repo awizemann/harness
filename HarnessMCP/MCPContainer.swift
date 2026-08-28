@@ -33,8 +33,20 @@ struct MCPContainer: Sendable {
     /// instead, so every tool call returns a clear "store unavailable"
     /// rather than silently nuking data.
     static func makeShared() throws -> MCPContainer {
-        try HarnessPaths.ensureDirectory(HarnessPaths.appSupport)
-        let url = HarnessPaths.appSupport.appendingPathComponent("history.store")
+        // `HARNESS_MCP_STORE_PATH` points the server at a store OTHER than the
+        // GUI's. Exists for the live smoke tests, which stage a credential (a
+        // real store row + a real Keychain item) and must not leave an
+        // Application the user never made in their library. Unset in normal
+        // use → the shared GUI store, unchanged.
+        let url: URL
+        if let raw = ProcessInfo.processInfo.environment["HARNESS_MCP_STORE_PATH"],
+           !raw.trimmingCharacters(in: .whitespaces).isEmpty {
+            url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+            try HarnessPaths.ensureDirectory(url.deletingLastPathComponent())
+        } else {
+            try HarnessPaths.ensureDirectory(HarnessPaths.appSupport)
+            url = HarnessPaths.appSupport.appendingPathComponent("history.store")
+        }
         let history = try RunHistoryStore.at(url: url, resetOnMigrationFailure: false)
 
         let keychain = EnvKeychain.fromEnvironment()
@@ -50,10 +62,17 @@ struct MCPContainer: Sendable {
         // UI sessions get their OWN in-memory history store (the CLI
         // precedent): they never write run rows, and a locked/broken GUI
         // store must not gate the QA path. Fall back to the shared store if
-        // the in-memory container can't be built.
+        // the in-memory container can't be built. Credentials are the one
+        // exception — `start_ui_session(credential_id:)` names a row in the
+        // SHARED store, so the preparer gets that store too and uses it only
+        // for the credential lookup.
         let sessionHistory: any RunHistoryStoring = (try? RunHistoryStore.inMemory()) ?? history
         let uiSessions = UISessionSupervisor(
-            preparer: AdapterUISessionPreparer(history: sessionHistory, keychain: keychain),
+            preparer: AdapterUISessionPreparer(
+                history: sessionHistory,
+                credentialHistory: history,
+                keychain: keychain
+            ),
             idleTimeoutSeconds: Self.envInt("HARNESS_UI_SESSION_IDLE_TIMEOUT_SECONDS") ?? 600,
             startTimeoutOverrideSeconds: Self.envInt("HARNESS_UI_SESSION_START_TIMEOUT_SECONDS")
         )
