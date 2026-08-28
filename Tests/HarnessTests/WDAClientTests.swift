@@ -224,6 +224,59 @@ struct WDAClientTests {
         #expect(counter.value() == 1, "must NOT retry on 4xx")
     }
 
+    @Test("failed type() never carries the typed text in its error (body redacted)")
+    func typeErrorRedactsBody() async throws {
+        let secret = "hunter2-secret"
+        // WDA-style error that echoes the request payload back in the body.
+        let stub = WDAStubProtocol.install(Self.sessionPlus { _ in
+            WDAStubProtocol.Response(status: 400, body: #"{"value": {"error": "invalid keys: \#(secret)"}}"#)
+        })
+        defer { stub.uninstall() }
+
+        let client = WDAClient(port: 8100, urlSession: WDAStubProtocol.session())
+        _ = try await client.createSession()
+        do {
+            try await client.type(secret)
+            Issue.record("expected 4xx to throw")
+        } catch let error as WDAClientError {
+            guard case .httpError(let status, let body) = error else {
+                Issue.record("wrong error: \(error)")
+                return
+            }
+            #expect(status == 400)
+            #expect(!body.contains(secret), "error body must not echo typed text")
+            #expect(!(error.errorDescription ?? "").contains(secret))
+        }
+    }
+
+    @Test("non-text endpoints keep the response body for diagnostics")
+    func tapErrorKeepsBody() async throws {
+        let stub = WDAStubProtocol.install(Self.sessionPlus { _ in
+            WDAStubProtocol.Response(status: 404, body: "no such element")
+        })
+        defer { stub.uninstall() }
+
+        let client = WDAClient(port: 8100, urlSession: WDAStubProtocol.session())
+        _ = try await client.createSession()
+        do {
+            try await client.tap(at: .zero)
+            Issue.record("expected 4xx to throw")
+        } catch let error as WDAClientError {
+            guard case .httpError(_, let body) = error else {
+                Issue.record("wrong error: \(error)")
+                return
+            }
+            #expect(body == "no such element")
+        }
+    }
+
+    @Test("isTextBearing flags only the keys endpoint")
+    func textBearingPaths() {
+        #expect(WDAClient.isTextBearing(path: "/session/S1/wda/keys"))
+        #expect(!WDAClient.isTextBearing(path: "/session/S1/wda/tap"))
+        #expect(!WDAClient.isTextBearing(path: "/status"))
+    }
+
     @Test("waitForReady polls /status and returns when 200")
     func waitForReadyPolls() async throws {
         let counter = WDAStubProtocol.AtomicInt(0)

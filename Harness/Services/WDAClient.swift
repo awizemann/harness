@@ -547,12 +547,21 @@ actor WDAClient: WDAClienting {
             throw WDAClientError.malformedResponse(detail: "non-HTTP response")
         }
         if !(200..<300).contains(http.statusCode) {
-            throw WDAClientError.httpError(
-                status: http.statusCode,
-                body: String(data: data, encoding: .utf8) ?? ""
-            )
+            // Text-bearing endpoints echo the request text (e.g. typed
+            // characters, possibly a credential) back in WDA error bodies, so
+            // the body must never reach an error that gets logged.
+            let errorBody = Self.isTextBearing(path: path)
+                ? "<body omitted: text-bearing endpoint>"
+                : String(data: data, encoding: .utf8) ?? ""
+            throw WDAClientError.httpError(status: http.statusCode, body: errorBody)
         }
         return data
+    }
+
+    /// Endpoints whose request payload contains user-supplied text that WDA
+    /// may echo back in an error body.
+    nonisolated static func isTextBearing(path: String) -> Bool {
+        path.hasSuffix("/wda/keys")
     }
 
     nonisolated private func makeURL(path: String) -> URL {
