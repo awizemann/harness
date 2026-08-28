@@ -30,6 +30,15 @@
     <label for="email">Your Email *</label>
     <input id="email" placeholder="john@example.com" autocomplete="off">
   </p>
+  <!-- W15 icon-only control: no aria-label and no word of text, just a close
+       glyph. The old chain gave it `label: ""` — unaddressable. It must now
+       surface as "Close" with label_source "glyph". -->
+  <p><button id="close" type="button">✕</button></p>
+  <!-- W14 interactability: an `inert` subtree ignores every input event, so
+       its button must NOT reach the mark table. -->
+  <div inert>
+    <button id="inert-btn" type="button">Inert Only</button>
+  </div>
   <script>
     const inp = document.getElementById('name');
     const btn = document.getElementById('echo');

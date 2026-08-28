@@ -88,11 +88,24 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   takes. **Not** the screenshot's pixel space, which differs by the device scale factor.
 - **`marks`** is the same list, in the same order and with the same ids, that the text mark table
   and the drawn badges come from. Always present; `[]` when the probe found nothing.
+  Only elements that are **actually actionable right now** are marked: an element occluded by an
+  overlay, sitting in an `inert` or `pointer-events: none` subtree, or belonging to the dimmed page
+  behind an open modal (`<dialog>.showModal()` / `aria-modal="true"`) is left out. While a modal is
+  open the table carries the modal's own contents plus anything stacked above it (toasts,
+  popovers) — so a background button can no longer collide labels with the dialog's own.
 - **`label_source`** (web only) names WHERE each mark's `label` came from, so a client can prefer
   stable sources. The web probe resolves an accessible name in this order — and reports which step
   won: `aria-label` → `labelledby` (an `aria-labelledby` reference, resolved to its text) → `label`
   (an associated `<label for>` or a wrapping `<label>`) → `placeholder` → `title` → `value` →
-  `text` (the element's own visible text) → `name` (the `name` attribute) → `none`.
+  `text` (the element's own visible text) → `img-alt` (a contained image's alt text) →
+  `svg-title` (a contained inline SVG's `<title>` / `aria-label`) → `text-content` (raw
+  `textContent`, which catches glyphs `innerText` drops) → `glyph` (a recognised close glyph —
+  `✕` / `×` / a lone `x` — reported as the word "Close") → `testid` (the page's own
+  `data-testid`-family hook) → `name` (the `name` attribute) → `synthesized`.
+  **A web mark's `label` is never the empty string**: a control nothing can name gets the explicit
+  placeholder `unlabelled <role>` with `label_source: "synthesized"` — address it by position, and
+  treat it as a page-accessibility bug. (Before this chain, a dialog's close ✕ came back as
+  `label: ""`, which no resolver can key on.)
   **`placeholder` and `value` are sample data** — they change whenever a designer edits the copy,
   so a resolver that wants a durable selector should treat them as weak and prefer the first three.
   (Before this ordering, a field with `<label for="name">Your Name *</label>` and

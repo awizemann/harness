@@ -50,8 +50,10 @@ struct InteractiveMark: Sendable, Hashable {
     /// Optional finer-grained role hint (web's HTML `type` attribute,
     /// iOS / macOS leave it nil today).
     let inputType: String?
-    /// Accessible human-readable label. Empty when no label could be
-    /// resolved.
+    /// Accessible human-readable label. Empty only on iOS / macOS, whose
+    /// probes can hand back an unnamed element; the web probe always
+    /// synthesizes something addressable (W15) — worst case
+    /// `unlabelled button`, flagged by `labelSource == "synthesized"`.
     let label: String
     /// WHICH source produced `label`, so a consuming client can prefer the
     /// stable ones and treat the weak ones as advisory. Web values, in the
@@ -59,7 +61,14 @@ struct InteractiveMark: Sendable, Hashable {
     ///
     ///   `aria-label` · `labelledby` · `label` (an associated `<label for>`
     ///   or a wrapping `<label>`) · `placeholder` · `title` · `value` ·
-    ///   `text` (visible text) · `name` (the `name` attribute) · `none`.
+    ///   `text` (visible text) · `img-alt` (alt text of a contained image) ·
+    ///   `svg-title` (a contained inline SVG's `<title>` / `aria-label`) ·
+    ///   `text-content` (raw `textContent`, catching glyphs `innerText`
+    ///   drops) · `glyph` (a recognised close glyph rendered as "Close") ·
+    ///   `testid` (a `data-testid`-family hook) · `name` (the `name`
+    ///   attribute) · `synthesized` (nothing was derivable — the label is a
+    ///   placeholder like `unlabelled button`) · `none` (legacy; the web
+    ///   probe no longer emits it).
     ///
     /// `nil` on iOS / macOS: their accessibility probes hand back a single
     /// resolved name with no provenance, and inventing one would be a guess.

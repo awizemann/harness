@@ -21,6 +21,9 @@ It then drives three more live proofs:
   * **Label priority (W1)** — a field with `<label for>` AND a placeholder
     must surface the LABEL text, with `label_source: "label"`; no mark may be
     labelled with the placeholder's sample data.
+  * **Interactability + naming (W14/W15)** — a button inside an `[inert]`
+    subtree must NOT be marked, no mark may carry an empty label, and an
+    icon-only close button must surface as "Close" (`label_source: "glyph"`).
   * **Settle on a same-URL async swap (W3)** — `spa-settle-fixture.html`
     swaps its view 500ms after the click with no route change. The act's own
     auto-observe must already show the post-swap DOM.
@@ -289,6 +292,24 @@ def main():
             check(button.get("label_source") == "text",
                   "a button labelled by its own text reports label_source 'text' (got %r)"
                   % button.get("label_source"))
+
+        # W15 — no mark may carry an empty label, and an icon-only close
+        # button must be named from its glyph rather than left anonymous.
+        empty_labelled = [m for m in (sc1.get("marks") or [])
+                          if not (m.get("label") or "").strip()]
+        check(not empty_labelled,
+              "no mark carries an empty label (got %d)" % len(empty_labelled))
+        close = structured_mark(obs1, "Close")
+        check(close is not None, "the icon-only close button is named 'Close'")
+        if close:
+            check(close.get("label_source") == "glyph",
+                  "the close glyph reports label_source 'glyph' (got %r)"
+                  % close.get("label_source"))
+        # W14 — an inert subtree is not actionable and must not be marked.
+        check(structured_mark(obs1, "Inert Only") is None,
+              "a button inside an [inert] subtree is filtered out of the mark table")
+        check("Inert Only" not in txt1,
+              "the prose mark table omits the inert button too")
 
         pt = sc1.get("page_text")
         check(isinstance(pt, str) and "Harness UI Session Smoke Fixture" in pt,

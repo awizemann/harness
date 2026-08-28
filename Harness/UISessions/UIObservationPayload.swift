@@ -145,12 +145,12 @@ enum UIObservationPayload {
                         "type": "object",
                         "properties": [
                             "id": ["type": "integer", "description": "The badge number; the id tap_mark(id) takes."],
-                            "label": ["type": "string", "description": "Accessible label; empty string when none resolved."],
+                            "label": ["type": "string", "description": "Accessible label. Never empty in a web session — an unnameable control gets a synthesized placeholder (see label_source); iOS/macOS can still return an empty string."],
                             "role": ["type": "string", "description": "Source-platform role (web: a/button/…; iOS: XCUIElementType…; macOS: AX…)."],
                             "label_source": [
                                 "type": "string",
-                                "enum": ["aria-label", "labelledby", "label", "placeholder", "title", "value", "text", "name", "none"],
-                                "description": "Where `label` came from, in the probe's priority order. Web sessions only — omitted on iOS/macOS, whose probes report no provenance. Prefer aria-label / labelledby / label for durable resolvers; placeholder and value are sample data that move with copy edits."
+                                "enum": ["aria-label", "labelledby", "label", "placeholder", "title", "value", "text", "img-alt", "svg-title", "text-content", "glyph", "testid", "name", "synthesized", "none"],
+                                "description": "Where `label` came from, in the probe's priority order. Web sessions only — omitted on iOS/macOS, whose probes report no provenance. Prefer aria-label / labelledby / label for durable resolvers; placeholder and value are sample data that move with copy edits. img-alt / svg-title / text-content / glyph name icon-only controls (glyph reports a close ✕ as \"Close\"); testid is the page's own test hook; synthesized means nothing was derivable and the label is a placeholder like \"unlabelled button\" — address that control by position and treat it as a page bug."
                             ],
                             "rect": [
                                 "type": "object",
