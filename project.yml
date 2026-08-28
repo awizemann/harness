@@ -99,8 +99,8 @@ targets:
         # Info.plist; Xcode merges the generated CFBundle/icon/version keys on
         # top of it (GENERATE_INFOPLIST_FILE stays YES in base settings).
         INFOPLIST_FILE: Harness/Resources/Info.plist
-        MARKETING_VERSION: "0.8.0"
-        CURRENT_PROJECT_VERSION: "7"
+        MARKETING_VERSION: "0.8.1"
+        CURRENT_PROJECT_VERSION: "8"
     preBuildScripts:
       # Bake $SRCROOT into the generated Swift stub so the running app can find
       # `vendor/WebDriverAgent` for first-run WDA builds. Read at runtime via
