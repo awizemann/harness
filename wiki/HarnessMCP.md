@@ -41,12 +41,34 @@ _New in 0.7._ For a client that wants to drive a target **itself** — see it an
 | Tool | Purpose |
 | --- | --- |
 | `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`) or `ios` (`project_path` + `scheme` + `simulator_udid`; `macos` → a clear "deferred" error). Optional `artifact_dir` (**absolute**; relative rejected). Blocks until ready (iOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
-| `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content, plus a text block with the `id → label (role)` mark table. `clean: true` returns the unmarked frame. |
+| `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content, plus a text block with the `id → label (role)` mark table — and a `structuredContent` object with the same marks as rects (see [Structured observation](#structured-observation)). `clean: true` returns the unmarked frame. |
 | `act_ui` | Perform **one** action (`tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `wait`), validated against the platform vocabulary, then auto-observe. A failed execute is flagged as an error. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
 | `end_ui_session` | Tear down the target. Idempotent — an unknown/closed id returns a calm `already closed`. |
 | `list_ui_sessions` | Open sessions: id, platform, label, created time, idle seconds. |
 
 The action vocabulary `act_ui` validates against is the same per-platform contract the autonomous agent uses — see [Tool-Schema](Tool-Schema).
+
+### Structured observation
+
+_New in 0.8.0._ Alongside the image and text blocks, `observe_ui` and `act_ui` return an MCP `structuredContent` object matching the `outputSchema` they advertise in `tools/list`. The text mark table is written for a **vision model** (`id → "label" (role)`, no geometry); `structuredContent` is the machine-facing surface, carrying the rects the badges were drawn from:
+
+```json
+{
+  "session_id": "77F248B2-…",
+  "step": 1,
+  "point_size": { "width": 1280, "height": 800 },
+  "marks": [
+    { "id": 1, "label": "name field", "role": "input",
+      "rect": { "x": 40, "y": 116, "width": 264, "height": 41 } }
+  ],
+  "page_text": "Harness UI Session Smoke Fixture\n\nFocus the field, type, …"
+}
+```
+
+- **Coordinate space** — `rect` and `point_size` are both in **point** space (CSS pixels for web, simulator points for iOS, window points for macOS), the same space `tap(x, y)` takes; *not* the screenshot's pixel space, which differs by the scale factor. The rects come from the same `InteractiveMark` list [MarkRenderer](Web-Driver) draws the badges from, so ids match the table exactly.
+- **`marks`** is always present — `[]` when the probe found nothing.
+- **`page_text`** is the frame's visible text, whitespace-normalized and capped at 20 000 characters (trailing `…` marks truncation). **Web only**, from an `innerText` read of the rendered document. iOS and macOS **omit the key**: their AX/WDA probes yield per-element labels, not a screen text roll-up, and Harness does not walk the tree again to synthesize one. Absent means "not available on this platform", not "no text on screen".
+- **Additive** — the `image` and `text` content blocks are byte-identical to before, so an existing client that ignores `structuredContent` sees the historical result. A failed `act_ui` returns it too, alongside `isError: true`.
 
 ### Artifacts
 
