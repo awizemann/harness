@@ -95,3 +95,6 @@ sessions/.raw/
 sessions/.index.json
 
 .claude/memophant-activity.log
+
+# Scarf machine-local project state (host bindings, absolute paths)
+.scarf/project.json
