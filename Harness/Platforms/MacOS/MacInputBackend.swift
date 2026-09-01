@@ -111,7 +111,7 @@ enum MacActuationPlan {
         // Non-actuating tools (no input synthesis) and tools the macOS
         // adapter never advertises. No ladder.
         case .swipe, .pressButton, .navigate, .back, .forward, .refresh,
-             .wait, .readScreen, .noteFriction, .markGoalDone:
+             .scrollIntoView, .wait, .readScreen, .noteFriction, .markGoalDone:
             return []
         }
     }

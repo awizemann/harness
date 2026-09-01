@@ -118,6 +118,10 @@ actor WebDriver: UXDriving {
         // between the two and hand a caller text its frame doesn't show.)
         // Best-effort and bounded — never fails the screenshot.
         let pageText = await probeVisibleText()
+        // The frame's location, redacted before it can be returned or
+        // logged (see `redactedFrameURL`). Read in the same pre-snapshot
+        // window as the marks and the text so all three describe one state.
+        let frameURL = Self.redactedFrameURL(await currentURL())
         Self.logger.info("screenshot probed \(marks.count, privacy: .public) interactive marks (viewport=\(Int(self.viewport.width), privacy: .public)×\(Int(self.viewport.height), privacy: .public))")
 
         let raw = try await captureSnapshot()
@@ -164,8 +168,65 @@ actor WebDriver: UXDriving {
             markedImageData: markedData,
             markedAnnotationText: annotationText,
             marks: marks,
-            pageText: pageText
+            pageText: pageText,
+            frameURL: frameURL
         )
+    }
+
+    // MARK: - Frame URL (WB-17)
+
+    /// Reduce a live frame URL to the part a consumer needs and nothing
+    /// more: **scheme, host, port and path**.
+    ///
+    /// A URL is not safe to echo wholesale. Magic-link tokens, password
+    /// reset nonces, OAuth `code`/`state`, session ids and analytics
+    /// identifiers all ride in the query string or the fragment, and
+    /// `https://user:secret@host/` puts a password in the authority. This
+    /// result is returned to an MCP client, written to no artifact, and
+    /// logged only in this reduced form — so the reduction happens HERE,
+    /// once, at the only place the raw string is read, rather than being
+    /// left to each consumer to remember.
+    ///
+    /// What is kept is exactly what the motivating use answers: *did the
+    /// origin change under me?* Query and fragment are DROPPED, not
+    /// truncated — a prefix of a token is still token material — and their
+    /// former presence is reported honestly by a trailing marker: `?…` for
+    /// a dropped query, `#…` for a dropped fragment. A consumer can see
+    /// that parameters existed without ever seeing one.
+    ///
+    /// The path is kept whole: it is the half a client needs to tell
+    /// `/dashboard` from `/login`, and path-embedded secrets are the rarer
+    /// case. That trade is stated in the tool's own schema so nobody has to
+    /// infer it. Anything unparseable, or any scheme other than
+    /// http/https/file/about, collapses to `scheme:…` — a `data:` or
+    /// `blob:` URL is a document body, not a location.
+    static func redactedFrameURL(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        guard let comps = URLComponents(string: raw), let scheme = comps.scheme?.lowercased() else {
+            return nil
+        }
+        let hadQuery = !(comps.percentEncodedQuery ?? "").isEmpty
+        let hadFragment = !(comps.percentEncodedFragment ?? "").isEmpty
+        let marker = (hadQuery ? "?…" : "") + (hadFragment ? "#…" : "")
+
+        switch scheme {
+        case "http", "https", "file":
+            var out = scheme + "://"
+            var host = comps.percentEncodedHost ?? ""
+            // Foundation hands an IPv6 literal back unbracketed; re-bracket
+            // it so the result is a URL a client can parse rather than a
+            // string where the port runs into the address.
+            if host.contains(":"), !host.hasPrefix("[") { host = "[\(host)]" }
+            out += host
+            if let port = comps.port { out += ":\(port)" }
+            out += comps.percentEncodedPath
+            return out + marker
+        case "about":
+            // `about:blank` carries nothing; keep it readable.
+            return "about:" + comps.percentEncodedPath + marker
+        default:
+            return scheme + ":…"
+        }
     }
 
     /// Read the WKWebView's current URL. Cheap; safe to poll. Used by the
@@ -219,6 +280,8 @@ actor WebDriver: UXDriving {
             try await dispatchClick(x: x, y: y, button: 0, count: 1)
         case .tapMark(let id):
             try await dispatchMarkClick(id: id)
+        case .scrollIntoView(let id):
+            try await dispatchScrollIntoView(id: id)
         case .doubleTap(let x, let y):
             try await dispatchClick(x: x, y: y, button: 0, count: 2)
         case .rightClick(let x, let y):
@@ -961,10 +1024,16 @@ actor WebDriver: UXDriving {
                 self.lastDriverDetail = detail
             }
 
-            Self.logger.info("click (\(x, privacy: .public), \(y, privacy: .public)) → element=\(element, privacy: .public) interactive=\(interactive, privacy: .public) url=\(url, privacy: .public) urlChanged=\(urlChanged, privacy: .public)")
+            // The post-click `location.href` goes through the SAME reduction
+            // the returned `frame_url` does. The unified log is readable by any
+            // process running as this user and is swept into a sysdiagnose, so
+            // an OAuth callback's `?code=…` had no business being written there
+            // at `.public` — which is exactly what this line used to do.
+            let loggedURL = Self.redactedFrameURL(url) ?? "(unparseable)"
+            Self.logger.info("click (\(x, privacy: .public), \(y, privacy: .public)) → element=\(element, privacy: .public) interactive=\(interactive, privacy: .public) url=\(loggedURL, privacy: .public) urlChanged=\(urlChanged, privacy: .public)")
             if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
                 let nav = urlChanged ? " [NAV]" : ""
-                let line = "[WebDriver]   → element=\(element) interactive=\(interactive) url=\(url)\(nav)\n"
+                let line = "[WebDriver]   → element=\(element) interactive=\(interactive) url=\(loggedURL)\(nav)\n"
                 FileHandle.standardError.write(Data(line.utf8))
             }
         }
@@ -1382,9 +1451,15 @@ actor WebDriver: UXDriving {
     /// complete one.
     static let pageTextCap = 20_000
 
-    /// Read the rendered document's visible text (an `innerText`-equivalent
-    /// of `document.body`, which respects CSS visibility the way
-    /// `textContent` does not), collapse its whitespace, and cap it.
+    /// Read the frame's visible text (an `innerText` read, which respects
+    /// CSS visibility the way `textContent` does not), collapse its
+    /// whitespace, and cap it.
+    ///
+    /// The ROOT of that read is `WebMarkProbe.pageTextJS`'s decision, not
+    /// `document.body`: while a modal or overlay dialog is open it is the
+    /// dialog's subtree plus whatever paints above it — the same scoping the
+    /// mark table gets, from the same shared prelude, so the text and the
+    /// marks always describe one frame (W31a).
     ///
     /// Best-effort by construction: a JS error, an absent body, or a stuck
     /// page load all return `nil` rather than failing the screenshot.
@@ -1393,16 +1468,26 @@ actor WebDriver: UXDriving {
     /// runs on EVERY web capture, including the autonomous run loop's, and
     /// page text is a convenience for downstream text assertions — never
     /// worth adding a second 8s stall to a step that is already waiting out
-    /// a hung page. A `document.body.innerText` read on a live page returns
-    /// in well under a millisecond, so 2s only ever trips on a wedged one.
+    /// a hung page.
+    ///
+    /// Note what that budget now covers. Since W31a this is no longer a
+    /// one-line `innerText` read: the shared prelude runs the whole modal
+    /// decision first, including a bounded candidate scan. The scan is
+    /// capped (a rect test rejects almost everything before any style read,
+    /// and the budget counts survivors) and still resolves in single-digit
+    /// milliseconds on a heavy page — but it is real work, and it is the
+    /// SECOND time this step does it, the mark probe being the first. If a
+    /// future change makes either side more expensive, merge the two
+    /// evaluations rather than raising this timeout: computing the modal
+    /// once would also close the small window in which the marks and the
+    /// text could disagree about it.
     private func probeVisibleText() async -> String? {
-        let js = """
-        (() => {
-          const el = document.body || document.documentElement;
-          if (!el) return '';
-          return el.innerText || '';
-        })();
-        """
+        // W31a — scoped by the SAME modal rule the mark table uses (the
+        // shared prelude in `WebMarkProbe`). With a modal open this reads
+        // the modal's own text plus whatever paints above it, NOT the whole
+        // dimmed document, so `page_text` can no longer satisfy a text
+        // assertion with copy the agent cannot see.
+        let js = WebMarkProbe.pageTextJS
         let result: String? = await Self.raceAgainstTimeout(.seconds(2)) { [controller] in
             await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
                 Task { @MainActor in
@@ -1503,6 +1588,95 @@ actor WebDriver: UXDriving {
         try await dispatchClick(x: cx, y: cy, button: 0, count: 1)
     }
 
+    // MARK: - scroll_into_view (WB-17, W7/W34)
+
+    /// Scroll mark `id`'s element into view and report the movement.
+    ///
+    /// **Why a new act rather than a wider mark table.** The probe's
+    /// contract is that a mark is something the agent can act on *now*:
+    /// every mark intersects the viewport, because a badge is drawn on it
+    /// and a click is dispatched at its rect. Reporting off-viewport
+    /// elements would break that in both directions — a badge with nowhere
+    /// to draw, and a `tap_mark` that lands on whatever happens to occupy
+    /// those coordinates instead. So the table keeps its contract and the
+    /// gap is closed the other way: a partially-visible mark (the row
+    /// clipped by the fold, the button under a sticky footer) is brought
+    /// fully into view, and the auto-observe that follows re-probes — which
+    /// is what surfaces the elements that were previously off-screen
+    /// entirely, now as ordinary marks.
+    ///
+    /// The element is addressed through `window.__harnessMarkElements`,
+    /// which the mark walk parks alongside the marks it returned: index
+    /// `id - 1`. No attribute is written into the page (a React tree is
+    /// not ours to mutate) and no second DOM walk is needed. A document
+    /// navigation clears the global, and an id from the old frame then
+    /// fails honestly instead of scrolling to whatever now sits at that
+    /// index.
+    ///
+    /// **An SPA re-render is not covered by that**, and neither is the
+    /// `lastMarks` guard: React can keep a DOM node mounted and swap the
+    /// data inside it, so `isConnected` stays true and mark 3 can now be a
+    /// different row than the one the caller saw. The blast radius is
+    /// small — this tool only moves the viewport, so the worst case is
+    /// scrolling to the wrong row, which the returned observation shows —
+    /// but it is not a guarantee, and a caller must read the marks it gets
+    /// back rather than assume the ones it sent.
+    private func dispatchScrollIntoView(id: Int) async throws {
+        guard lastMarks.contains(where: { $0.id == id }) else {
+            throw WebDriverError.unknownMark(id: id)
+        }
+        let js = """
+        (() => {
+          const reg = window['\(WebMarkProbe.elementRegistryKey)'];
+          if (!reg || !reg.length) return { status: "no-registry" };
+          const el = reg[\(id) - 1];
+          if (!el || !el.isConnected) return { status: "stale" };
+          const before = el.getBoundingClientRect();
+          try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); }
+          catch (e) { el.scrollIntoView(true); }
+          const after = el.getBoundingClientRect();
+          const vh = window.innerHeight, vw = window.innerWidth;
+          return {
+            status: "ok",
+            beforeY: Math.round(before.top),
+            afterY: Math.round(after.top),
+            beforeX: Math.round(before.left),
+            afterX: Math.round(after.left),
+            fully: after.top >= 0 && after.left >= 0 && after.bottom <= vh && after.right <= vw
+          };
+        })();
+        """
+        let result = try await runJSAndReturn(js)
+        guard let dict = result as? [String: Any],
+              let status = dict["status"] as? String else {
+            lastDriverDetail = "scroll_into_view(\(id)) — the page returned nothing; it may have navigated mid-action."
+            return
+        }
+        // The id WAS in the latest mark set (the guard above), so this is
+        // not "unknown mark" — the frame those ids belong to is gone, or
+        // the element was unmounted under us. Say that, rather than telling
+        // the agent to re-screenshot for a refresh that won't help.
+        guard status == "ok" else {
+            throw WebDriverError.markElementGone(id: id, reason: status)
+        }
+        let beforeY = (dict["beforeY"] as? Double) ?? Double((dict["beforeY"] as? Int) ?? 0)
+        let afterY = (dict["afterY"] as? Double) ?? Double((dict["afterY"] as? Int) ?? 0)
+        let beforeX = (dict["beforeX"] as? Double) ?? Double((dict["beforeX"] as? Int) ?? 0)
+        let afterX = (dict["afterX"] as? Double) ?? Double((dict["afterX"] as? Int) ?? 0)
+        let fully = (dict["fully"] as? Bool) ?? false
+        let dy = Int((afterY - beforeY).rounded())
+        let dx = Int((afterX - beforeX).rounded())
+        let label = lastMarks.first(where: { $0.id == id })?.label ?? ""
+        if dy == 0 && dx == 0 {
+            lastDriverDetail = "scroll_into_view(\(id)) — \"\(label)\" was already in view; nothing scrolled"
+                + (fully ? "." : " and it is still clipped by the viewport (a sticky header or an inner scroller may be holding it).")
+        } else {
+            lastDriverDetail = "scroll_into_view(\(id)) — \"\(label)\" moved by (\(dx), \(dy)) to y=\(Int(afterY)); "
+                + (fully ? "now fully in view." : "still not fully in view.")
+                + " The marks in this observation were re-probed after the scroll, so ids have changed."
+        }
+    }
+
     /// Escape a string for safe interpolation into a JS source literal.
     private static func jsEscape(_ s: String) -> String {
         var out = ""
@@ -1531,6 +1705,12 @@ enum WebDriverError: Error, Sendable, LocalizedError {
     /// run as a tool failure so the next iteration's screenshot can
     /// re-establish marks.
     case unknownMark(id: Int)
+    /// WB-17 — `scroll_into_view(id)` named a mark that IS in the current
+    /// mark set, but the element list the probe parked is gone (a
+    /// navigation wiped the window global) or the element has been
+    /// unmounted. Distinct from `unknownMark` because the advice differs:
+    /// re-observing does help here, and only here.
+    case markElementGone(id: Int, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -1540,6 +1720,11 @@ enum WebDriverError: Error, Sendable, LocalizedError {
         case .invalidURL(let s): return "Invalid URL: '\(s)'."
         case .unknownMark(let id):
             return "tap_mark(id: \(id)) — that id wasn't in the latest screenshot's mark set. The page may have changed; the next screenshot will refresh the marks."
+        case .markElementGone(let id, let reason):
+            let why = reason == "stale"
+                ? "the element behind it has been removed from the page"
+                : "the frame it was probed in is gone (a navigation cleared it)"
+            return "scroll_into_view(id: \(id)) — \(why). Observe again and use an id from the new mark set."
         }
     }
 }

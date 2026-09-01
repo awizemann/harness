@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>undeclared confirm dialog fixture</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, system-ui, sans-serif; }
+    /* The Radix / Headless UI portal shape: the wrapper lets clicks
+       through, the card takes them. That is what made this escape the
+       W14 filter — the hit-test reaches the dashboard behind it, so every
+       background control stayed marked. */
+    .overlay {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(0, 0, 0, .5);
+      pointer-events: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card { width: 420px; background: #ffffff; padding: 24px; pointer-events: auto; }
+  </style>
+</head>
+<body>
+  <!--
+    WB-17 (W31) fixture: a confirmation dialog with NO dialog semantics —
+    no `role`, no `aria-modal`, no `<dialog>` — which is the shape that
+    escaped the W14 background filter on drop-help. The page behind it must
+    contribute neither marks nor page_text while it is open.
+
+    "Add Site" appears in BOTH layers on purpose: the background copy of it
+    is the collision that made an authored flow born-broken.
+  -->
+  <h1>Dashboard</h1>
+  <button id="bg-add">Add Site</button>
+  <button id="bg-refresh">Refresh</button>
+  <p id="bg-copy">BACKGROUND-COPY-NOBODY-CAN-READ</p>
+
+  <div class="overlay">
+    <div class="card">
+      <h2>Delete this site?</h2>
+      <p>DIALOG-COPY-THE-USER-ACTUALLY-SEES</p>
+      <button id="confirm">Delete site</button>
+      <button id="cancel">Keep site</button>
+    </div>
+  </div>
+</body>
+</html>

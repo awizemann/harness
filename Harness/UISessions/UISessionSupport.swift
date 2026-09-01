@@ -216,6 +216,10 @@ struct UIObservation: Sendable {
     /// Visible page text for the observed frame, normalized + capped by the
     /// driver. Web only — iOS / macOS leave it nil (see `ScreenshotMetadata`).
     let pageText: String?
+    /// The frame's current location, already redacted to scheme/host/port/
+    /// path by the driver (`WebDriver.redactedFrameURL`). Web only — iOS and
+    /// macOS have no frame URL and leave it nil.
+    let frameURL: String?
     /// 1-based observation index within the session (the `NNN` in
     /// `steps/NNN.png`).
     let stepIndex: Int

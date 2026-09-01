@@ -98,6 +98,7 @@ struct ConsoleEventPrinter {
         case .refresh:                                   return "refresh"
         case .fillCredential(let field):                 return "fill_credential(\(field.rawValue))"
         case .tapMark(let id):                           return "tap_mark(\(id))"
+        case .scrollIntoView(let id):                    return "scroll_into_view(\(id))"
         }
     }
 }

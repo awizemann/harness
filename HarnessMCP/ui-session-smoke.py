@@ -33,6 +33,16 @@ It then drives three more live proofs:
     fixture's echo + a password checksum, never by printing the secret), a
     session with NO credential must ERROR rather than log a silent "ok", and
     no password material may appear in any response, artifact, or log.
+  * **Undeclared modals (W31)** — a confirm dialog with no dialog semantics
+    must filter the page behind it out of BOTH the marks and `page_text`.
+  * **frame_url (WB-17)** — every web observation reports the frame's
+    location, redacted to scheme/host/port/path; a token in the query string
+    reaches no result, no text block and no artifact.
+  * **scroll_into_view (WB-17)** — a control below the fold is unmarked;
+    scrolling a partially-visible mark into view makes it an ordinary mark
+    in the same call's auto-observe.
+  * **delete_credential (WB-17)** — removes the store row AND the Keychain
+    item, and errors on an id that names nothing.
   * **Session state** — inject a cookie + a localStorage item, export them
     back out, confirm neither value reaches `steps.jsonl`, and confirm a
     session started WITHOUT `session_state` inherits nothing.
@@ -66,6 +76,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DIR = os.path.join(HERE, "fixtures")
 FIXTURE_NAME = "ui-session-fixture.html"
 SETTLE_FIXTURE_NAME = "spa-settle-fixture.html"
+SCROLL_FIXTURE_NAME = "scroll-into-view-fixture.html"
+CONFIRM_FIXTURE_NAME = "confirm-dialog-fixture.html"
 DEFAULT_BIN = os.path.join(HERE, "..", ".build", "derived", "Build", "Products", "Debug", "harness-mcp")
 
 
@@ -257,6 +269,7 @@ def main():
 
         # WB-14 — the credential surface a client codes against.
         check("list_credentials" in names, "tools/list advertises list_credentials")
+        check("delete_credential" in names, "tools/list advertises delete_credential (WB-17)")
         start_props = by_name["start_ui_session"]["inputSchema"]["properties"]
         check("credential_id" in start_props, "start_ui_session accepts credential_id")
         act_props = by_name["act_ui"]["inputSchema"]["properties"]
@@ -266,6 +279,12 @@ def main():
         act_desc = by_name["act_ui"]["description"]
         check("fill_credential" in act_desc.split("web:")[1].split(";")[0],
               "act_ui's description no longer claims fill_credential is macOS-only")
+        check("scroll_into_view" in act_desc.split("web:")[1].split(";")[0],
+              "act_ui advertises scroll_into_view on web")
+        obs_schema_props = by_name["observe_ui"]["outputSchema"]["properties"]
+        check("frame_url" in obs_schema_props, "observe_ui's outputSchema describes frame_url")
+        check("frame_url" not in by_name["observe_ui"]["outputSchema"].get("required", []),
+              "frame_url is optional — iOS and macOS have no frame URL")
 
         print("\n--- start_ui_session ---")
         start = mcp.tool("start_ui_session", {"platform": "web", "url": url, "artifact_dir": artifact_dir})
@@ -495,6 +514,98 @@ def main():
         _ = mcp.tool("end_ui_session", {"session_id": s4["session_id"]})
 
         # ------------------------------------------------------------------
+        # WB-17 W31 — a confirm dialog with NO dialog semantics. The page
+        # behind it must contribute neither marks nor page_text: the mark
+        # filter and the text roll-up now share one modal decision, so a
+        # `text_visible` assertion can no longer pass on copy the dialog
+        # covers.
+        # ------------------------------------------------------------------
+        print("\n--- undeclared confirm dialog: marks AND page_text scoped (W31) ---")
+        confirm_url = "http://127.0.0.1:%d/%s" % (port, CONFIRM_FIXTURE_NAME)
+        confirm_dir = tempfile.mkdtemp(prefix="harness-ui-confirm-")
+        sc_sess = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": confirm_url, "artifact_dir": confirm_dir})))
+        sid_confirm = sc_sess["session_id"]
+        obs_c = mcp.tool("observe_ui", {"session_id": sid_confirm})
+        txt_c = content_text(obs_c)
+        sc_c = obs_c.get("structuredContent") or {}
+        labels_c = [m.get("label") for m in sc_c.get("marks", [])]
+        print("  marks: %s" % labels_c)
+        check("Delete site" in labels_c and "Keep site" in labels_c,
+              "the dialog's own controls are marked")
+        check("Add Site" not in labels_c and "Refresh" not in labels_c,
+              "the dimmed background contributes NO marks (%s)" % labels_c)
+        page_text_c = sc_c.get("page_text") or ""
+        check("DIALOG-COPY-THE-USER-ACTUALLY-SEES" in page_text_c,
+              "page_text carries the dialog's own copy")
+        check("BACKGROUND-COPY-NOBODY-CAN-READ" not in page_text_c,
+              "page_text does NOT carry copy hidden behind the dialog (W31a)")
+        check("BACKGROUND-COPY-NOBODY-CAN-READ" not in txt_c,
+              "…and neither does the text block")
+        _ = mcp.tool("end_ui_session", {"session_id": sid_confirm})
+
+        # ------------------------------------------------------------------
+        # WB-17 — frame_url. Web observations report the frame's location,
+        # redacted to scheme/host/port/path: the query and fragment are
+        # DROPPED (they carry tokens) and only their existence is marked.
+        # ------------------------------------------------------------------
+        print("\n--- frame_url is reported and redacted ---")
+        url_secret = "TOKEN-THAT-MUST-NEVER-BE-ECHOED-8812"
+        tokened = "%s?token=%s#frag" % (url, url_secret)
+        furl_dir = tempfile.mkdtemp(prefix="harness-ui-frameurl-")
+        s_furl = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": tokened, "artifact_dir": furl_dir})))
+        sid_furl = s_furl["session_id"]
+        obs_f = mcp.tool("observe_ui", {"session_id": sid_furl})
+        frame_url = (obs_f.get("structuredContent") or {}).get("frame_url")
+        print("  frame_url: %r" % frame_url)
+        check(frame_url == "http://127.0.0.1:%d/%s?…#…" % (port, FIXTURE_NAME),
+              "frame_url is origin + path, with the query and fragment marked but dropped")
+        check(url_secret not in json.dumps(obs_f),
+              "the query-string token appears NOWHERE in the observation")
+        furl_rows = open(os.path.join(furl_dir, "steps.jsonl")).read()
+        check(url_secret not in furl_rows, "…and nowhere in steps.jsonl")
+        check("URL: http://127.0.0.1" in content_text(obs_f),
+              "the text block shows the frame URL too")
+        _ = mcp.tool("end_ui_session", {"session_id": sid_furl})
+
+        # ------------------------------------------------------------------
+        # WB-17 W7/W34 — scroll_into_view. The mark table only covers what
+        # intersects the viewport; this act is how an agent reaches what the
+        # fold clipped. "Deep action" is below the fold and unmarked; after
+        # scrolling the partially-visible "Load more" into view, the
+        # auto-observe's re-probe must include it.
+        # ------------------------------------------------------------------
+        print("\n--- scroll_into_view reaches what the fold clipped ---")
+        scroll_url = "http://127.0.0.1:%d/%s" % (port, SCROLL_FIXTURE_NAME)
+        scroll_dir = tempfile.mkdtemp(prefix="harness-ui-scroll-")
+        s_scroll = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": scroll_url, "artifact_dir": scroll_dir})))
+        sid_scroll = s_scroll["session_id"]
+        obs_s0 = mcp.tool("observe_ui", {"session_id": sid_scroll})
+        labels0 = [m.get("label") for m in (obs_s0.get("structuredContent") or {}).get("marks", [])]
+        print("  marks before: %s" % labels0)
+        check("Load more" in labels0, "the partially-visible control is marked")
+        check("Deep action" not in labels0,
+              "a control below the fold is NOT marked (the viewport contract)")
+        load_more_id = find_mark_id(content_text(obs_s0), "Load more")
+        check(load_more_id is not None, "resolved 'Load more' to a mark id (%s)" % load_more_id)
+        obs_s1 = mcp.tool("act_ui", {"session_id": sid_scroll,
+                                     "tool": "scroll_into_view", "id": load_more_id})
+        check(obs_s1.get("isError") is not True, "scroll_into_view executed")
+        labels1 = [m.get("label") for m in (obs_s1.get("structuredContent") or {}).get("marks", [])]
+        print("  marks after: %s" % labels1)
+        check("Deep action" in labels1,
+              "after scrolling, the previously-unreachable control is an ordinary mark (%s)" % labels1)
+        check("scroll_into_view" in content_text(obs_s1),
+              "the result reports what the scroll did")
+        stale = mcp.tool("act_ui", {"session_id": sid_scroll, "tool": "scroll_into_view", "id": 999})
+        check(stale.get("isError") is True, "an id that is not in the mark set is an ERROR")
+        scroll_rows = open(os.path.join(scroll_dir, "steps.jsonl")).read()
+        check('"scroll_into_view"' in scroll_rows, "the act is recorded in steps.jsonl")
+        _ = mcp.tool("end_ui_session", {"session_id": sid_scroll})
+
+        # ------------------------------------------------------------------
         # WB-14 — fill_credential in a STEP-LEVEL SESSION. Stage a real
         # credential (store row + Keychain item), start a session bound to it,
         # and prove the staged values actually get typed — the username
@@ -634,6 +745,36 @@ def main():
         check('"field":"password"' in rows and '"field":"username"' in rows,
               "steps.jsonl records only the credential SLOT")
         _ = mcp.tool("end_ui_session", {"session_id": sid6})
+
+        # ------------------------------------------------------------------
+        # WB-17 — delete_credential. Staging writes a real Keychain item;
+        # without a way to remove it, every automated run leaves one behind.
+        # This must take BOTH halves: the store row and the Keychain item.
+        # ------------------------------------------------------------------
+        print("\n--- delete_credential removes the row AND the Keychain item ---")
+        deleted_raw = mcp.tool("delete_credential", {"credential_id": cred_id})
+        deleted = json.loads(content_text(deleted_raw))
+        print(json.dumps(deleted, indent=2))
+        check(deleted.get("deleted", {}).get("credential_id") == cred_id,
+              "delete_credential reports the credential it removed")
+        check(deleted.get("deleted", {}).get("keychain_item_removed") is True,
+              "…and confirms the Keychain item is gone")
+        check(cred_password not in json.dumps(deleted_raw),
+              "delete_credential never echoes password material")
+        after_delete = json.loads(content_text(
+            mcp.tool("list_credentials", {"application_id": app_id})))
+        check(after_delete.get("count") == 0, "the credential row is gone from the store")
+        account = "%s:%s" % (app_id.upper(), cred_id.upper())
+        found = subprocess.run(["security", "find-generic-password",
+                                "-s", "com.harness.credentials", "-a", account],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        check(found.returncode != 0,
+              "the Keychain item is ACTUALLY gone (no inert leftover per run)")
+        again = mcp.tool("delete_credential", {"credential_id": cred_id})
+        check(again.get("isError") is True,
+              "deleting an id that names no credential is an ERROR, not a quiet success")
+        # Already removed above; the finally-block sweep becomes a no-op.
+        keychain_accounts.remove(account)
 
     finally:
         mcp.close()

@@ -353,6 +353,11 @@ actor AgentLoop: AgentLooping {
             // id three turns in a row — it's almost certainly the
             // model hallucinating a stable mapping. Cycle on it.
             return aid == bid
+        case let (.scrollIntoView(aid), .scrollIntoView(bid)):
+            // Same reasoning as `tapMark`, plus one of its own: an element
+            // already centred does not move, so a model that keeps asking
+            // for it makes no progress at all.
+            return aid == bid
         case let (.type(ta), .type(tb)):
             return ta == tb
         case let (.keyShortcut(ka), .keyShortcut(kb)):

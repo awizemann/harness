@@ -83,7 +83,7 @@ struct WebSettleProfile: Sendable, Hashable {
     static func armsObservation(for input: ToolInput) -> Bool {
         switch input {
         case .tap, .tapMark, .doubleTap, .rightClick,
-             .scroll, .type, .keyShortcut, .fillCredential:
+             .scroll, .scrollIntoView, .type, .keyShortcut, .fillCredential:
             return true
         case .navigate, .back, .forward, .refresh,
              .wait, .readScreen, .noteFriction, .markGoalDone,
@@ -103,7 +103,7 @@ struct WebSettleProfile: Sendable, Hashable {
         case .navigate, .back, .forward, .refresh:
             return .navigation
         case .tap, .tapMark, .doubleTap, .rightClick,
-             .scroll, .type, .keyShortcut, .fillCredential:
+             .scroll, .scrollIntoView, .type, .keyShortcut, .fillCredential:
             return clickNavigated ? .navigation : .nonNavigatingAction
         case .wait, .readScreen, .noteFriction, .markGoalDone,
              .swipe, .pressButton:

@@ -97,6 +97,11 @@ enum ToolRegistry {
                  obj(["application_id": prop("string", "The Application id (UUID) whose credentials to list.")],
                      required: ["application_id"])),
 
+            tool("delete_credential",
+                 "Remove a staged credential: the library row AND its macOS Keychain password. Use it to clean up after an automated run so a test credential does not outlive the test. Deleting an id that names no credential is an ERROR, not a quiet success — a caller cleaning up needs to know its id was wrong.",
+                 obj(["credential_id": prop("string", "The credential id (UUID) from stage_credential or list_credentials.")],
+                     required: ["credential_id"])),
+
             // MARK: Run control
             tool("start_run",
                  "Start a UI-testing run (autonomous). REQUIRED: (1) goal; (2) exactly one persona — persona_id (an existing persona) OR a raw persona prompt string; (3) a target — either application_id (platform + params derived from it) OR an explicit platform plus its params (web: web_url; ios_simulator: ios_project_path + ios_scheme + ios_simulator_udid; macos_app: mac_app_path). Returns a run_id immediately; the run executes asynchronously — poll get_run_status, fetch results with get_run_result, stop early with cancel_run.",
@@ -173,17 +178,17 @@ enum ToolRegistry {
                      required: ["platform"])),
 
             tool(UISessionTool.observeUI.rawValue,
-                 "Capture the current screen of a session. Returns the MARKED screenshot (Set-of-Mark numbered badges over interactive elements, downscaled to point size) as image content, plus a text block with the id→label(role) mark table, point size, and session label. ALSO returns structuredContent: the same marks with their rects in point space, plus page_text (visible page text) on web sessions. Pass clean:true for the unmarked frame.",
+                 "Capture the current screen of a session. Returns the MARKED screenshot (Set-of-Mark numbered badges over interactive elements, downscaled to point size) as image content, plus a text block with the id→label(role) mark table, point size, and session label. ALSO returns structuredContent: the same marks with their rects in point space, plus — on web sessions — page_text (the visible text of the frame, scoped by the same modal rule the marks are) and frame_url (the frame's location, redacted to scheme/host/port/path). Pass clean:true for the unmarked frame.",
                  obj(["session_id": prop("string", "The session id (UUID) from start_ui_session."),
                       "clean": prop("boolean", "Return the unmarked frame instead of the marked one (default false).")],
                      required: ["session_id"]),
                  outputSchema: UIObservationPayload.outputSchema()),
 
             tool(UISessionTool.actUI.rawValue,
-                 "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, navigate, back, forward, refresh, fill_credential, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, fill_credential, wait; macos: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, fill_credential, wait). Pass that tool's args at the top level (e.g. tap_mark → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys; fill_credential → field). fill_credential types the session's staged credential into the FOCUSED field — focus it first (tap_mark), and start the session with credential_id or the step FAILS. Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
+                 "Perform one UI action in a session, then auto-observe. `tool` is one of the platform's action tools (web: tap, tap_mark, double_tap, right_click, scroll, scroll_into_view, type, key_shortcut, navigate, back, forward, refresh, fill_credential, wait; ios: tap, tap_mark, double_tap, swipe, type, press_button, fill_credential, wait; macos: tap, tap_mark, double_tap, right_click, scroll, type, key_shortcut, fill_credential, wait). Pass that tool's args at the top level (e.g. tap_mark → id; scroll_into_view → id; tap → x,y; type → text; scroll → x,y,dx,dy; navigate → url; key_shortcut → keys; fill_credential → field). scroll_into_view (WEB ONLY) scrolls a mark's element fully into view without clicking it — marks cover only what intersects the viewport, so this is how you reach an element clipped by the fold: scroll it to the centre, then read the re-probed marks in the returned observation. fill_credential types the session's staged credential into the FOCUSED field — focus it first (tap_mark), and start the session with credential_id or the step FAILS. Returns the same payload as observe_ui. Meta tools (read_screen, note_friction, mark_goal_done) are rejected.",
                  obj(["session_id": prop("string", "The session id (UUID)."),
                       "tool": prop("string", "The action tool name."),
-                      "id": prop("integer", "Set-of-Mark id (tool=tap_mark)."),
+                      "id": prop("integer", "Set-of-Mark id (tool=tap_mark or tool=scroll_into_view)."),
                       "x": prop("integer", "X coordinate (tap/double_tap/right_click/scroll)."),
                       "y": prop("integer", "Y coordinate (tap/double_tap/right_click/scroll)."),
                       "dx": prop("integer", "Horizontal scroll pixels (tool=scroll)."),

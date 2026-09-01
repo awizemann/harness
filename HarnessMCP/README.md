@@ -41,6 +41,7 @@ HarnessMCP/smoke-test.sh
 | `list_action_chains` / `create_action_chain` | Ordered multi-leg runs over Actions. |
 | `stage_credential` | Login for an Application (password → **Keychain only**). |
 | `list_credentials` | An Application's staged credentials: `credential_id` + label + username. **Never the password.** |
+| `delete_credential` | Remove a staged credential — the library row **and** its Keychain item. Deleting an id that names nothing is an error, not a quiet success. |
 | `start_run` | Start an autonomous run; returns a `run_id` immediately. |
 | `get_run_status` / `list_runs` | Poll live status / list recent runs. |
 | `get_run_result` / `get_step_screenshot` | Verdict + summary + cost; per-step PNG. |
@@ -57,7 +58,7 @@ required on this path** (`EnvKeychain` is untouched).
 | --- | --- |
 | `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected) and `credential_id` (a `stage_credential` id, all platforms — see [Staged credentials](#staged-credentials-credential_id--fill_credential)). Web also accepts `visible: true` (show the window for a human) and `session_state` (inject cookies / `localStorage`) — see [Authenticated apps](#authenticated-apps-session_state--visible). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
 | `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content + a text block with the `id → label (role)` mark table, point size, and session label — **plus `structuredContent`** carrying the same marks as machine-readable rects (see below). `clean: true` returns the unmarked frame. |
-| `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `fill_credential` (**all platforms**, arg `field`: `username`|`password`), `wait`), pass that tool's args at the top level, then auto-observe. Returns the same payload as `observe_ui`, `structuredContent` included. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
+| `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `scroll_into_view` (web), `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `fill_credential` (**all platforms**, arg `field`: `username`|`password`), `wait`), pass that tool's args at the top level, then auto-observe. Returns the same payload as `observe_ui`, `structuredContent` included. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
 | `end_ui_session` | Tear down the target. Idempotent — an unknown/closed id returns a calm `already closed`. |
 | `list_ui_sessions` | Open sessions: id, platform, label, created time, idle seconds. |
 | `export_ui_session_state` | **Web only.** The live session's cookies + current-origin `localStorage`, in exactly the shape `session_state` accepts. **The result is SENSITIVE** — see [Authenticated apps](#authenticated-apps-session_state--visible). |
@@ -80,7 +81,8 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
     { "id": 3, "label": "Your Email *", "role": "input", "label_source": "label",
       "rect": { "x": 40, "y": 180, "width": 264, "height": 41 } }
   ],
-  "page_text": "Harness UI Session Smoke Fixture\n\nFocus the field, type, …"
+  "page_text": "Harness UI Session Smoke Fixture\n\nFocus the field, type, …",
+  "frame_url": "https://app.example.com/dashboard?…"
 }
 ```
 
@@ -94,6 +96,30 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   behind an open modal (`<dialog>.showModal()` / `aria-modal="true"`) is left out. While a modal is
   open the table carries the modal's own contents plus anything stacked above it (toasts,
   popovers) — so a background button can no longer collide labels with the dialog's own.
+  **A modal the page never declared counts too.** A React confirm dialog is often just
+  `<div style="position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.5)">` around a card,
+  with no `role` and no `aria-modal` — and it blocks the page exactly as much as a declared one.
+  The probe treats such an overlay as modal when ALL of these hold: no declared modal exists (a
+  page that names its modal is always taken at its word); the element is `position: fixed` and
+  covers ≥90% of the viewport in both axes; it **dims** — its own or a full-viewport descendant's
+  `background-color` alpha is strictly between 0 and 1, in any CSS colour notation (`rgba()`,
+  `oklch(… / .5)`, `color-mix(in oklab, …)` — Tailwind v4 compiles `bg-black/50` to the last of
+  those); and it contains both a live control and a **content box** — a rendered descendant of at
+  least 40×40, no more than 75% of the viewport's area, with an opaque background, **centred in the
+  frame**, holding a live control of its own. The translucency clause is what keeps ordinary layout
+  out: an OPAQUE full-screen container needs no special handling, because the occlusion hit-test
+  already drops whatever it covers; a `backdrop-filter` alone does not count, being a decorative
+  treatment rather than a barrier. The centring clause is what separates a dialog from an
+  edge-pinned rail, cookie bar or hero CTA. "Live" means the control is not inside a
+  `pointer-events: none` subtree — the overlay ITSELF may be click-through, which is the React
+  portal shape (a full-viewport wrapper with a `pointer-events: auto` card) and precisely the one
+  that produced the bug: because the wrapper passes clicks, the occlusion test reached the page
+  behind it and every background control stayed marked.
+  Known limits, all of which degrade to "no modal recognised" rather than to a wrong one: an
+  overlay whose dimming lives on a **sibling** scrim (in practice Radix/shadcn set `aria-modal`,
+  so the declared path already covers it); a dim expressed as `opacity` over an opaque background,
+  or as a `background-image` gradient; and an overlay inside a shadow root or portalled outside
+  `<body>`.
 - **`label_source`** (web only) names WHERE each mark's `label` came from, so a client can prefer
   stable sources. The web probe resolves an accessible name in this order — and reports which step
   won: `aria-label` → `labelledby` (an `aria-labelledby` reference, resolved to its text) → `label`
@@ -105,7 +131,13 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   `data-testid`-family hook) → `name` (the `name` attribute) → `synthesized`.
   **A web mark's `label` is never the empty string**: a control nothing can name gets the explicit
   placeholder `unlabelled <role>` with `label_source: "synthesized"` — address it by position, and
-  treat it as a page-accessibility bug. (Before this chain, a dialog's close ✕ came back as
+  treat it as a page-accessibility bug. **And it is never ambiguous either.** A synthesized label
+  takes the nearest DELIBERATE name an ancestor carries — an `aria-label`, a `data-testid`, a
+  `title` on the row or toolbar the control sits in — as a parenthetical
+  (`unlabelled button (alanwizemann.com row)`), and any that still collide on the frame get their
+  1-based rank in reading order appended (`unlabelled button 2`). Both are pure functions of the
+  DOM, so an unchanged page yields the same strings run after run. `label_source` stays
+  `synthesized`: a discriminator makes a nameless control addressable, it does not make it named. (Before this chain, a dialog's close ✕ came back as
   `label: ""`, which no resolver can key on.)
   **`placeholder` and `value` are sample data** — they change whenever a designer edits the copy,
   so a resolver that wants a durable selector should treat them as weak and prefer the first three.
@@ -130,11 +162,30 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   signal that the app should set `.accessibilityLabel`.
 - **`page_text`** is the frame's visible text, whitespace-normalized and capped at **20 000**
   characters (a trailing `…` marks truncation). On **web** it is an `innerText` read of the
-  rendered document; on **macOS** it is the front frame's `AXStaticText` sweep, in reading order,
+  rendered document, **scoped by the same modal rule the marks are** — while a modal or overlay
+  dialog is open it is the dialog's text plus anything painting above it, never the dimmed page
+  behind. (Before this, a text assertion could pass on copy a dialog was covering.) On **macOS**
+  it is the front frame's `AXStaticText` sweep, in reading order,
   taken from the SAME scoped subtree the marks come from — so a sheet's `page_text` is the sheet's
   text, not the window behind it. **iOS omits the key entirely**, and so does any frame whose text
   sweep came back empty. An absent key means "not available", which is not the same claim as "the
   screen has no text".
+- **`frame_url`** (web only; the key is absent on iOS and macOS, which have no frame URL) is the
+  frame's current location, so a client can notice a navigation no tool call asked for — a tap that
+  redirects to an identity provider changes the origin silently, and this is where that shows up.
+  **It is redacted by construction:** scheme, host, port and path only. Userinfo, the query string
+  and the fragment are DROPPED — not truncated, since a prefix of a token is still token material —
+  and a trailing `?…` and/or `#…` reports only that they existed. The path IS kept whole (it is what
+  distinguishes `/dashboard` from `/login`), so treat a path as potentially identifying. A scheme
+  other than `http`/`https`/`file`/`about` collapses to `<scheme>:…`: a `data:` or `blob:` URL is a
+  document body, not a location.
+- **`scroll_into_view` and the viewport contract.** Marks cover only what intersects the viewport,
+  by design: a badge has to be drawable and `tap_mark` has to land somewhere real. `act_ui({ tool:
+  "scroll_into_view", id })` (web) is how you reach past that — it scrolls a mark's element to the
+  centre without clicking it, and the auto-observe that follows re-probes, so elements that were
+  below the fold come back as ordinary marks. Ids re-number on that observation like any other.
+  macOS and iOS reject the tool rather than pretend: AX exposes a scroll-to-visible action, but only
+  some views implement it, and a no-op reported as a scroll is worse than an honest refusal.
 - **macOS marks are scoped to the captured frame.** When a sheet, popover or menu is front, the
   frame IS that overlay, and only its controls are marked — every rect is reported in the captured
   frame's own coordinate space, so a callout drawn from a mark lands where the badge is. Controls

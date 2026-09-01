@@ -238,7 +238,12 @@ actor MacAppDriver: UXDriving {
             }
         case .tapMark(let id):
             try await dispatchMarkClick(id: id, info: info)
-        case .swipe, .pressButton, .navigate, .back, .forward, .refresh:
+        case .swipe, .pressButton, .navigate, .back, .forward, .refresh, .scrollIntoView:
+            // `scroll_into_view` is web-only for now: AX exposes
+            // `NSAccessibilityScrollToVisibleAction`, but only some views
+            // implement it, and a silent no-op that REPORTS a scroll is
+            // exactly the dishonesty this codebase refuses. macOS keeps
+            // coordinate `scroll` until that can be verified per-role.
             throw UXDriverError.unsupportedTool(name: call.tool.rawValue, platform: .macosApp)
         }
     }
@@ -271,7 +276,8 @@ actor MacAppDriver: UXDriving {
             minMs = 350
             maxMs = 2500
         case .type, .wait, .readScreen, .noteFriction, .markGoalDone,
-             .swipe, .pressButton, .navigate, .back, .forward, .refresh:
+             .swipe, .pressButton, .navigate, .back, .forward, .refresh,
+             .scrollIntoView:
             return
         }
         await awaitWindowStable(idleMs: idleMs, minMs: minMs, maxMs: maxMs)

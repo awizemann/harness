@@ -190,6 +190,12 @@ def main():
         check(isinstance(page_text, str) and "Fixture ready" in page_text,
               "page_text carries the window's visible prose")
 
+        # WB-17 — `frame_url` is a WEB concept. A macOS window has no
+        # location, and an absent key is the honest form of that; a null or
+        # an empty string would invite a client to compare origins here.
+        check("frame_url" not in sc,
+              "no frame_url on macOS — the key is absent, not null")
+
         # W24 — rects live in the reported frame's space.
         ps = sc.get("point_size", {})
         off = [m for m in all_marks

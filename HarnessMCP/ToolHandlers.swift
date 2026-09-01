@@ -44,6 +44,7 @@ extension MCPServer {
         case "create_action_chain":  return try await createActionChain(c, args)
         case "stage_credential":     return try await stageCredential(c, args)
         case "list_credentials":     return try await listCredentials(c, args)
+        case "delete_credential":    return try await deleteCredential(c, args)
         case "start_run":            return try await startRun(c, args)
         case "cancel_run":           return try await cancelRun(c, args)
         case "get_run_status":       return try await getRunStatus(c, args)
@@ -224,7 +225,10 @@ extension MCPServer {
         // Write the Keychain password FIRST: if it fails (e.g. an ACL prompt is
         // denied), bail before persisting the SwiftData row so we never leave an
         // orphan credential with no backing password. A leftover Keychain item
-        // with no row is inert and overwritten on the next stage of this id.
+        // with no row is inert — nothing in the product can name it — but it is
+        // not self-cleaning either (every stage mints a fresh id, so no later
+        // write reuses that account); `delete_credential` is the supported way
+        // to take one back out.
         // (EnvKeychain.write is a no-op, so use the real KeychainStore directly.)
         try KeychainStore().writePassword(password, applicationID: appID, credentialID: snap.id)
         try await c.history.upsertCredential(snap)
@@ -261,6 +265,50 @@ extension MCPServer {
             "credentials": arr,
             "count": arr.count
         ])
+    }
+
+    /// Remove a staged credential — the store row AND the Keychain item.
+    ///
+    /// **Ordering is the mirror of `stageCredential`'s, for the same
+    /// reason.** Staging writes the Keychain FIRST so a failure can never
+    /// leave a row with no password behind it; deletion removes the ROW
+    /// first, so a failure can never leave the opposite orphan either. The
+    /// two orphans are not equally bad: a row with no password is a
+    /// half-staged credential that fails a session at start, while a
+    /// Keychain item with no row is inert — nothing in the product can name
+    /// it. It is NOT self-healing, though: `stage_credential` mints a fresh
+    /// UUID every time, so no later stage will ever reuse that account and
+    /// overwrite it. That is why the failure path below prints the exact
+    /// service and account rather than shrugging — a human has to remove
+    /// it. Deletion still takes this side of the trade, because the other
+    /// orphan breaks a session and this one only wastes a keychain row.
+    ///
+    /// An unknown id is an ERROR. A caller deleting what it just staged
+    /// needs to learn that its id was wrong; a quiet success would let a
+    /// cleanup loop "succeed" forever while credentials accumulated.
+    private func deleteCredential(_ c: MCPContainer, _ args: MCPArguments) async throws -> MCPToolOutcome {
+        let id = try args.requireUUID("credential_id")
+        guard let cred = try await c.history.credential(id: id) else {
+            throw MCPToolError.notFound("Credential \(id.uuidString)")
+        }
+        try await c.history.deleteCredential(id: id)
+        // `EnvKeychain` is a no-op writer, so go to the real store — the
+        // same call `stage_credential` makes.
+        var keychainRemoved = true
+        var note = "Credential deleted: the library row and its Keychain password are both gone."
+        do {
+            try KeychainStore().deletePassword(applicationID: cred.applicationID, credentialID: cred.id)
+        } catch {
+            keychainRemoved = false
+            note = "The credential row is deleted, but its Keychain item could not be removed (\(error.localizedDescription)). The leftover item is INERT — nothing in Harness can name it any more — but nothing will clean it up either: remove it by hand with `security delete-generic-password -s \"\(KeychainStore.credentialsService)\" -a \"\(KeychainStore.credentialsAccount(applicationID: cred.applicationID, credentialID: cred.id))\"`."
+        }
+        return jsonText(["deleted": [
+            "credential_id": cred.id.uuidString,
+            "application_id": cred.applicationID.uuidString,
+            "label": cred.label,
+            "username": cred.username,
+            "keychain_item_removed": keychainRemoved
+        ], "note": note])
     }
 
     // MARK: - Run control

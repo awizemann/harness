@@ -214,6 +214,7 @@ enum ToolSchema {
         ToolKind.doubleTap.rawValue,
         ToolKind.rightClick.rawValue,
         ToolKind.scroll.rawValue,
+        ToolKind.scrollIntoView.rawValue,
         ToolKind.type.rawValue,
         ToolKind.fillCredential.rawValue,
         ToolKind.keyShortcut.rawValue,
@@ -269,6 +270,7 @@ enum ToolSchema {
             doubleTap(description: "Double-click the left mouse button at one point. (Same name as iOS double-tap; click on macOS / web.)"),
             rightClick(),
             scroll(),
+            scrollIntoView(),
             type(),
             fillCredential(),
             keyShortcut(),
@@ -377,6 +379,33 @@ enum ToolSchema {
             id whose label matches what you want to click. If the id you want isn't in the \
             CURRENT turn's marks, scroll until the target comes into view; the next screenshot's \
             marks will include it.
+            """,
+            jsonSchema: [
+                "type": "object",
+                "properties": [
+                    "id": ["type": "integer", "minimum": 1],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["id", "observation", "intent"]
+            ]
+        )
+    }
+
+    private static func scrollIntoView() -> CanonicalTool {
+        CanonicalTool(
+            name: "scroll_into_view",
+            description: """
+            Scroll the element behind a numbered Set-of-Mark badge until it is fully in view, \
+            then re-screenshot. Use it when a marked element is clipped by the fold, a sticky \
+            header or a footer bar, or when you need to reach content BELOW what the current \
+            screenshot shows: marks only cover elements that intersect the viewport, so \
+            scrolling a partially-visible one to the centre also brings its neighbours into \
+            the next screenshot's marks. \
+            \
+            Takes the same `id` as `tap_mark`, read from the CURRENT turn's marks — and like \
+            `tap_mark`, ids re-number on every screenshot, including the one this tool itself \
+            produces. It only moves the view; it never clicks.
             """,
             jsonSchema: [
                 "type": "object",

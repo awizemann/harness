@@ -630,6 +630,11 @@ enum ToolKind: String, Sendable, Hashable, Codable, CaseIterable {
     // V6 — Set-of-Mark click. Web today; iOS / macOS in a follow-up
     // (see wiki Roadmap "Set-of-Mark targeting on iOS + macOS").
     case tapMark        = "tap_mark"
+    // WB-17 — web-only. Bring a mark's element fully into view. The mark
+    // table is viewport-intersecting by contract (a badge has to be
+    // drawable and a click has to land), so this is how an agent reaches
+    // what the fold clipped: scroll, then read the re-probed marks.
+    case scrollIntoView = "scroll_into_view"
 }
 
 /// Tagged-union payload for any tool. Field names match `https://github.com/awizemann/harness/wiki/Tool-Schema`.
@@ -679,6 +684,11 @@ enum ToolInput: Sendable, Hashable, Codable {
     /// and dispatches the same click + focus path as `tap`. Eliminates
     /// the off-by-a-few-pixels misses of coordinate-only targeting.
     case tapMark(id: Int)
+    /// WB-17: Scroll the element behind a Set-of-Mark id into view. Web
+    /// only — the driver resolves the id against the element list the
+    /// last probe parked, so an id from a frame that has since navigated
+    /// fails rather than scrolling to something else.
+    case scrollIntoView(id: Int)
 }
 
 /// Which slot of a stored credential `fill_credential` should type.

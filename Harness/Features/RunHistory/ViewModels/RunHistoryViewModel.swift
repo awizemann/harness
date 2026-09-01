@@ -259,6 +259,8 @@ final class RunHistoryViewModel {
             input = .fillCredential(field: CredentialField(rawValue: raw) ?? .username)
         case .tapMark:
             input = .tapMark(id: (dict["id"] as? Int) ?? 0)
+        case .scrollIntoView:
+            input = .scrollIntoView(id: (dict["id"] as? Int) ?? 0)
         }
         return ToolCall(
             tool: kind,

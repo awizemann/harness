@@ -41,16 +41,7 @@ private enum ProbeRunner {
     /// shipped probe makes of it.
     @MainActor
     static func run(_ html: String) async throws -> [ProbedMark] {
-        let config = WKWebViewConfiguration()
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700),
-                                configuration: config)
-        let delegate = LoadWaiter()
-        webView.navigationDelegate = delegate
-        webView.loadHTMLString(html, baseURL: URL(string: "https://harness.test/"))
-        try await delegate.wait()
-        // One turn of the runloop so layout/style resolution has happened
-        // before the probe hit-tests anything.
-        try await Task.sleep(nanoseconds: 120_000_000)
+        let (webView, _) = try await load(html)
         let value = try await webView.evaluateJavaScript(WebMarkProbe.js)
         let array = (value as? [[String: Any]]) ?? []
         return array.map { dict in
@@ -62,6 +53,46 @@ private enum ProbeRunner {
                 y: (dict["y"] as? Double) ?? Double((dict["y"] as? Int) ?? 0)
             )
         }
+    }
+
+    /// Load `html` into an offscreen 900×700 WKWebView, settled enough for
+    /// layout and hit-testing to be meaningful.
+    @MainActor
+    private static func load(_ html: String) async throws -> (WKWebView, LoadWaiter) {
+        let config = WKWebViewConfiguration()
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 900, height: 700),
+                                configuration: config)
+        let delegate = LoadWaiter()
+        webView.navigationDelegate = delegate
+        webView.loadHTMLString(html, baseURL: URL(string: "https://harness.test/"))
+        try await delegate.wait()
+        // One turn of the runloop so layout/style resolution has happened
+        // before the probe hit-tests anything.
+        try await Task.sleep(nanoseconds: 120_000_000)
+        return (webView, delegate)
+    }
+
+    /// Load `html` and return what the shipped PAGE-TEXT probe makes of
+    /// it — the same source `WebDriver.probeVisibleText` evaluates.
+    @MainActor
+    static func pageText(_ html: String) async throws -> String {
+        let (webView, _) = try await load(html)
+        let value = try await webView.evaluateJavaScript(WebMarkProbe.pageTextJS)
+        return (value as? String) ?? ""
+    }
+
+    /// Load `html`, run the mark probe, and report how many elements it
+    /// parked on `window.__harnessMarkElements` beside the marks it
+    /// returned — the registry `scroll_into_view(id)` resolves against.
+    @MainActor
+    static func registryCount(_ html: String) async throws -> (marks: Int, registry: Int) {
+        let (webView, _) = try await load(html)
+        let value = try await webView.evaluateJavaScript(WebMarkProbe.js)
+        let marks = ((value as? [[String: Any]]) ?? []).count
+        let count = try await webView.evaluateJavaScript(
+            "(() => (window['\(WebMarkProbe.elementRegistryKey)'] || []).length)();"
+        )
+        return (marks, (count as? Int) ?? -1)
     }
 
     /// `loadHTMLString` completion, as an awaitable. WebKit's own
@@ -490,5 +521,527 @@ struct WebMarkProbeSecretFieldTests {
         </body></html>
         """)
         #expect(marks.first(labelled: "Berlin")?.source == "value")
+    }
+}
+
+// MARK: - W31b: modals nobody declared
+
+/// The drop-help re-shakedown found the W14 filter half-effective: the
+/// "Add New Site" dialog carried `aria-modal`, so its background was
+/// filtered — while the DELETE-CONFIRM dialog, a plain portal of
+/// `<div class="fixed inset-0 z-50 bg-black/50 …">` around a card, carried
+/// no dialog semantics at all and kept every background mark.
+///
+/// These fixtures are deliberately SEMANTICS-FREE — no `role`, no
+/// `aria-modal`, no `<dialog>` — because that is the shape that escaped.
+/// Half of them assert the heuristic FIRES and half assert it does NOT:
+/// a rule that swallows ordinary page content is worse than the bug it
+/// fixes, since a dropped control is unaddressable.
+private let confirmDialogPage = """
+<!doctype html><html><body style="margin:0">
+<h1>Dashboard</h1>
+<button id="bg-add">Add Site</button>
+<button id="bg-refresh">Refresh</button>
+<p>Background copy nobody can read right now.</p>
+<div id="overlay" style="position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.5)">
+  <div style="position:absolute;top:180px;left:250px;width:400px;height:220px;background:#ffffff">
+    <h2>Delete this site?</h2>
+    <p>This cannot be undone.</p>
+    <button id="confirm">Delete</button>
+    <button id="cancel">Cancel</button>
+  </div>
+</div>
+</body></html>
+"""
+
+@Suite("Web mark probe — undeclared modals (W31b)", .serialized)
+struct WebMarkProbeOverlayModalTests {
+
+    @Test("a semantics-free confirm dialog filters the page behind it")
+    @MainActor
+    func confirmDialogFiltersBackground() async throws {
+        let marks = try await ProbeRunner.run(confirmDialogPage)
+        #expect(marks.first(labelled: "Delete") != nil)
+        #expect(marks.first(labelled: "Cancel") != nil)
+        #expect(marks.first(labelled: "Add Site") == nil)
+        #expect(marks.first(labelled: "Refresh") == nil)
+    }
+
+    @Test("an OPAQUE full-screen shell is not a modal — its content is not swallowed")
+    @MainActor
+    func opaqueShellIsNotAModal() async throws {
+        // The obvious false positive: an app shell pinned to the viewport
+        // with a lifted z-index and a card inside it. It is opaque, so it
+        // is not a scrim — and nothing behind it needs filtering, because
+        // the occlusion hit-test already covers that case.
+        let page = """
+        <!doctype html><html><body style="margin:0">
+        <div id="shell" style="position:fixed;inset:0;z-index:10;background:#ffffff">
+          <h1>Dashboard</h1>
+          <div style="position:absolute;top:40px;left:40px;width:300px;height:150px;background:#eeeeee">
+            <button id="add">Add Site</button>
+            <button id="refresh">Refresh</button>
+          </div>
+        </div>
+        <footer>Footer note</footer>
+        </body></html>
+        """
+        let marks = try await ProbeRunner.run(page)
+        #expect(marks.first(labelled: "Add Site") != nil)
+        #expect(marks.first(labelled: "Refresh") != nil)
+        // The tell that the heuristic did NOT fire: page text is still the
+        // whole document, not one subtree's.
+        let text = try await ProbeRunner.pageText(page)
+        #expect(text.contains("Footer note"))
+    }
+
+    @Test("a decorative translucent veil that blocks nothing is not a modal")
+    @MainActor
+    func decorativeVeilIsNotAModal() async throws {
+        // Translucent and full-viewport, but `pointer-events: none` — it
+        // is scenery, and the page under it is genuinely usable.
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <button id="add">Add Site</button>
+        <button id="refresh">Refresh</button>
+        <div style="position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.25);pointer-events:none">
+          <div style="position:absolute;top:100px;left:100px;width:300px;height:200px;background:#fff">
+            <button>Decoration</button>
+          </div>
+        </div>
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Add Site") != nil)
+        #expect(marks.first(labelled: "Refresh") != nil)
+        // The veil's own "control" inherits `pointer-events: none`, so it
+        // is scenery in both directions: not a live control, not marked.
+        #expect(marks.first(labelled: "Decoration") == nil)
+    }
+
+    @Test("the portal shape that CAUSED the bug: a click-through wrapper with a live card")
+    @MainActor
+    func clickThroughPortalWrapperIsAModal() async throws {
+        // Radix / Headless UI render a dialog as a full-viewport wrapper
+        // that lets clicks through (`pointer-events: none`) with a
+        // `pointer-events: auto` card inside. Because the wrapper passes
+        // clicks, the occlusion hit-test REACHES the page behind it — which
+        // is precisely why drop-help's delete-confirm kept its background
+        // marks while its aria-modal "Add New Site" dialog did not.
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        \(dashboardBackground)
+        <p>Background copy nobody can read right now.</p>
+        <div style="position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.5);pointer-events:none">
+          <div style="position:absolute;top:180px;left:250px;width:400px;height:220px;background:#fff;pointer-events:auto">
+            <h2>Delete this site?</h2>
+            <button>Delete site</button>
+            <button>Keep site</button>
+          </div>
+        </div>
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Delete site") != nil)
+        #expect(marks.first(labelled: "Keep site") != nil)
+        #expect(marks.first(labelled: "Add Site") == nil)
+        #expect(marks.first(labelled: "Refresh") == nil)
+    }
+
+    @Test("a full-viewport busy-veil with no dialog card in it is not a modal")
+    @MainActor
+    func scrimWithoutContentBoxIsNotAModal() async throws {
+        // A translucent, pointer-blocking veil — but with a bare inline
+        // link and NO card. Nothing here is a dialog, and treating it as
+        // one would throw away the whole page's text: `page_text` is where
+        // this clause actually bites, since a full-viewport veil already
+        // occludes the background out of the mark table either way.
+        let page = """
+        <!doctype html><html><body style="margin:0">
+        <h1>Dashboard</h1>
+        <p>Sites you have not published yet appear here.</p>
+        <button id="add" style="position:relative;z-index:60">Add Site</button>
+        <div style="position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.25)">
+          <a href="/cancel">Cancel loading</a>
+        </div>
+        </body></html>
+        """
+        let text = try await ProbeRunner.pageText(page)
+        #expect(text.contains("Sites you have not published yet appear here."),
+                "a tinted page is not a dialog; its text must survive")
+        let marks = try await ProbeRunner.run(page)
+        #expect(marks.first(labelled: "Add Site") != nil)
+    }
+
+    @Test("a toast and a sticky header are still not modals")
+    @MainActor
+    func toastAndStickyHeaderAreNotModals() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <button id="add" style="position:absolute;top:200px;left:20px">Add Site</button>
+        <div style="position:fixed;top:0;left:0;right:0;height:56px;z-index:30;background:rgba(255,255,255,.8)">
+          <button id="nav">Menu</button>
+        </div>
+        <div style="position:fixed;bottom:16px;right:16px;z-index:90;background:rgba(20,20,20,.9)">
+          <button id="undo">Undo</button>
+        </div>
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Add Site") != nil)
+        #expect(marks.first(labelled: "Menu") != nil)
+        #expect(marks.first(labelled: "Undo") != nil)
+    }
+
+    @Test("a page that DECLARES its modal is still taken at its word")
+    @MainActor
+    func declaredModalWinsOverTheHeuristic() async throws {
+        // An overlay-shaped wrapper enclosing BOTH the declared dialog and
+        // the page. The heuristic must never get a vote here: picking the
+        // wrapper would make the background part of "the modal" and undo
+        // the W14 fix.
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <div style="position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.5)">
+          \(dashboardBackground)
+          <div role="dialog" aria-modal="true"
+               style="position:absolute;top:120px;left:120px;width:400px;height:300px;background:#fff">
+            <button id="modal-add">Add Site</button>
+          </div>
+        </div>
+        </body></html>
+        """)
+        #expect(marks.count(labelled: "Add Site") == 1)
+        #expect(marks.first(labelled: "Refresh") == nil)
+    }
+}
+
+// MARK: - W31a: page_text follows the same overlay rule
+
+@Suite("Web mark probe — page_text scoping (W31a)", .serialized)
+struct WebMarkProbePageTextTests {
+
+    @Test("with no modal, page_text is the whole document")
+    @MainActor
+    func ordinaryPageText() async throws {
+        let text = try await ProbeRunner.pageText("""
+        <!doctype html><html><body style="margin:0">
+        <h1>Dashboard</h1><p>Sites you have not published yet appear here.</p>
+        <button>Add Site</button>
+        </body></html>
+        """)
+        #expect(text.contains("Dashboard"))
+        #expect(text.contains("Sites you have not published yet appear here."))
+    }
+
+    @Test("a declared modal scopes page_text to the dialog")
+    @MainActor
+    func declaredModalScopesText() async throws {
+        // The W31 bug in one assertion: `expect{text_visible: "Background
+        // copy"}` used to pass while a dialog covered it.
+        let text = try await ProbeRunner.pageText("""
+        <!doctype html><html><body style="margin:0">
+        <h1>Dashboard</h1><p>Background copy nobody can read right now.</p>
+        <div role="dialog" aria-modal="true"
+             style="position:fixed;top:100px;left:100px;width:400px;height:300px;background:#fff">
+          <h2>New site</h2><p>Name your site to continue.</p>
+        </div>
+        </body></html>
+        """)
+        #expect(text.contains("Name your site to continue."))
+        #expect(!text.contains("Background copy nobody can read right now."))
+        #expect(!text.contains("Dashboard"))
+    }
+
+    @Test("an undeclared confirm dialog scopes page_text too")
+    @MainActor
+    func overlayModalScopesText() async throws {
+        let text = try await ProbeRunner.pageText(confirmDialogPage)
+        #expect(text.contains("Delete this site?"))
+        #expect(text.contains("This cannot be undone."))
+        #expect(!text.contains("Background copy nobody can read right now."))
+    }
+
+    @Test("text painting ABOVE the modal is kept, exactly as its marks are")
+    @MainActor
+    func toastTextSurvives() async throws {
+        let text = try await ProbeRunner.pageText("""
+        <!doctype html><html><body style="margin:0">
+        <h1>Dashboard</h1><p>Background copy.</p>
+        <div role="dialog" aria-modal="true"
+             style="position:fixed;top:100px;left:100px;width:400px;height:300px;z-index:10;background:#fff">
+          <p>Dialog copy.</p>
+        </div>
+        <div style="position:fixed;top:8px;left:8px;z-index:99;background:#333">
+          <p>Site deleted.</p>
+        </div>
+        </body></html>
+        """)
+        #expect(text.contains("Dialog copy."))
+        #expect(text.contains("Site deleted."))
+        #expect(!text.contains("Background copy."))
+    }
+}
+
+// MARK: - W15: telling two nameless controls apart
+
+@Suite("Web mark probe — synthesized label discriminators (W15)", .serialized)
+struct WebMarkProbeSynthesizedDiscriminatorTests {
+
+    @Test("two nameless controls of the same role get distinct labels")
+    @MainActor
+    func namelessControlsDoNotCollide() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <button style="position:absolute;top:10px;left:10px;width:28px;height:28px"></button>
+        <button style="position:absolute;top:80px;left:10px;width:28px;height:28px"></button>
+        <button style="position:absolute;top:150px;left:10px;width:28px;height:28px"></button>
+        </body></html>
+        """)
+        let synthesized = marks.filter { $0.source == "synthesized" }
+        #expect(synthesized.count == 3)
+        #expect(Set(synthesized.map(\.label)).count == 3, "two unlabelled buttons must not answer to one string")
+        // The discriminator is the position in READING ORDER, so it reads
+        // the way the table does.
+        #expect(synthesized.map(\.label) == ["unlabelled button 1",
+                                             "unlabelled button 2",
+                                             "unlabelled button 3"])
+    }
+
+    @Test("a lone nameless control keeps the plain placeholder")
+    @MainActor
+    func loneNamelessControlIsNotNumbered() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <button style="width:28px;height:28px"></button>
+        <button>Save</button>
+        </body></html>
+        """)
+        #expect(marks.first { $0.source == "synthesized" }?.label == "unlabelled button")
+    }
+
+    @Test("a deliberate name on an ancestor becomes the discriminator")
+    @MainActor
+    func ancestorContextNamesTheControl() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <div aria-label="alanwizemann.com row">
+          <button style="width:28px;height:28px"></button>
+        </div>
+        <div data-testid="second-site-row">
+          <button style="width:28px;height:28px"></button>
+        </div>
+        </body></html>
+        """)
+        let synthesized = marks.filter { $0.source == "synthesized" }
+        #expect(synthesized.count == 2)
+        #expect(synthesized.contains { $0.label == "unlabelled button (alanwizemann.com row)" })
+        #expect(synthesized.contains { $0.label == "unlabelled button (second-site-row)" })
+    }
+
+    @Test("the discriminator never upgrades the provenance")
+    @MainActor
+    func provenanceStaysSynthesized() async throws {
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <div aria-label="Toolbar">
+          <button style="width:28px;height:28px"></button>
+          <button style="width:28px;height:28px"></button>
+        </div>
+        </body></html>
+        """)
+        let synthesized = marks.filter { $0.label.hasPrefix(WebMarkProbe.synthesizedLabelPrefix) }
+        #expect(synthesized.count == 2)
+        #expect(synthesized.allSatisfy { $0.source == "synthesized" })
+        // Same context AND same role: the ordinal is what separates them.
+        #expect(Set(synthesized.map(\.label)).count == 2)
+    }
+
+    @Test("the same page produces the same labels twice — ids and names are stable")
+    @MainActor
+    func discriminatorIsDeterministic() async throws {
+        let page = """
+        <!doctype html><html><body style="margin:0">
+        <div aria-label="Row A"><button style="width:28px;height:28px"></button></div>
+        <button style="width:28px;height:28px"></button>
+        <button style="width:28px;height:28px"></button>
+        </body></html>
+        """
+        let first = try await ProbeRunner.run(page).labels()
+        let second = try await ProbeRunner.run(page).labels()
+        #expect(first == second)
+    }
+}
+
+// MARK: - scroll_into_view's element registry
+
+@Suite("Web mark probe — element registry", .serialized)
+struct WebMarkProbeRegistryTests {
+
+    @Test("the parked element list matches the returned marks one-for-one")
+    @MainActor
+    func registryMatchesMarks() async throws {
+        let (marks, registry) = try await ProbeRunner.registryCount("""
+        <!doctype html><html><body style="margin:0">
+        <a href="/pricing">Pricing</a>
+        <button>Sign in</button>
+        <input aria-label="Email">
+        <div inert><button>Never marked</button></div>
+        </body></html>
+        """)
+        #expect(marks == 3)
+        #expect(registry == marks, "scroll_into_view(id) resolves id → registry[id - 1]; the two must not drift")
+    }
+}
+
+// MARK: - W31b: the shapes an audit said no fixture reached
+
+/// Every fixture above writes its scrim as a literal `rgba()` with an
+/// explicit positive `z-index` and a handful of nodes — which is to say,
+/// none of them would have caught the ways this rule can quietly stop
+/// working on a real page. These do.
+@Suite("Web mark probe — undeclared modals, the awkward cases", .serialized)
+struct WebMarkProbeOverlayModalEdgeTests {
+
+    @Test("a scrim written in a CSS Color 4 space is still a scrim",
+          arguments: ["color-mix(in oklab, #000 50%, transparent)",
+                      "oklch(0 0 0 / 0.5)",
+                      "color(srgb 0 0 0 / 0.5)",
+                      "rgb(0 0 0 / 50%)"])
+    @MainActor
+    func modernColorNotationsDim(_ background: String) async throws {
+        // Tailwind v4 compiles `bg-black/50` — the exact class in the rule's
+        // own design note — to `color-mix(in oklab, …)`. A dimming test that
+        // only understood `rgba()` would read every one of these as fully
+        // transparent and turn the whole rule off on the stack that
+        // motivated it, with no test the wiser.
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        \(dashboardBackground)
+        <div style="position:fixed;inset:0;z-index:50;background:\(background);pointer-events:none">
+          <div style="position:absolute;top:180px;left:250px;width:400px;height:220px;background:#fff;pointer-events:auto">
+            <button>Delete site</button>
+          </div>
+        </div>
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Delete site") != nil,
+                "the dialog's own control must survive for \(background)")
+        #expect(marks.first(labelled: "Add Site") == nil,
+                "\(background) is a scrim; the page behind it is not actionable")
+    }
+
+    @Test("a hand-rolled modal with no z-index at all is still a modal")
+    @MainActor
+    func zIndexAutoOverlayIsAModal() async throws {
+        // `position: fixed; inset: 0; background: rgba(0,0,0,.5)` stacked by
+        // document order alone — the plainest modal in the wild, and one an
+        // earlier draft of this rule rejected for not lifting itself.
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        \(dashboardBackground)
+        <div style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5)">
+          <div style="position:absolute;top:200px;left:250px;width:400px;height:200px;background:#fff">
+            <button>Delete site</button>
+          </div>
+        </div>
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Delete site") != nil)
+        #expect(marks.first(labelled: "Add Site") == nil)
+    }
+
+    @Test("a decorative backdrop-filter layer is not a modal")
+    @MainActor
+    func backdropFilterAloneIsNotAModal() async throws {
+        // Glassmorphism: a full-viewport blur behind a scrolling article,
+        // with a fixed table-of-contents card in it. It blurs; it does not
+        // block. Treating it as a modal would delete the article.
+        let page = """
+        <!doctype html><html><body style="margin:0">
+        <h1>An article</h1>
+        <p>Sites you have not published yet appear here.</p>
+        <div style="position:fixed;inset:0;z-index:1;backdrop-filter:blur(12px);pointer-events:none">
+          <div style="position:absolute;top:220px;left:340px;width:220px;height:260px;background:#fff;pointer-events:auto">
+            <a href="/section-1">Section one</a>
+          </div>
+        </div>
+        </body></html>
+        """
+        let text = try await ProbeRunner.pageText(page)
+        #expect(text.contains("Sites you have not published yet appear here."))
+        #expect(text.contains("An article"))
+    }
+
+    @Test("an edge-pinned card in a tinted layer is not a dialog")
+    @MainActor
+    func edgePinnedCardIsNotADialog() async throws {
+        // Same translucent full-viewport shape, but the card is a rail down
+        // the left edge — a table of contents, a cookie bar, a hero CTA.
+        // A dialog sits in the middle of the frame; these do not.
+        let page = """
+        <!doctype html><html><body style="margin:0">
+        <h1>An article</h1>
+        <p>Sites you have not published yet appear here.</p>
+        <div style="position:fixed;inset:0;z-index:5;background:rgba(0,0,0,.3);pointer-events:none">
+          <div style="position:absolute;top:8px;left:4px;width:140px;height:600px;background:#fff;pointer-events:auto">
+            <a href="/section-1">Section one</a>
+          </div>
+        </div>
+        </body></html>
+        """
+        let text = try await ProbeRunner.pageText(page)
+        #expect(text.contains("Sites you have not published yet appear here."))
+    }
+
+    @Test("a portal at the end of a large document is still found")
+    @MainActor
+    func largeDocumentDoesNotExhaustTheScan() async throws {
+        // React portals mount at the END of <body>. A scan budget that
+        // counted every node would run out partway through a long table and
+        // never reach the dialog — turning the rule off on exactly the pages
+        // where a wrong page_text costs the most.
+        let filler = (0..<4000).map { "<span>row \($0)</span>" }.joined()
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        \(dashboardBackground)
+        <div style="height:40px;overflow:hidden">\(filler)</div>
+        <div style="position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.5);pointer-events:none">
+          <div style="position:absolute;top:180px;left:250px;width:400px;height:220px;background:#fff;pointer-events:auto">
+            <button>Delete site</button>
+          </div>
+        </div>
+        </body></html>
+        """)
+        #expect(marks.first(labelled: "Delete site") != nil)
+        #expect(marks.first(labelled: "Add Site") == nil,
+                "the portal is the LAST thing in the document; the scan has to reach it")
+    }
+}
+
+// MARK: - W15: the discriminator and the length cap
+
+@Suite("Web mark probe — synthesized labels stay within the cap", .serialized)
+struct WebMarkProbeSynthesizedCapTests {
+
+    @Test("an ordinal never lands after a truncating ellipsis")
+    @MainActor
+    func ordinalAppliedBeforeTheCap() async throws {
+        let context = String(repeating: "long-row-context-", count: 8)
+        let marks = try await ProbeRunner.run("""
+        <!doctype html><html><body style="margin:0">
+        <div aria-label="\(context)">
+          <button style="width:28px;height:28px"></button>
+          <button style="width:28px;height:28px"></button>
+        </div>
+        </body></html>
+        """)
+        let synthesized = marks.filter { $0.source == "synthesized" }
+        #expect(synthesized.count == 2)
+        #expect(Set(synthesized.map(\.label)).count == 2)
+        for mark in synthesized {
+            #expect(mark.label.count <= 80, "label ran past the cap: \(mark.label)")
+            #expect(!mark.label.hasSuffix("…") || mark.label.count <= 80)
+            // The ordinal is what disambiguates; it must not be the thing
+            // truncation eats.
+            #expect(mark.label.last?.isNumber == true, "the ordinal was truncated away: \(mark.label)")
+        }
     }
 }

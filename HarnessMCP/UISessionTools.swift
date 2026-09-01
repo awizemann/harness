@@ -216,6 +216,12 @@ extension MCPServer {
         var lines: [String] = []
         lines.append("Session: \(obs.displayLabel) (\(sessionPlatformName(obs.platform)))  ·  id \(obs.sessionID.uuidString)")
         lines.append("Point size: \(Int(obs.pointSize.width))×\(Int(obs.pointSize.height))  ·  image: \(obs.imageIsMarked ? "marked" : "clean")  ·  step \(obs.stepIndex) → \(obs.screenshotRef)")
+        // Web only, and already redacted to scheme/host/port/path by the
+        // driver — so a redirect the agent did not ask for is visible in the
+        // text block too, not only in `structuredContent`.
+        if let url = obs.frameURL, !url.isEmpty {
+            lines.append("URL: \(url)")
+        }
         if let detail = obs.lastExecutionDetail, !detail.isEmpty {
             lines.append("Last action: \(detail)")
         }

@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>scroll_into_view fixture</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, system-ui, sans-serif; }
+    button { font-size: 15px; }
+  </style>
+</head>
+<body>
+  <!--
+    WB-17 (W7/W34) fixture for the `scroll_into_view` act.
+
+    The mark table is viewport-intersecting by contract, which is exactly
+    the limitation being closed. At a 1280×800 viewport:
+
+      * "Load more" sits at y=760 — it INTERSECTS the viewport, so the
+        probe marks it, but only its top 40px are visible.
+      * "Deep action" sits at y=1100 — entirely below the fold, so it is
+        NOT marked and no id addresses it.
+
+    `scroll_into_view` on "Load more" centres it (~scrollY 390), which
+    brings "Deep action" into the viewport. The auto-observe that follows
+    re-probes, so the smoke can assert the previously-unreachable control
+    is now an ordinary mark.
+  -->
+  <h1 id="heading">Scroll fixture</h1>
+  <p>Everything interesting on this page is below the fold on purpose.</p>
+  <button id="load-more" style="position:absolute;top:760px;left:24px;width:180px;height:60px">Load more</button>
+  <button id="deep" style="position:absolute;top:1100px;left:24px;width:180px;height:44px">Deep action</button>
+  <div style="height:2200px"></div>
+</body>
+</html>

@@ -38,7 +38,7 @@ extension PreviewToolKind {
         switch kind {
         case .tap, .doubleTap, .rightClick, .tapMark: self = .tap
         case .type, .fillCredential:        self = .type
-        case .swipe, .scroll:                self = .swipe
+        case .swipe, .scroll, .scrollIntoView: self = .swipe
         case .wait, .readScreen:             self = .wait
         case .pressButton, .keyShortcut, .noteFriction, .markGoalDone,
              .navigate, .back, .forward, .refresh:
@@ -102,6 +102,8 @@ extension PreviewToolCall {
             return field.rawValue
         case .tapMark(let id):
             return "#\(id)"
+        case .scrollIntoView(let id):
+            return "#\(id)↕"
         }
     }
 }

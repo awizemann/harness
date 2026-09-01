@@ -106,6 +106,8 @@ enum LLMShared {
             payload = .fillCredential(field: field)
         case .tapMark:
             payload = .tapMark(id: intValue(input["id"]) ?? 0)
+        case .scrollIntoView:
+            payload = .scrollIntoView(id: intValue(input["id"]) ?? 0)
         }
 
         return ToolCall(tool: kind, input: payload, observation: observation, intent: intent)

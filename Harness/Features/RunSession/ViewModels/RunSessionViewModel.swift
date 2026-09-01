@@ -157,6 +157,8 @@ final class RunSessionViewModel {
                 return "Fill credential (\(field.rawValue))"
             case .tapMark(let id):
                 return "Tap mark \(id)"
+            case .scrollIntoView(let id):
+                return "Scroll mark \(id) into view"
             }
         }
     }

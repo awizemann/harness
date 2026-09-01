@@ -34,6 +34,7 @@ private enum PayloadTestSupport {
         marks: [InteractiveMark],
         pointSize: CGSize = CGSize(width: 1280, height: 800),
         pageText: String? = nil,
+        frameURL: String? = nil,
         markTable: String? = nil,
         step: Int = 1,
         sessionID: UUID = UUID()
@@ -49,6 +50,7 @@ private enum PayloadTestSupport {
             markCount: marks.count,
             marks: marks,
             pageText: pageText,
+            frameURL: frameURL,
             stepIndex: step,
             screenshotRef: String(format: "steps/%03d.png", step),
             lastExecutionDetail: nil,
@@ -180,6 +182,23 @@ struct UIObservationPayloadPageTextTests {
         #expect(json["page_text"] as? String == "Welcome\nSign in")
     }
 
+    @Test("frame_url rides alongside page_text when the driver supplied it")
+    func frameURLIncluded() throws {
+        let obs = PayloadTestSupport.observation(
+            marks: [], pageText: "Dashboard", frameURL: "https://app.example.com/dashboard?…"
+        )
+        let json = try PayloadTestSupport.roundTrip(UIObservationPayload.structuredContent(obs))
+        #expect(json["frame_url"] as? String == "https://app.example.com/dashboard?…")
+    }
+
+    @Test("frame_url is OMITTED, not null, on a platform that has no frame URL")
+    func frameURLOmitted() throws {
+        let json = try PayloadTestSupport.roundTrip(
+            UIObservationPayload.structuredContent(PayloadTestSupport.observation(marks: []))
+        )
+        #expect(json.keys.contains("frame_url") == false)
+    }
+
     @Test("page_text is OMITTED, not null, when the platform has no text roll-up")
     func pageTextOmitted() throws {
         // iOS / macOS sessions land here. Absent means "we didn't look",
@@ -272,6 +291,15 @@ struct UIObservationPayloadSchemaTests {
         #expect(properties["page_text"] != nil)
         let required = try #require(schema["required"] as? [String])
         #expect(!required.contains("page_text"))
+    }
+
+    @Test("frame_url is described but NOT required — only web has one")
+    func frameURLOptionalInSchema() throws {
+        let schema = UIObservationPayload.outputSchema()
+        let properties = try #require(schema["properties"] as? [String: Any])
+        #expect(properties["frame_url"] != nil)
+        let required = try #require(schema["required"] as? [String])
+        #expect(!required.contains("frame_url"))
     }
 
     @Test("every key the encoder emits is described in the schema")

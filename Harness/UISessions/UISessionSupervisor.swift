@@ -492,6 +492,7 @@ actor UISessionSupervisor {
             markCount: markCount,
             marks: marks,
             pageText: metadata.pageText,
+            frameURL: metadata.frameURL,
             stepIndex: n,
             screenshotRef: ref,
             lastExecutionDetail: executed != nil ? lastDetail : nil,

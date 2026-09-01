@@ -40,7 +40,8 @@ enum UIObservationPayload {
     ///     { "id": 1, "label": "Sign in", "role": "a", "label_source": "text",
     ///       "rect": { "x": 24, "y": 16, "width": 72, "height": 32 } }
     ///   ],
-    ///   "page_text": "…"          // web only; omitted elsewhere
+    ///   "page_text": "…",         // web only; omitted elsewhere
+    ///   "frame_url": "https://app.example.com/dashboard?…"   // web only
     /// }
     /// ```
     ///
@@ -68,6 +69,11 @@ enum UIObservationPayload {
         // an absent key is the honest one for the former.
         if let text = obs.pageText, !text.isEmpty {
             payload["page_text"] = text
+        }
+        // Same rule for the frame's URL: present on web, absent (not null)
+        // on iOS / macOS, which have no such thing.
+        if let url = obs.frameURL, !url.isEmpty {
+            payload["frame_url"] = url
         }
         return payload
     }
@@ -169,7 +175,11 @@ enum UIObservationPayload {
                 ],
                 "page_text": [
                     "type": "string",
-                    "description": "Visible text of the frame, whitespace-normalized and capped at 20000 characters (a trailing … marks truncation). Web sessions (the rendered document's text) and macOS sessions (the front window/sheet/popover's static text, in reading order — scoped to the SAME frame the marks came from). Omitted on iOS, which has no cheap text roll-up."
+                    "description": "Visible text of the frame, whitespace-normalized and capped at 20000 characters (a trailing … marks truncation). Web sessions (the rendered document's text) and macOS sessions (the front window/sheet/popover's static text, in reading order — scoped to the SAME frame the marks came from). Omitted on iOS, which has no cheap text roll-up. WEB: scoped by the same modal rule the marks are — while a modal/overlay dialog is open this is the DIALOG's text (plus anything painting above it), not the dimmed page behind it, so a text assertion cannot pass on copy the user cannot see."
+                ],
+                "frame_url": [
+                    "type": "string",
+                    "description": "The frame's current location. WEB SESSIONS ONLY — omitted on iOS and macOS, which have no frame URL. REDACTED BY CONSTRUCTION: scheme, host, port and path only. Userinfo, the query string and the fragment are DROPPED, never truncated, because that is where magic-link tokens, OAuth code/state and session ids ride; a trailing \"?…\" and/or \"#…\" marks that a query and/or fragment existed. The path IS kept whole (it is what tells /dashboard from /login), so treat a path as potentially identifying. Non-http(s)/file/about schemes collapse to \"<scheme>:…\". Read it to notice a navigation no tool call asked for — a tap that redirects to an identity provider changes the origin silently, and this is the only place that shows up."
                 ]
             ],
             "required": ["session_id", "step", "point_size", "marks"]

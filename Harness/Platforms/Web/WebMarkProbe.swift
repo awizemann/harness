@@ -19,9 +19,17 @@
 //     something else (hit-test probe). While a modal dialog is open, the
 //     dimmed background is excluded outright: only the modal's own
 //     contents and whatever paints ABOVE it (toasts) stay in the table.
+//     A modal is one the page DECLARED (`aria-modal`, `<dialog>.showModal`)
+//     or, failing that, an unmistakable overlay shape (W31b).
 //  3. **Named** (W15) — the accessible-name chain never yields an empty
 //     string; every mark carries a usable label plus the `label_source`
-//     that produced it.
+//     that produced it, and a synthesized placeholder is made unique on
+//     the frame so two nameless controls can't collide.
+//
+//  The same modal decision also scopes `page_text` (`pageTextJS`, W31a):
+//  text an agent cannot see because a modal covers it must not satisfy a
+//  text assertion. Both entry points share one prelude — the modal rule
+//  is written once, so the two cannot drift.
 //
 
 import Foundation
@@ -41,12 +49,19 @@ enum WebMarkProbe {
     /// on it and the agent can't name it in a flow (W15).
     static let synthesizedLabelPrefix = "unlabelled "
 
-    /// The probe. Returns an array of
-    /// `{x, y, w, h, role, type, label, label_source}` dicts in reading
-    /// order. Raw string literal: the body is JavaScript, backslashes and
-    /// `\(` included, and must not be read as Swift interpolation.
-    static let js: String = #"""
-    (() => {
+    /// Window-global the mark walk parks its element list on, in the exact
+    /// order (and slice) of the marks it returned, so `scroll_into_view(id)`
+    /// can address mark *N* without re-walking the DOM or mutating it
+    /// (WB-17 W7/W34). A page navigation wipes it, which is the honest
+    /// answer: those ids belong to the frame that is gone.
+    static let elementRegistryKey = "__harnessMarkElements"
+
+    // MARK: - Shared prelude
+
+    /// Helpers used by BOTH the mark walk and the page-text read: tree
+    /// traversal, rendering, and — the reason this is shared at all — the
+    /// modal decision. `modal` is in scope for everything after it.
+    private static let preludeJS: String = #"""
       // Targets where pixel precision matters. `a[href]` is included
       // because nav links in SPAs (Next.js Link, React Router Link,
       // etc.) all render as anchors — excluding them leaves the
@@ -82,8 +97,7 @@ enum WebMarkProbe {
         '[contenteditable=""]',
         '[contenteditable="true"]'
       ].join(', ');
-      const out = [];
-      const seen = new WeakSet();
+
       const vw = window.innerWidth, vh = window.innerHeight;
 
       const norm = (s) => String(s == null ? '' : s).trim().replace(/\s+/g, ' ');
@@ -125,8 +139,6 @@ enum WebMarkProbe {
         return null;
       }
 
-      // ---- modal layer ---------------------------------------------------
-
       function rendered(el) {
         try {
           const cs = window.getComputedStyle(el);
@@ -136,13 +148,32 @@ enum WebMarkProbe {
         } catch (e) { return false; }
       }
 
-      // The topmost open modal, or null. A modal makes everything behind it
-      // inert by definition — `<dialog>.showModal()` literally does, and the
-      // aria-modal convention asserts the same. Non-modal `<dialog open>`
-      // (from `.show()`) does NOT qualify: the page around it stays live.
-      // Last in document order wins, which matches the usual stacking of
-      // portal-rendered dialogs.
-      function topModal() {
+      // Where `el` sits in the paint order, as the pair a CSS painter would
+      // compare: the z-index of its nearest positioned ancestor-or-self that
+      // establishes one, and that ancestor itself (for the document-order
+      // tiebreak).
+      function stackRank(el) {
+        let n = el, guard = 0;
+        while (n && n.nodeType === 1 && guard++ < 400) {
+          let cs = null;
+          try { cs = window.getComputedStyle(n); } catch (e) { break; }
+          const zi = parseInt(cs.zIndex, 10);
+          if (!isNaN(zi) && cs.position !== 'static') return { z: zi, node: n };
+          const root = n.getRootNode ? n.getRootNode() : null;
+          n = n.parentElement || (root && root.host) || null;
+        }
+        return { z: 0, node: el };
+      }
+
+      // ---- modal layer ---------------------------------------------------
+
+      // The topmost open modal the page DECLARED, or null. A modal makes
+      // everything behind it inert by definition — `<dialog>.showModal()`
+      // literally does, and the aria-modal convention asserts the same.
+      // Non-modal `<dialog open>` (from `.show()`) does NOT qualify: the
+      // page around it stays live. Last in document order wins, which
+      // matches the usual stacking of portal-rendered dialogs.
+      function declaredModal() {
         let found = null;
         let nodes = [];
         try {
@@ -162,7 +193,279 @@ enum WebMarkProbe {
         return found;
       }
 
-      const modal = topModal();
+      // Alpha of an element's own background-color: 0 for `transparent`,
+      // 1 for an opaque colour, the fraction for a translucent one.
+      //
+      // This must NOT assume `rgb()` / `rgba()`. WebKit serializes a
+      // computed `background-color` in whatever space the author wrote, and
+      // Tailwind v4 — which is where the literal `bg-black/50` in the
+      // comment below comes from — compiles its `/opacity` modifier to
+      // `color-mix(in oklab, …)`, computing to `oklab(… / 0.5)` or
+      // `color(srgb … / 0.5)`. A parser that only knew `rgba()` would read
+      // every such overlay as alpha 0, which fails BOTH the dimming test
+      // and the content-box test — the W31b rule would be quietly inert on
+      // the exact stack that motivated it.
+      //
+      // So: pull the alpha out of any functional notation — the `/ <alpha>`
+      // slash form of CSS Color 4, or a 4th comma-separated component for
+      // the legacy forms — and default to 1 (OPAQUE) for a colour we can
+      // read but not decompose. Defaulting to 0 would be the unsafe guess
+      // in both directions; only an explicit `transparent` / zero alpha is
+      // treated as nothing there.
+      const ALPHA_UNKNOWN = 1;
+      function alphaOf(color) {
+        const c = String(color || '').trim().toLowerCase();
+        if (!c || c === 'transparent' || c === 'none') return 0;
+        const m = c.match(/^[a-z-]+\(([\s\S]*)\)$/);
+        if (!m) return ALPHA_UNKNOWN;              // a keyword or a hex triplet
+        const args = m[1];
+        const parse = (token) => {
+          const t = String(token).trim();
+          if (!t) return NaN;
+          if (t.endsWith('%')) {
+            const pct = parseFloat(t);
+            return isNaN(pct) ? NaN : pct / 100;
+          }
+          const n = parseFloat(t);
+          return isNaN(n) ? NaN : n;
+        };
+        const slash = args.split('/');
+        if (slash.length === 2) {
+          const a = parse(slash[1]);
+          return isNaN(a) ? ALPHA_UNKNOWN : a;
+        }
+        const commas = args.split(',');
+        if (commas.length === 4) {
+          const a = parse(commas[3]);
+          return isNaN(a) ? ALPHA_UNKNOWN : a;
+        }
+        return ALPHA_UNKNOWN;
+      }
+
+      function bgAlpha(el) {
+        try { return alphaOf(window.getComputedStyle(el).backgroundColor); }
+        catch (e) { return 0; }
+      }
+
+      function coversViewport(r) {
+        return r.width >= vw * 0.9 && r.height >= vh * 0.9
+            && r.left <= vw * 0.05 && r.top <= vh * 0.05;
+      }
+
+      // Does `el` contain a control that is actually LIVE — i.e. one the
+      // user could click? `pointer-events` is inherited, so a portal
+      // wrapper marked `pointer-events: none` with a `pointer-events: auto`
+      // card inside it (the shape Radix / Headless UI render) has live
+      // controls, while a decorative veil's do not. That distinction is
+      // what separates a dialog from scenery; a bare `querySelector` would
+      // conflate them.
+      function hasLiveControl(el) {
+        let nodes = [];
+        try { nodes = el.querySelectorAll ? el.querySelectorAll(SELECTOR) : []; } catch (e) { return false; }
+        let guard = 0;
+        for (const c of nodes) {
+          if (guard++ > 200) break;
+          try {
+            if (window.getComputedStyle(c).pointerEvents === 'none') continue;
+          } catch (e) { continue; }
+          if (!rendered(c)) continue;
+          return true;
+        }
+        return false;
+      }
+
+      // W31b — the drop-help delete-confirmation dialog.
+      //
+      // The W14 filter keys on what the page DECLARES: `aria-modal="true"`
+      // or a `<dialog>` in the top layer. drop-help's "Add New Site" dialog
+      // says so; its delete-confirm — a plain React portal of
+      // `<div class="fixed inset-0 z-50 bg-black/50 flex items-center …">`
+      // wrapping a card — says nothing at all, so the dimmed dashboard
+      // behind it kept every mark.
+      //
+      // Rather than invent semantics, recognise the SHAPE, and only the
+      // unmistakable one. Every clause below is a guardrail; a candidate
+      // must satisfy all of them:
+      //
+      //   1. NO declared modal exists. A page that names its modal is
+      //      always taken at its word — this heuristic can never override,
+      //      widen or second-guess the W14 behaviour, including the
+      //      scrim-wrapper case where the declared dialog is the right
+      //      answer and its wrapper is not.
+      //   2. `position: fixed`. A sticky header, an ordinary layout
+      //      container and an in-flow hero are all excluded outright.
+      //   3. It covers ≥90% of the viewport in BOTH axes and starts at the
+      //      top-left region — a toast, a dropdown and a side panel are out.
+      //   4. It DIMS: its own background-colour alpha, or a full-viewport
+      //      descendant's, is strictly between 0 and 1. This is the
+      //      load-bearing clause — a scrim is translucent by definition,
+      //      and a fully OPAQUE full-screen layer needs no help from this
+      //      rule because the occlusion hit-test already drops everything
+      //      it covers. That asymmetry is what keeps an opaque full-screen
+      //      app shell (the obvious false positive) out: it isn't
+      //      translucent, so it isn't a scrim, and its content is not
+      //      swallowed. Nothing weaker counts — a `backdrop-filter` alone
+      //      is a decorative treatment, not a barrier.
+      //   5. It holds at least one LIVE control (see `hasLiveControl` —
+      //      `pointer-events: none` scenery does not count) AND a CONTENT
+      //      BOX: a rendered descendant, at least 40×40, no more than 75%
+      //      of the viewport's area, with an opaque-ish background of its
+      //      own, CENTRED in the viewport, holding a live control of its
+      //      own. That is a dialog card. A decorative tint layer, a
+      //      translucent loading veil, a table-of-contents rail and an
+      //      edge-pinned cookie bar all fail one half or the other.
+      //
+      // NOT a clause: a positive z-index. It was one, and it excluded the
+      // plainest hand-rolled modal there is — `position: fixed; inset: 0;
+      // background: rgba(0,0,0,.5)` with no z-index at all, stacked by
+      // document order. The five clauses above already describe something
+      // that blocks the page; requiring the author to have ALSO lifted it
+      // only lost real dialogs.
+      //
+      //      Note the overlay ITSELF may be `pointer-events: none` — that
+      //      is the Radix / Headless UI portal shape, a full-viewport
+      //      wrapper that lets clicks through with a `pointer-events: auto`
+      //      card inside it. It is also the shape that produced the bug:
+      //      because the wrapper passes clicks, the occlusion hit-test
+      //      reaches the dashboard behind it and every background control
+      //      stayed marked. So the liveness test is applied to the CONTROLS,
+      //      where it means something, not to the wrapper.
+      //
+      // Last qualifying candidate in document order wins, matching
+      // `declaredModal`. What happens NEXT is unchanged: the same
+      // aria-hidden / paints-above / occlusion rules run against it, so
+      // this adds no new way to drop an element — only a new way to
+      // recognise the layer those rules were written for.
+      //
+      // KNOWN LIMITS, stated rather than papered over. This rule covers a
+      // scrim and its card in ONE element — the hand-rolled and Tailwind
+      // shapes — and deliberately not:
+      //   * an overlay whose dim lives on a SIBLING scrim (a wrapper with
+      //     no background of its own). Widening the dimming clause to
+      //     "some scrim exists somewhere" would start guessing, and a wrong
+      //     modal is worse than no modal — it makes real controls
+      //     unaddressable. In practice the big library that renders this
+      //     shape (Radix, and shadcn/ui on top of it) sets `aria-modal` on
+      //     its content, so `declaredModal` already has it;
+      //   * a dim expressed as `opacity` on an opaque background, or as a
+      //     `background-image` gradient rather than a background-COLOR;
+      //   * an overlay inside a shadow root or portalled outside <body> —
+      //     the candidate scan is a plain `body *` query, unlike the
+      //     shadow-aware traversals elsewhere in this file.
+      // Each of those degrades to the pre-W31b behaviour (no modal
+      // recognised), never to a wrong one.
+      function contentBox(el) {
+        let nodes = [];
+        try { nodes = el.querySelectorAll('*'); } catch (e) { return null; }
+        let guard = 0;
+        for (const d of nodes) {
+          if (guard++ > 600) break;
+          if (!rendered(d)) continue;
+          const r = d.getBoundingClientRect();
+          if (r.width < 40 || r.height < 40) continue;
+          if (r.width * r.height > vw * vh * 0.75) continue;
+          if (bgAlpha(d) < 0.5) continue;
+          // Where a dialog sits. A card pinned to an edge is a sidebar, a
+          // table of contents, a cookie bar or a hero CTA — all of which
+          // can otherwise satisfy every other clause, and none of which
+          // should delete the rest of the page from the observation.
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          if (cx < vw * 0.2 || cx > vw * 0.8) continue;
+          if (cy < vh * 0.2 || cy > vh * 0.8) continue;
+          if (!hasLiveControl(d)) continue;
+          return d;
+        }
+        return null;
+      }
+
+      // Translucency ONLY — a backdrop-filter on its own is not evidence of
+      // a modal. A full-viewport `backdrop-filter: blur(12px)` layer is a
+      // common decorative treatment behind a scrolling article, and
+      // accepting it would delete that article from `page_text`. Clause 5's
+      // whole argument is about translucency; the rule now implements
+      // exactly that argument and nothing wider.
+      function dims(el) {
+        const a = bgAlpha(el);
+        if (a > 0 && a < 1) return true;
+        let nodes = [];
+        try { nodes = el.querySelectorAll('*'); } catch (e) { return false; }
+        let guard = 0;
+        for (const d of nodes) {
+          if (guard++ > 600) break;
+          if (!rendered(d)) continue;
+          if (!coversViewport(d.getBoundingClientRect())) continue;
+          const da = bgAlpha(d);
+          if (da > 0 && da < 1) return true;
+        }
+        return false;
+      }
+
+      function overlayModal() {
+        let nodes = [];
+        try { nodes = document.querySelectorAll('body *'); } catch (e) { return null; }
+        let found = null, guard = 0;
+        for (const n of nodes) {
+          // Rect first: it is the cheap test after layout has been flushed,
+          // and it rejects all but a handful of elements on a real page —
+          // `getComputedStyle` on every node of a large document is the one
+          // way this rule could cost a capture anything measurable.
+          const r = n.getBoundingClientRect();
+          if (!coversViewport(r)) continue;
+          // The budget counts REAL WORK, not iterations. Counting every
+          // node would stop the scan partway through a large document —
+          // and React portals append to the END of <body>, so the overlay
+          // is the last thing we would reach. A long table would silently
+          // turn the modal rule off on exactly the pages where a wrong
+          // `page_text` costs the most.
+          if (guard++ > 200) break;
+          let cs = null;
+          try { cs = window.getComputedStyle(n); } catch (e) { continue; }
+          if (cs.position !== 'fixed') continue;
+          if (!rendered(n)) continue;
+          if (!hasLiveControl(n)) continue;
+          if (!dims(n)) continue;
+          if (!contentBox(n)) continue;
+          found = n;
+        }
+        return found;
+      }
+
+      const modal = declaredModal() || overlayModal();
+
+      // Does `el` paint ABOVE the open modal? Toasts, nested popovers and
+      // notification rails do — they're still actionable and belong in the
+      // table. The dimmed page behind the modal does not, EVEN IF nothing
+      // physically covers a given control (a `pointer-events: none` scrim
+      // leaves every background button hit-testable while making the whole
+      // page unusable), which is why this is a stacking question and not
+      // only an occlusion one.
+      //
+      // A `<dialog>` opened with `showModal()` lives in the top layer, above
+      // every ordinary stacking context: nothing outside it paints above it.
+      function paintsAbove(el, m) {
+        try { if (m.tagName === 'DIALOG' && m.matches(':modal')) return false; } catch (e) {}
+        const a = stackRank(el), b = stackRank(m);
+        if (a.z !== b.z) return a.z > b.z;
+        // Equal z-index: later in document order wins.
+        try {
+          return !!(b.node.compareDocumentPosition(a.node) & Node.DOCUMENT_POSITION_FOLLOWING);
+        } catch (e) { return false; }
+      }
+    """#
+
+    // MARK: - Marks
+
+    /// The probe. Returns an array of
+    /// `{x, y, w, h, role, type, label, label_source}` dicts in reading
+    /// order, and parks the matching element list on
+    /// `window.__harnessMarkElements` for `scroll_into_view`.
+    static var js: String { "(() => {\n" + preludeJS + "\n" + marksJS + "\n})();" }
+
+    /// Raw string literal: the body is JavaScript, backslashes and `\(`
+    /// included, and must not be read as Swift interpolation.
+    private static let marksJS: String = #"""
+      const out = [];
+      const seen = new WeakSet();
 
       // ---- occlusion -----------------------------------------------------
 
@@ -225,43 +528,6 @@ enum WebMarkProbe {
           if (withinDeep(el, hit) && !(modal && withinDeep(modal, hit))) return true;
         }
         return false;
-      }
-
-      // Where `el` sits in the paint order, as the pair a CSS painter would
-      // compare: the z-index of its nearest positioned ancestor-or-self that
-      // establishes one, and that ancestor itself (for the document-order
-      // tiebreak).
-      function stackRank(el) {
-        let n = el, guard = 0;
-        while (n && n.nodeType === 1 && guard++ < 400) {
-          let cs = null;
-          try { cs = window.getComputedStyle(n); } catch (e) { break; }
-          const zi = parseInt(cs.zIndex, 10);
-          if (!isNaN(zi) && cs.position !== 'static') return { z: zi, node: n };
-          const root = n.getRootNode ? n.getRootNode() : null;
-          n = n.parentElement || (root && root.host) || null;
-        }
-        return { z: 0, node: el };
-      }
-
-      // Does `el` paint ABOVE the open modal? Toasts, nested popovers and
-      // notification rails do — they're still actionable and belong in the
-      // table. The dimmed page behind the modal does not, EVEN IF nothing
-      // physically covers a given control (a `pointer-events: none` scrim
-      // leaves every background button hit-testable while making the whole
-      // page unusable), which is why this is a stacking question and not
-      // only an occlusion one.
-      //
-      // A `<dialog>` opened with `showModal()` lives in the top layer, above
-      // every ordinary stacking context: nothing outside it paints above it.
-      function paintsAbove(el, m) {
-        try { if (m.tagName === 'DIALOG' && m.matches(':modal')) return false; } catch (e) {}
-        const a = stackRank(el), b = stackRank(m);
-        if (a.z !== b.z) return a.z > b.z;
-        // Equal z-index: later in document order wins.
-        try {
-          return !!(b.node.compareDocumentPosition(a.node) & Node.DOCUMENT_POSITION_FOLLOWING);
-        } catch (e) { return false; }
       }
 
       // ---- accessible name ------------------------------------------------
@@ -401,6 +667,34 @@ enum WebMarkProbe {
         return auto.indexOf('password') !== -1;
       }
 
+      // W15 (WB-17) — a discriminator for a control nothing can name.
+      //
+      // "unlabelled button" is uniform: two icon-only buttons on one screen
+      // produce the same string, and a resolver keyed on it matches both.
+      // A synthesized label therefore takes the nearest DELIBERATE name an
+      // ancestor carries — an `aria-label`, a `data-testid`, a `title` on
+      // the row / card / toolbar the control sits in — as a parenthetical.
+      // Ancestors only, at most five levels, first hit wins: that is a pure
+      // function of the DOM, so two runs against an unchanged page produce
+      // the same string.
+      //
+      // `label_source` stays `synthesized`. The label is still a
+      // placeholder, and a consumer must keep treating it as "this control
+      // has no name" — a discriminator makes it addressable, not authored.
+      function synthesizedContext(el) {
+        let n = el.parentElement, guard = 0;
+        while (n && guard++ < 5) {
+          if (n.getAttribute) {
+            const v = norm(n.getAttribute('aria-label'))
+                   || norm(n.getAttribute('data-testid'))
+                   || norm(n.getAttribute('title'));
+            if (v) return v.length > 32 ? v.slice(0, 31) + '…' : v;
+          }
+          n = n.parentElement;
+        }
+        return '';
+      }
+
       function resolveLabel(el) {
         const get = (a) => norm(el.getAttribute ? el.getAttribute(a) : '');
         let v = get('aria-label');
@@ -440,7 +734,9 @@ enum WebMarkProbe {
         if (v) return { label: v, source: 'testid' };
         v = get('name');
         if (v) return { label: v, source: 'name' };
-        return { label: '\#(synthesizedLabelPrefix)' + roleOf(el), source: 'synthesized' };
+        const base = '\#(synthesizedLabelPrefix)' + roleOf(el);
+        const context = synthesizedContext(el);
+        return { label: context ? base + ' (' + context + ')' : base, source: 'synthesized' };
       }
 
       // ---- walk -----------------------------------------------------------
@@ -521,17 +817,19 @@ enum WebMarkProbe {
         // a label and they're typically genuinely clickable.
         const big = r.width >= 200 || r.height >= 100;
         if (labelSource === 'synthesized' && big) return;
-        if (label.length > 80) label = label.slice(0, 77) + '…';
         const inputType = el.getAttribute('type') || null;
         out.push({
-          x: Math.round(r.left),
-          y: Math.round(r.top),
-          w: Math.round(r.width),
-          h: Math.round(r.height),
-          role: role,
-          type: inputType,
-          label: label,
-          label_source: labelSource
+          el: el,
+          mark: {
+            x: Math.round(r.left),
+            y: Math.round(r.top),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            role: role,
+            type: inputType,
+            label: label,
+            label_source: labelSource
+          }
         });
       }
 
@@ -539,9 +837,98 @@ enum WebMarkProbe {
       // Reading order: top-to-bottom, then left-to-right. The
       // agent's prompt assumes this, and it makes runs easier
       // to skim by ID.
-      out.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+      out.sort((a, b) => (a.mark.y - b.mark.y) || (a.mark.x - b.mark.x));
       const CAP = \#(markCap);
-      return out.length > CAP ? out.slice(0, CAP) : out;
-    })();
+      const kept = out.length > CAP ? out.slice(0, CAP) : out;
+
+      // W15 — make a synthesized placeholder unique on THIS frame. Any
+      // synthesized label still shared after the ancestor-context pass gets
+      // its 1-based rank in reading order appended ("unlabelled button 2"),
+      // so no two nameless controls answer to the same string. Run after
+      // the sort and the cap, so the number a client sees is a position in
+      // the table it was actually handed — and, being a pure function of
+      // reading order, identical across runs on an unchanged page.
+      const collisions = {};
+      for (const o of kept) {
+        if (o.mark.label_source !== 'synthesized') continue;
+        collisions[o.mark.label] = (collisions[o.mark.label] || 0) + 1;
+      }
+      const ranks = {};
+      for (const o of kept) {
+        if (o.mark.label_source !== 'synthesized') continue;
+        const base = o.mark.label;
+        if (collisions[base] < 2) continue;
+        ranks[base] = (ranks[base] || 0) + 1;
+        o.mark.label = base + ' ' + ranks[base];
+      }
+
+      // Length cap LAST. Capping before the pass above would leave an
+      // ordinal stranded after an ellipsis ("unlabelled button (very long
+      // te… 2") and push the label past the cap it was just given.
+      for (const o of kept) {
+        if (o.mark.label.length > 80) o.mark.label = o.mark.label.slice(0, 77) + '…';
+      }
+
+      // Park the elements for `scroll_into_view(id)`: index i is mark id
+      // i + 1. A window global, never a DOM mutation — a page's own React
+      // tree is not ours to write attributes into. It holds at most `CAP`
+      // references and is REPLACED on every probe (which runs before every
+      // capture), so it cannot grow, and it pins nothing beyond one frame's
+      // worth of elements.
+      try { window['\#(elementRegistryKey)'] = kept.map((o) => o.el); } catch (e) {}
+      return kept.map((o) => o.mark);
+    """#
+
+    // MARK: - Page text (W31a)
+
+    /// Visible text of the frame, scoped by the SAME modal rule the marks
+    /// are (W31a). With a modal open, `document.body.innerText` still rolls
+    /// up the whole dimmed page behind it — so a text assertion could pass
+    /// on copy the agent physically cannot see and a human reviewer would
+    /// never find. This reads the modal's own text instead, plus anything
+    /// painting above it, matching the mark table exactly — including where
+    /// that means nothing: nothing paints above a `<dialog>` opened with
+    /// `showModal()`, because it lives in the top layer, so for that one
+    /// kind of modal the second root is always empty. Same rule, same
+    /// answer as the marks; that is the point.
+    ///
+    /// Returns the raw string; whitespace normalization and the length cap
+    /// stay in `WebDriver.normalizePageText`.
+    static var pageTextJS: String { "(() => {\n" + preludeJS + "\n" + pageTextBodyJS + "\n})();" }
+
+    private static let pageTextBodyJS: String = #"""
+      function textOf(el) {
+        try { return el.innerText || el.textContent || ''; } catch (e) { return ''; }
+      }
+
+      if (!modal) {
+        const el = document.body || document.documentElement;
+        return el ? textOf(el) : '';
+      }
+
+      // The modal's own text, plus each layer painting above it. Candidates
+      // are limited to body's children and grandchildren — where portals,
+      // toast rails and notification stacks actually render — so this stays
+      // a bounded scan rather than a whole-document sweep.
+      const roots = [modal];
+      let candidates = [];
+      try { candidates = document.querySelectorAll('body > *, body > * > *'); } catch (e) { candidates = []; }
+      for (const c of candidates) {
+        if (c === modal) continue;
+        if (withinDeep(c, modal) || withinDeep(modal, c)) continue;
+        if (!rendered(c)) continue;
+        if (!paintsAbove(c, modal)) continue;
+        // Skip a candidate already covered by one we took.
+        let nested = false;
+        for (const r of roots) { if (withinDeep(c, r)) { nested = true; break; } }
+        if (nested) continue;
+        roots.push(c);
+      }
+      const parts = [];
+      for (const r of roots) {
+        const t = textOf(r);
+        if (t) parts.push(t);
+      }
+      return parts.join('\n');
     """#
 }

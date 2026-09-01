@@ -41,6 +41,8 @@ private actor FakeUXDriver: UXDriving {
     let marks: [InteractiveMark]
     /// Visible page text the fake driver reports (web-shaped drivers only).
     let pageText: String?
+    /// The (already-redacted) frame URL a web-shaped driver reports.
+    let frameURL: String?
     private(set) var executed: [ToolCall] = []
     var executeError: (any Error)?
 
@@ -52,7 +54,8 @@ private actor FakeUXDriver: UXDriving {
         annotation: String?,
         execDetail: String?,
         marks: [InteractiveMark] = [],
-        pageText: String? = nil
+        pageText: String? = nil,
+        frameURL: String? = nil
     ) {
         self.pointSize = pointSize
         self.pixelSize = pixelSize
@@ -62,6 +65,7 @@ private actor FakeUXDriver: UXDriving {
         self.execDetail = execDetail
         self.marks = marks
         self.pageText = pageText
+        self.frameURL = frameURL
     }
 
     func screenshot(into url: URL) async throws -> ScreenshotMetadata {
@@ -72,7 +76,8 @@ private actor FakeUXDriver: UXDriving {
             markedImageData: markedPNG,
             markedAnnotationText: annotation,
             marks: marks,
-            pageText: pageText
+            pageText: pageText,
+            frameURL: frameURL
         )
     }
 
@@ -735,6 +740,67 @@ struct UISessionActMappingTests {
         } else { Issue.record("scroll") }
         if case .type(let t) = calls[3].input { #expect(t == "hi") } else { Issue.record("type") }
         _ = await sup.end(id: id)
+    }
+
+    @Test("scroll_into_view is a web act and reaches the driver as .scrollIntoView")
+    func scrollIntoViewMapsAndIsWebOnly() async throws {
+        let (sup, id, driver, artifactRoot) = try await webSession()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
+
+        _ = try await sup.act(id: id, tool: "scroll_into_view", inputData: Data(#"{"id":4}"#.utf8))
+        let calls = await driver.executed
+        if case .scrollIntoView(let m) = calls.last?.input {
+            #expect(m == 4)
+        } else {
+            Issue.record("expected .scrollIntoView")
+        }
+        _ = await sup.end(id: id)
+    }
+
+    @Test("scroll_into_view is refused on macOS rather than silently no-oping")
+    func scrollIntoViewRejectedOnMac() async throws {
+        let probe = TeardownProbe()
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 80, height: 80), pixelSize: CGSize(width: 80, height: 80),
+            cleanPNG: UISessionTestSupport.solidPNG(width: 80, height: 80, color: .white),
+            markedPNG: nil, annotation: nil, execDetail: nil
+        )
+        let adapter = FakePlatformAdapter(kind: .macosApp, names: ToolSchema.macOSToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
+        let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
+            platform: .macosApp, label: "mac", driver: driver,
+            pointSize: CGSize(width: 80, height: 80), adapter: adapter
+        ), defaultArtifactRoot: artifactRoot)
+        let info = try await sup.start(UISessionConfig(platform: .macosApp, macAppPath: "/tmp/x.app"))
+        await #expect(throws: UISessionError.self) {
+            _ = try await sup.act(id: info.id, tool: "scroll_into_view", inputData: Data(#"{"id":1}"#.utf8))
+        }
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("the driver's redacted frame URL reaches the observation and the payload")
+    func frameURLReachesTheObservation() async throws {
+        let probe = TeardownProbe()
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 80, height: 80), pixelSize: CGSize(width: 80, height: 80),
+            cleanPNG: UISessionTestSupport.solidPNG(width: 80, height: 80, color: .white),
+            markedPNG: nil, annotation: nil, execDetail: nil,
+            frameURL: "https://drop-help.com/dashboard?…"
+        )
+        let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: probe)
+        let artifactRoot = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: artifactRoot) }
+        let sup = UISessionSupervisor(preparer: UISessionTestSupport.preparer(
+            platform: .web, label: "web", driver: driver,
+            pointSize: CGSize(width: 80, height: 80), adapter: adapter
+        ), defaultArtifactRoot: artifactRoot)
+        let info = try await sup.start(UISessionConfig(platform: .web, webURL: "https://drop-help.com"))
+        let obs = try await sup.observe(id: info.id, clean: false)
+        #expect(obs.frameURL == "https://drop-help.com/dashboard?…")
+        let payload = UIObservationPayload.structuredContent(obs)
+        #expect(payload["frame_url"] as? String == "https://drop-help.com/dashboard?…")
+        _ = await sup.end(id: info.id)
     }
 
     @Test("a failed driver.execute surfaces actionFailed + the error detail")

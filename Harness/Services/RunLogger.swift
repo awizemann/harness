@@ -649,7 +649,7 @@ extension LogRow {
             // See `standards/14-run-logging-format.md` § Credential
             // redaction for the rule this enforces.
             dict = ["field": field.rawValue]
-        case .tapMark(let id):
+        case .tapMark(let id), .scrollIntoView(let id):
             dict = ["id": id]
         }
         let data = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])

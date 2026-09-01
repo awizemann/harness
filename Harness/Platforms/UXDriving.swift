@@ -76,13 +76,26 @@ struct ScreenshotMetadata: Sendable, Hashable {
     /// honest form of "we didn't look".
     let pageText: String?
 
+    /// The frame's current location, **already redacted** by the driver
+    /// (`WebDriver.redactedFrameURL`): scheme, host, port and path only —
+    /// never userinfo, query or fragment. **Web only**; iOS and macOS leave
+    /// it `nil`, having no such thing as a frame URL.
+    ///
+    /// Exists so a client can see a navigation it did not ask for. A tap
+    /// that redirects to an identity provider changes the origin without
+    /// any tool call saying so, and a consumer enforcing a same-origin rule
+    /// (Walkabout's cross-origin credential guard) otherwise has no way to
+    /// notice before it types a password into somebody else's form.
+    let frameURL: String?
+
     init(
         pixelSize: CGSize,
         pointSize: CGSize,
         markedImageData: Data? = nil,
         markedAnnotationText: String? = nil,
         marks: [InteractiveMark] = [],
-        pageText: String? = nil
+        pageText: String? = nil,
+        frameURL: String? = nil
     ) {
         self.pixelSize = pixelSize
         self.pointSize = pointSize
@@ -90,6 +103,7 @@ struct ScreenshotMetadata: Sendable, Hashable {
         self.markedAnnotationText = markedAnnotationText
         self.marks = marks
         self.pageText = pageText
+        self.frameURL = frameURL
     }
 }
 
