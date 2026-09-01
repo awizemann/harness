@@ -69,9 +69,11 @@ struct ScreenshotMetadata: Sendable, Hashable {
 
     /// Optional visible page/screen text, normalized and length-capped by
     /// the driver. Populated by the **web** driver (an `innerText`-equivalent
-    /// read of the rendered document); iOS and macOS leave it `nil` — neither
-    /// has a cheap existing text roll-up, and this type deliberately does not
-    /// grow new accessibility-tree walking to fake one.
+    /// read of the rendered document) and by the **macOS** driver (the front
+    /// frame's `AXStaticText` sweep — the same scoped subtree the marks come
+    /// from, so the two always describe the same frame). **iOS** leaves it
+    /// `nil`: there is no cheap text roll-up there, and an absent key is the
+    /// honest form of "we didn't look".
     let pageText: String?
 
     init(

@@ -55,6 +55,17 @@ actor UISessionSupervisor {
     private var pendingStarts = 0
     private var sweeper: Task<Void, Never>?
 
+    /// Recently-closed sessions, newest last, capped at `maxTombstones`.
+    ///
+    /// W32 — "this id was never a session" and "your session died under you"
+    /// are different facts and want different reactions: the first is a typo
+    /// or a stale copy-paste, the second means the app quit, the idle
+    /// watchdog reclaimed it, or the engine shut down, and the caller should
+    /// start a new session rather than hunt for a bad id. Without a record of
+    /// the closure, both collapsed into one "No open UI session" message.
+    private var tombstones: [(id: UUID, endedAt: Date, reason: String)] = []
+    private static let maxTombstones = 32
+
     init(
         preparer: any UISessionPreparing,
         idleTimeoutSeconds: Int = 600,
@@ -201,7 +212,7 @@ actor UISessionSupervisor {
 
     func observe(id: UUID, clean: Bool) async throws -> UIObservation {
         guard let entry = sessions[id], !entry.tornDown else {
-            throw UISessionError.sessionNotFound(id)
+            throw missingSessionError(id)
         }
         entry.lastActivityAt = Date()   // reset idle before the (bounded) capture
         return try await capture(entry, executed: nil, preferMarked: !clean, lastDetail: nil)
@@ -211,7 +222,7 @@ actor UISessionSupervisor {
 
     func act(id: UUID, tool: String, inputData: Data) async throws -> UIObservation {
         guard let entry = sessions[id], !entry.tornDown else {
-            throw UISessionError.sessionNotFound(id)
+            throw missingSessionError(id)
         }
         entry.lastActivityAt = Date()
 
@@ -257,7 +268,7 @@ actor UISessionSupervisor {
     /// no artifact row is appended, so nothing about this call touches disk.
     func exportWebSessionState(id: UUID) async throws -> WebSessionState {
         guard let entry = sessions[id], !entry.tornDown else {
-            throw UISessionError.sessionNotFound(id)
+            throw missingSessionError(id)
         }
         guard entry.platform == .web else {
             throw UISessionError.webOnlyCapability(
@@ -280,6 +291,12 @@ actor UISessionSupervisor {
     /// Idempotent. An unknown / already-closed id is a calm success.
     func end(id: UUID) async -> UISessionEndResult {
         guard sessions[id] != nil else {
+            // Deliberately UNCHANGED by W32: `end` is documented as
+            // idempotent and calm, and its "already closed" status is a
+            // contract callers key on. The distinction between a session that
+            // died and an id that never existed belongs on the paths that
+            // FAIL — observe / act / export — not on the one whose whole job
+            // is to succeed quietly.
             return UISessionEndResult(id: id, wasOpen: false, message: "already closed")
         }
         await teardown(id: id, reason: "end_ui_session")
@@ -348,6 +365,27 @@ actor UISessionSupervisor {
         }
     }
 
+    /// The error for an id that is not an open session — naming the closure
+    /// when we know of one (W32).
+    private func missingSessionError(_ id: UUID) -> UISessionError {
+        if let stone = tombstone(for: id) {
+            return .sessionEnded(id: id, reason: stone.reason, endedAt: stone.endedAt)
+        }
+        return .sessionNotFound(id)
+    }
+
+    private func tombstone(for id: UUID) -> (id: UUID, endedAt: Date, reason: String)? {
+        tombstones.last(where: { $0.id == id })
+    }
+
+    private func recordTombstone(id: UUID, reason: String, now: Date = Date()) {
+        tombstones.removeAll(where: { $0.id == id })
+        tombstones.append((id: id, endedAt: now, reason: reason))
+        if tombstones.count > Self.maxTombstones {
+            tombstones.removeFirst(tombstones.count - Self.maxTombstones)
+        }
+    }
+
     /// Idempotent teardown: cancel bookkeeping, run adapter teardown once,
     /// drop the entry.
     private func teardown(id: UUID, reason: String) async {
@@ -357,6 +395,7 @@ actor UISessionSupervisor {
         }
         entry.tornDown = true
         sessions[id] = nil
+        recordTombstone(id: id, reason: reason)
         logger.info("tearing down UI session \(id.uuidString, privacy: .public) — \(reason, privacy: .public)")
         await entry.adapter.teardown(entry.session)
     }

@@ -515,6 +515,91 @@ struct UISessionGuardTests {
         #expect(!result.wasOpen)
         #expect(result.message == "already closed")
     }
+
+    // MARK: - W32: a session that DIED reads differently from one that never was
+
+    @Test("observing an id that was never a session says exactly that")
+    func unknownIDIsNamedAsUnknown() async {
+        let sup = webSupervisor()
+        let id = UUID()
+        do {
+            _ = try await sup.observe(id: id, clean: false)
+            Issue.record("expected a throw")
+        } catch let error as UISessionError {
+            guard case .sessionNotFound = error else {
+                Issue.record("expected sessionNotFound, got \(error)")
+                return
+            }
+            let message = error.errorDescription ?? ""
+            #expect(message.contains("has ever been open"))
+            // The engine-child case: a caller holding an id from before a
+            // harness-mcp restart needs to be told the process is the reason.
+            #expect(message.contains("harness-mcp restarted"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("observing a session that was ENDED names the closure, not a missing id")
+    func endedSessionIsNamedAsEnded() async throws {
+        let sup = try await UISessionGuardTests.startedWebSupervisor()
+        let id = try #require(await sup.list().first?.id)
+        _ = await sup.end(id: id)
+        do {
+            _ = try await sup.observe(id: id, clean: false)
+            Issue.record("expected a throw")
+        } catch let error as UISessionError {
+            guard case .sessionEnded(let endedID, let reason, _) = error else {
+                Issue.record("expected sessionEnded, got \(error)")
+                return
+            }
+            #expect(endedID == id)
+            #expect(reason == "end_ui_session")
+            #expect((error.errorDescription ?? "").contains("closed"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("a session reclaimed by the idle watchdog says the watchdog took it")
+    func sweptSessionNamesTheWatchdog() async throws {
+        let sup = try await UISessionGuardTests.startedWebSupervisor(idleTimeoutSeconds: 600)
+        let id = try #require(await sup.list().first?.id)
+        _ = await sup.sweepIdle(now: Date().addingTimeInterval(700))
+        do {
+            _ = try await sup.act(id: id, tool: "tap_mark", inputData: Data(#"{"id":1}"#.utf8))
+            Issue.record("expected a throw")
+        } catch let error as UISessionError {
+            guard case .sessionEnded(_, let reason, _) = error else {
+                Issue.record("expected sessionEnded, got \(error)")
+                return
+            }
+            #expect(reason.contains("idle watchdog"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    /// A supervisor with one live fake web session, for the death-vs-absence
+    /// tests above.
+    static func startedWebSupervisor(idleTimeoutSeconds: Int = 0) async throws -> UISessionSupervisor {
+        let driver = FakeUXDriver(
+            pointSize: CGSize(width: 30, height: 30), pixelSize: CGSize(width: 30, height: 30),
+            cleanPNG: UISessionTestSupport.solidPNG(width: 30, height: 30, color: .black),
+            markedPNG: nil, annotation: nil, execDetail: nil
+        )
+        let adapter = FakePlatformAdapter(kind: .web, names: ToolSchema.webToolNames, probe: TeardownProbe())
+        let sup = UISessionSupervisor(
+            preparer: UISessionTestSupport.preparer(
+                platform: .web, label: "web", driver: driver,
+                pointSize: CGSize(width: 30, height: 30), adapter: adapter
+            ),
+            idleTimeoutSeconds: idleTimeoutSeconds,
+            defaultArtifactRoot: UISessionTestSupport.tempArtifactRoot()
+        )
+        _ = try await sup.start(UISessionConfig(platform: .web, webURL: "https://a.example"))
+        return sup
+    }
 }
 
 // MARK: - Idle teardown (deterministic)

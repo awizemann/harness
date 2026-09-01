@@ -263,6 +263,11 @@ enum UISessionError: Error, Sendable, LocalizedError {
     case relativeArtifactDir(String)
     case capReached(Int)
     case sessionNotFound(UUID)
+    /// The id WAS a session in this process and is not any more — ended,
+    /// idle-swept, or torn down at shutdown. Distinct from `sessionNotFound`
+    /// on purpose (W32): "your session died under you" and "that id was never
+    /// a session here" call for different reactions from the caller.
+    case sessionEnded(id: UUID, reason: String, endedAt: Date)
     case unsupportedTool(String, allowed: [String])
     case metaToolRejected(String)
     case startTimedOut(seconds: Int, platform: PlatformKind)
@@ -305,7 +310,10 @@ enum UISessionError: Error, Sendable, LocalizedError {
         case .capReached(let cap):
             return "Concurrent UI session limit reached (\(cap)). End an existing session with end_ui_session before starting another."
         case .sessionNotFound(let id):
-            return "No open UI session with id \(id.uuidString). It may have been ended or idle-timed-out; call list_ui_sessions."
+            return "No UI session with id \(id.uuidString) has ever been open in this engine process. Check the id, or start a new session — if harness-mcp restarted since you got that id, every session it was holding died with it (sessions do not survive the process). Call list_ui_sessions to see what is open now."
+        case .sessionEnded(let id, let reason, let endedAt):
+            let ago = max(0, Int(Date().timeIntervalSince(endedAt)))
+            return "UI session \(id.uuidString) was open in this process but closed \(ago)s ago — \(reason). The target app is gone with it; start a new session with start_ui_session. Call list_ui_sessions to see what is still open."
         case .unsupportedTool(let tool, let allowed):
             return "Tool '\(tool)' is not available on this platform. Supported action tools: \(allowed.joined(separator: ", "))."
         case .metaToolRejected(let tool):

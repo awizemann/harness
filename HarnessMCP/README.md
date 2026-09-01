@@ -110,15 +110,37 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   **`placeholder` and `value` are sample data** — they change whenever a designer edits the copy,
   so a resolver that wants a durable selector should treat them as weak and prefer the first three.
   (Before this ordering, a field with `<label for="name">Your Name *</label>` and
-  `placeholder="John Doe"` was labelled "John Doe".) **iOS and macOS omit the key entirely**: their
-  accessibility probes resolve a name without recording its provenance, and inventing one would be
+  `placeholder="John Doe"` was labelled "John Doe".) **iOS omits the key entirely**: its
+  accessibility probe resolves a name without recording its provenance, and inventing one would be
   a guess.
+- **`label_source` on macOS** names the same thing for the AX probe, in its own order:
+  `ax-title` → `ax-title-element` (the app's own `AXTitleUIElement` pointer) → `ax-description`
+  (where AppKit puts `accessibilityLabel`) → `ax-help` → `secure-field` (a password field, whose
+  value is never used as a label) → `ax-placeholder` → `value` **for controls whose value IS a
+  name** (a pop-up button's current selection) → `adjacent-text` → `text` (the control's own
+  visible caption, e.g. a table row's contents) → `ax-identifier` → `value` (a text field's
+  content, last resort) → `synthesized`. **macOS marks are never labelled `""` either.**
+  **`adjacent-text` is inferred, not authored**: SwiftUI `TextField`s expose no AX title and no
+  value, so their on-screen label exists only as a sibling `AXStaticText`, and the probe associates
+  the nearest one — immediately left on the same row, or immediately above — when and only when the
+  app itself supplied no name. The association is deliberately conservative (a small maximum gap, a
+  required axis overlap, a shared nearby ancestor, one text per control, and a refusal when two
+  candidates tie), because a WRONG label is worse than an honest `unlabelled textField`. Treat it
+  as a good guess: fine to author a flow against, worth re-checking if a resolver misfires, and a
+  signal that the app should set `.accessibilityLabel`.
 - **`page_text`** is the frame's visible text, whitespace-normalized and capped at **20 000**
-  characters (a trailing `…` marks truncation). **Web sessions only** — it comes from an
-  `innerText` read of the rendered document. **iOS and macOS omit the key entirely**: their
-  accessibility probes yield per-element labels, not a screen text roll-up, and Harness does not
-  walk the AX tree a second time to synthesize one. An absent key means "not available on this
-  platform", which is not the same claim as "the screen has no text".
+  characters (a trailing `…` marks truncation). On **web** it is an `innerText` read of the
+  rendered document; on **macOS** it is the front frame's `AXStaticText` sweep, in reading order,
+  taken from the SAME scoped subtree the marks come from — so a sheet's `page_text` is the sheet's
+  text, not the window behind it. **iOS omits the key entirely**, and so does any frame whose text
+  sweep came back empty. An absent key means "not available", which is not the same claim as "the
+  screen has no text".
+- **macOS marks are scoped to the captured frame.** When a sheet, popover or menu is front, the
+  frame IS that overlay, and only its controls are marked — every rect is reported in the captured
+  frame's own coordinate space, so a callout drawn from a mark lands where the badge is. Controls
+  in a window behind the overlay are not in the frame and are not in the table. Each element is
+  marked at most once, however many paths the AX graph offers to it (menus are reachable through
+  two, which used to double every menu item and make it unaddressable by label + role).
 - **Back-compatible.** The `image` and `text` content blocks are unchanged;
   `structuredContent` is an additive sibling field on the `tools/call` result that clients which
   don't know it ignore. A failed `act_ui` still returns `structuredContent` alongside
@@ -262,6 +284,21 @@ Smoke test (serves a local fixture, drives a real web session start→observe→
 ```sh
 HarnessMCP/ui-session-smoke.sh
 ```
+
+**macOS** has its own live smoke, against a purpose-built SwiftUI fixture app whose
+accessibility surface reproduces the shapes the AX probe has to survive — unlabelled
+`TextField`s, a menu, a sheet, body text:
+
+```sh
+HarnessMCP/fixtures/macos-app/build-fixture.sh     # once; the .app is gitignored
+python3 HarnessMCP/macos-session-smoke.py
+```
+
+It proves adjacent-text labels, `label_source`, `page_text`, menu de-duplication,
+front-frame scoping and rect space on a real app, and SKIPS (exit 0) when the fixture
+isn't built or the Accessibility / Screen Recording grants are missing — those are
+machine facts, not regressions. `Tests/HarnessTests/MacAXLiveProbeTests.swift` drives the
+same app from the unit suite and skips on the same conditions.
 
 ## Running standalone
 

@@ -50,9 +50,9 @@ struct InteractiveMark: Sendable, Hashable {
     /// Optional finer-grained role hint (web's HTML `type` attribute,
     /// iOS / macOS leave it nil today).
     let inputType: String?
-    /// Accessible human-readable label. Empty only on iOS / macOS, whose
-    /// probes can hand back an unnamed element; the web probe always
-    /// synthesizes something addressable (W15) — worst case
+    /// Accessible human-readable label. Empty only on iOS, whose probe can
+    /// hand back an unnamed element; the web and macOS probes always
+    /// synthesize something addressable (W15 / W19) — worst case
     /// `unlabelled button`, flagged by `labelSource == "synthesized"`.
     let label: String
     /// WHICH source produced `label`, so a consuming client can prefer the
@@ -70,11 +70,25 @@ struct InteractiveMark: Sendable, Hashable {
     ///   placeholder like `unlabelled button`) · `none` (legacy; the web
     ///   probe no longer emits it).
     ///
-    /// `nil` on iOS / macOS: their accessibility probes hand back a single
-    /// resolved name with no provenance, and inventing one would be a guess.
-    /// A resolver that wants a durable selector should prefer the first three
-    /// and distrust `placeholder` / `value` — those are sample data and move
-    /// with copy edits (the W1 finding this field exists to answer).
+    /// macOS values, in the AX probe's priority order:
+    ///
+    ///   `ax-title` · `ax-title-element` (the app's own `AXTitleUIElement`
+    ///   pointer) · `ax-description` (where AppKit puts `accessibilityLabel`)
+    ///   · `ax-help` · `secure-field` · `ax-placeholder` · `value` (for a
+    ///   control whose value IS its name, e.g. a pop-up button's selection) ·
+    ///   `adjacent-text` (INFERRED — the visible static text beside an
+    ///   otherwise-unnamed control; the SwiftUI `TextField` case, W19) ·
+    ///   `text` (the control's own visible caption) · `ax-identifier` ·
+    ///   `value` (a text field's content, last resort) · `synthesized`.
+    ///
+    /// `nil` on iOS: its probe hands back a single resolved name with no
+    /// provenance, and inventing one would be a guess.
+    ///
+    /// A resolver that wants a durable selector should prefer what the app
+    /// itself declared and distrust `placeholder` / `value` — those are
+    /// sample data and move with copy edits (the W1 finding this field
+    /// exists to answer) — and should treat `adjacent-text` as a good guess
+    /// rather than an authored name.
     let labelSource: String?
 
     init(

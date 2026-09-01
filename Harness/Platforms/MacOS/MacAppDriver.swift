@@ -117,11 +117,11 @@ actor MacAppDriver: UXDriving {
         // state the snapshot captures. Same invariant the iOS / web
         // drivers enforce. Probe failure is non-fatal — agent can
         // still call coordinate-based tools with no scaffolding.
-        let marks = probeInteractiveElements(
-            pid: info.ownerPID,
-            windowOrigin: info.bounds.origin,
-            windowSize: info.bounds.size
-        )
+        // The CAPTURED window's rect is the authority on coordinate space:
+        // marks come back in its space, and nothing outside it is marked.
+        let probed = probeFrame(pid: info.ownerPID, frame: info.bounds)
+        let marks = probed.marks
+        let pageText = probed.pageText
         lastMarks = marks
         Self.logger.info("AX probe yielded \(marks.count, privacy: .public) marks for \(self.bundleIdentifier, privacy: .public)")
 
@@ -153,7 +153,8 @@ actor MacAppDriver: UXDriving {
             return ScreenshotMetadata(
                 pixelSize: CGSize(width: pixelW, height: pixelH),
                 pointSize: pointSize,
-                marks: marks
+                marks: marks,
+                pageText: pageText
             )
         }
 
@@ -173,15 +174,18 @@ actor MacAppDriver: UXDriving {
         }
 
         let annotation = MarkRenderer.describe(marks)
-        // `pageText` stays nil on macOS: the AX probe yields per-element
-        // labels, not a screen text roll-up, and this change adds no new
-        // AX walking. Documented in HarnessMCP/README.md.
+        // `pageText` is the front frame's AXStaticText sweep (W20) — the same
+        // observation field the web driver fills, so `text_visible` /
+        // `for_text` assertions work on macOS instead of silently degrading
+        // to a search over control labels. Scoped to the captured frame, so a
+        // sheet's page_text is the sheet's text, not the window behind it.
         return ScreenshotMetadata(
             pixelSize: CGSize(width: pixelW, height: pixelH),
             pointSize: pointSize,
             markedImageData: markedData,
             markedAnnotationText: annotation,
-            marks: marks
+            marks: marks,
+            pageText: pageText
         )
     }
 
@@ -832,8 +836,14 @@ actor MacAppDriver: UXDriving {
         }
         for _ in 0..<5 {
             if axSupportsPress(element) { return element }
-            guard let parent = axAttribute(element, attribute: kAXParentAttribute) else { return nil }
-            element = parent as! AXUIElement
+            // Checked, never forced: these values come from ANOTHER process's
+            // accessibility server. A SUT that publishes a malformed
+            // attribute must degrade to "no actionable element", never crash
+            // the engine — and a crew-built app under test is exactly the
+            // population that publishes malformed AX data.
+            guard let parent = axAttribute(element, attribute: kAXParentAttribute),
+                  CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+            element = unsafeDowncast(parent, to: AXUIElement.self)
         }
         return nil
     }
@@ -853,8 +863,9 @@ actor MacAppDriver: UXDriving {
     /// land), or nil if nothing is focused / Accessibility is denied.
     nonisolated private static func axFocusedElement(pid: Int) -> AXUIElement? {
         let app = AXUIElementCreateApplication(pid_t(pid))
-        guard let focused = axAttribute(app, attribute: kAXFocusedUIElementAttribute) else { return nil }
-        return (focused as! AXUIElement)
+        guard let focused = axAttribute(app, attribute: kAXFocusedUIElementAttribute),
+              CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        return unsafeDowncast(focused, to: AXUIElement.self)
     }
 
     /// Focus the element, then set its whole value via `AXSetValue`.
@@ -872,234 +883,269 @@ actor MacAppDriver: UXDriving {
 
     // MARK: - AX (Set-of-Mark probe)
 
-    /// Roles we treat as actionable tap targets on macOS. Sourced
-    /// from the AX constants in HIServices — same vocabulary AppKit
-    /// uses to describe controls. Categories: standard buttons +
-    /// menu controls, text input, selection controls, indicators,
-    /// list rows.
-    /// AX roles we treat as actionable tap targets. The set is a
-    /// mix of `kAX...Role` constants from HIServices and string
-    /// literals for roles HIServices doesn't ship a constant for
-    /// (e.g. `AXLink` — defined by AppKit at runtime). Either form
-    /// matches against `AXUIElementCopyAttributeValue`'s string
-    /// result equally.
-    private static let actionableAXRoles: Set<String> = [
-        kAXButtonRole as String,
-        kAXMenuButtonRole as String,
-        kAXPopUpButtonRole as String,
-        kAXMenuItemRole as String,
-        kAXMenuBarItemRole as String,
-        kAXTextFieldRole as String,
-        kAXTextAreaRole as String,
-        kAXComboBoxRole as String,
-        kAXCheckBoxRole as String,
-        kAXRadioButtonRole as String,
-        kAXSliderRole as String,
-        kAXIncrementorRole as String,
-        kAXDisclosureTriangleRole as String,
-        kAXColorWellRole as String,
-        kAXImageRole as String,
-        kAXRowRole as String,
-        kAXCellRole as String,
-        kAXTabGroupRole as String,
-        "AXLink",
-        "AXSecureTextField",
-        "AXSearchField",
-        "AXStepper",
-        "AXSwitch"
-    ]
-
-    /// Container roles whose children we descend into (instead of
-    /// marking the container itself). A toolbar mark is useless if
-    /// the agent really wanted to click one of the buttons inside.
-    private static let containerAXRoles: Set<String> = [
-        kAXWindowRole as String,
-        kAXGroupRole as String,
-        kAXSplitGroupRole as String,
-        kAXScrollAreaRole as String,
-        kAXToolbarRole as String,
-        kAXLayoutAreaRole as String,
-        kAXListRole as String,
-        kAXOutlineRole as String,
-        kAXTableRole as String,
-        kAXSheetRole as String,
-        kAXDrawerRole as String,
-        kAXMenuRole as String,
-        kAXMenuBarRole as String
-    ]
-
-    /// Walk the focused window's AX tree and return actionable
-    /// elements as `InteractiveMark`s in window-local point space
-    /// (top-left origin). Mark rects intersect the window's bounds;
-    /// elements entirely off-window (overflowing scroll-area
-    /// children) are dropped. Cap at 80 marks — same as web / iOS.
+    /// Snapshot the app's accessibility tree for the CAPTURED frame and hand
+    /// it to `MacMarkProbe`, which decides what gets marked, what it's
+    /// called, and what the frame's text says. Everything AX-specific — the
+    /// attribute reads, the hit test — lives here; every judgement lives in
+    /// the pure probe, where the test suite can pin it.
     ///
-    /// Requires the Accessibility permission. On first run macOS
-    /// surfaces a system prompt; once granted, subsequent runs
-    /// silently succeed. Without the grant, every attribute pull
-    /// returns `.cannotComplete` and we return an empty list.
-    nonisolated private func probeInteractiveElements(
-        pid: Int,
-        windowOrigin: CGPoint,
-        windowSize: CGSize
-    ) -> [InteractiveMark] {
+    /// `frame` is the captured window's rect in global screen points. It is
+    /// the authority on coordinate space (W24): marks come back in ITS space,
+    /// so a callout drawn on the returned image lands where the badge is.
+    ///
+    /// Requires the Accessibility permission. Without the grant every
+    /// attribute read returns `.cannotComplete` and this returns nothing —
+    /// the same silent degradation as before, and the agent can still call
+    /// coordinate-based tools.
+    /// Wall-clock ceiling for the whole occlusion pass. Past it the hit test
+    /// answers "unknown" and the probe stops dropping anything — a slow app
+    /// costs us stale rows, never a missing control.
+    private static let hitTestBudgetMs = 600
+
+    /// Per-call ceiling on one synchronous AX round trip to the SUT.
+    private static let axMessagingTimeoutSeconds = 0.25
+
+    /// Wall-clock ceiling on the whole tree snapshot, alongside the node
+    /// count. A node budget alone bounds the number of round trips, not
+    /// their duration.
+    private static let snapshotBudgetMs = 1200
+
+    /// Intersection area of a candidate root with the captured frame, as a
+    /// fraction of the frame. Only used to ORDER the capture, so a coarse
+    /// number is enough.
+    nonisolated private static func frameOverlap(_ rect: CGRect?, _ frame: CGRect) -> CGFloat {
+        guard let rect else { return 0 }
+        let inter = rect.intersection(frame)
+        guard !inter.isNull, inter.width > 0, inter.height > 0 else { return 0 }
+        return (inter.width * inter.height) / max(1, frame.width * frame.height)
+    }
+
+    nonisolated private func probeFrame(pid: Int, frame: CGRect) -> MacMarkProbe.Result {
         let appElem = AXUIElementCreateApplication(pid_t(pid))
-        // Prefer the focused window; fall back to the main window
-        // (e.g., the app just launched and nothing has focus yet).
-        let windowElem = Self.axAttribute(appElem, attribute: kAXFocusedWindowAttribute)
-            ?? Self.axAttribute(appElem, attribute: kAXMainWindowAttribute)
-        guard let root = windowElem as! AXUIElement? else { return [] }
+        // Bound the IPC itself, not just our own loops. Every attribute read
+        // and hit test below is a SYNCHRONOUS round trip to the target app,
+        // and the AX default timeout is ~6s — one call to a beachballing SUT
+        // would blow every budget in this function by an order of magnitude
+        // and stall the step. 250ms is far above a healthy app's response
+        // (sub-millisecond) and far below a stall the caller would tolerate.
+        // The timeout is set on the application element, so it applies to
+        // every element derived from it.
+        AXUIElementSetMessagingTimeout(appElem, Float(Self.axMessagingTimeoutSeconds))
+        var budget = MacAXSnapshot.Budget(deadline: ContinuousClock().now.advanced(by: .milliseconds(Self.snapshotBudgetMs)))
 
-        var collected: [(rect: CGRect, role: String, label: String)] = []
-        Self.axWalk(
-            element: root,
-            windowOrigin: windowOrigin,
-            windowSize: windowSize,
-            depth: 0,
-            into: &collected
-        )
-
-        // Reading order: top-to-bottom then left-to-right.
-        collected.sort { (a, b) in
-            if abs(a.rect.minY - b.rect.minY) < 1 {
-                return a.rect.minX < b.rect.minX
+        // Candidate roots: every window the app advertises, plus its focused
+        // and main window (an app can expose a sheet / popover that is not in
+        // `AXWindows`). The probe picks the one matching the captured frame.
+        var rootElements: [AXUIElement] = []
+        if let windows = Self.axAttribute(appElem, attribute: kAXWindowsAttribute) as? [AXUIElement] {
+            rootElements.append(contentsOf: windows)
+        }
+        for attr in [kAXFocusedWindowAttribute as String, kAXMainWindowAttribute as String] {
+            if let w = Self.axAttribute(appElem, attribute: attr),
+               CFGetTypeID(w) == AXUIElementGetTypeID() {
+                rootElements.append(unsafeDowncast(w, to: AXUIElement.self))
             }
-            return a.rect.minY < b.rect.minY
         }
-        // Cap to keep badge density manageable.
-        let capped = collected.prefix(80)
-        return capped.enumerated().map { (i, entry) in
-            InteractiveMark(
-                id: i + 1,
-                rect: entry.rect,
-                role: Self.shortAXRole(entry.role),
-                inputType: nil,
-                label: entry.label
-            )
+        guard !rootElements.isEmpty else { return MacMarkProbe.Result(marks: [], pageText: nil) }
+
+        // Capture the window that best matches the captured frame FIRST. The
+        // node budget is shared across roots, so a large background window
+        // read first could starve the very window the frame belongs to; the
+        // cheap rect read below costs two attribute pulls per window and
+        // removes that failure mode entirely.
+        var seenRoots: Set<UInt64> = []
+        let ordered = rootElements
+            .map { (element: $0, overlap: Self.frameOverlap(MacAXSnapshot.axRect($0), frame)) }
+            .enumerated()
+            .sorted { a, b in
+                a.element.overlap == b.element.overlap
+                    ? a.offset < b.offset
+                    : a.element.overlap > b.element.overlap
+            }
+            .map(\.element.element)
+
+        var roots: [AXSnapshotNode] = []
+        for element in ordered {
+            let identity = MacAXSnapshot.identity(of: element)
+            if seenRoots.contains(identity) { continue }
+            seenRoots.insert(identity)
+            guard let node = MacAXSnapshot.capture(
+                element: element,
+                frame: frame,
+                depth: 0,
+                budget: &budget
+            ) else { continue }
+            roots.append(node)
         }
+
+        // Occlusion probe. Bounded: an AX hit test is an IPC round trip, and
+        // this runs on every capture, so we spend at most `hitTestBudgetMs`
+        // on it and then answer "don't know" (nil), which the probe reads as
+        // "don't drop anything on a guess".
+        let deadline = ContinuousClock().now.advanced(by: .milliseconds(Self.hitTestBudgetMs))
+        let hitTest: MacMarkProbe.HitTest = { point in
+            guard ContinuousClock().now < deadline else { return nil }
+            var hit: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(appElem, Float(point.x), Float(point.y), &hit) == .success,
+                  let element = hit else { return nil }
+            return MacAXSnapshot.identity(of: element)
+        }
+
+        return MacMarkProbe.probe(roots: roots, frame: frame, hitTest: hitTest)
     }
 
     /// Pull a single AX attribute. Returns nil on any error (missing
     /// attribute, permission denied, etc.) so the caller can keep
     /// walking instead of throwing.
-    nonisolated private static func axAttribute(_ element: AXUIElement, attribute: String) -> AnyObject? {
+    nonisolated fileprivate static func axAttribute(_ element: AXUIElement, attribute: String) -> AnyObject? {
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
         return err == .success ? value : nil
     }
+}
 
-    /// Try to read a CGRect from an element's position + size AX
-    /// attributes. Returns nil when either is missing. Coordinates
-    /// come back in global screen space (top-left origin) per
-    /// AppKit's AX convention.
-    nonisolated private static func axRect(_ element: AXUIElement) -> CGRect? {
-        guard let posRef = axAttribute(element, attribute: kAXPositionAttribute),
-              let sizeRef = axAttribute(element, attribute: kAXSizeAttribute) else {
+// MARK: - AX snapshot
+
+/// Reads a live `AXUIElement` subtree into the plain `AXSnapshotNode` values
+/// `MacMarkProbe` works over. This is the ONLY place the mark pipeline talks
+/// to the accessibility API.
+///
+/// Every read is an IPC round trip to the target app, so the capture is
+/// deliberately frugal: role and geometry for every node, the full label
+/// attribute set only for nodes that could actually become a mark or supply
+/// a label, and an early prune of subtrees that don't intersect the captured
+/// frame (a background window's content can't appear in this image, so
+/// there's no reason to pay for reading it).
+enum MacAXSnapshot {
+
+    /// Shared work budget for one capture: nodes visited and elements seen.
+    /// Bounds a pathological app (deep outline, thousands of cells) to a
+    /// predictable cost instead of stalling the step.
+    struct Budget {
+        var nodesRemaining: Int = 1500
+        var maxDepth: Int = 24
+        var visited: Set<UInt64> = []
+        /// Wall-clock stop. `nil` (tests) means "no time limit"; production
+        /// always sets one, because a node count bounds how MANY round trips
+        /// we make, not how long each of them takes.
+        var deadline: ContinuousClock.Instant?
+
+        var expired: Bool {
+            guard let deadline else { return false }
+            return ContinuousClock().now >= deadline
+        }
+    }
+
+    /// `CFHash` is equal for two references to the same AX element and
+    /// stable for its lifetime — the identity `MacMarkProbe` de-duplicates
+    /// on (W21) and hit-tests against.
+    static func identity(of element: AXUIElement) -> UInt64 {
+        UInt64(CFHash(element))
+    }
+
+    static func capture(
+        element: AXUIElement,
+        frame: CGRect,
+        depth: Int,
+        budget: inout Budget
+    ) -> AXSnapshotNode? {
+        if depth > budget.maxDepth { return nil }
+        if budget.nodesRemaining <= 0 { return nil }
+        if budget.expired { return nil }
+        budget.nodesRemaining -= 1
+
+        let identity = identity(of: element)
+        // The AX graph is not a tree — the same element is reachable through
+        // more than one parent (a menu, from both its owning control and the
+        // window). Capturing it once is where menu duplication dies (W21).
+        if budget.visited.contains(identity) { return nil }
+        budget.visited.insert(identity)
+
+        let role = (MacAppDriver.axAttribute(element, attribute: kAXRoleAttribute) as? String) ?? ""
+        let rect = axRect(element)
+
+        // Skip a WINDOW that can't appear in the captured frame at all —
+        // there is no reason to pay for reading a background window's tree.
+        //
+        // The prune stops at the window: inside one, a child may legitimately
+        // paint OUTSIDE its parent's rect. An open `Menu` is exactly that —
+        // it hangs off the button that owns it while sitting well below the
+        // button's own 24pt-tall rect — so pruning by geometry mid-tree
+        // silently loses every menu item. Depth is bounded by the node
+        // budget instead, which is what the pre-W19 walk relied on too.
+        if let rect, depth == 0 {
+            let inter = rect.intersection(frame)
+            if inter.isNull || inter.width <= 0 || inter.height <= 0 { return nil }
+        }
+
+        let wantsLabels = MacMarkProbe.actionableRoles.contains(role)
+            || MacMarkProbe.staticTextRoles.contains(role)
+
+        var node = AXSnapshotNode(identity: identity, role: role, rect: rect)
+        if wantsLabels {
+            node.subrole = MacAppDriver.axAttribute(element, attribute: kAXSubroleAttribute) as? String
+            node.title = MacAppDriver.axAttribute(element, attribute: kAXTitleAttribute) as? String
+            node.value = stringValue(MacAppDriver.axAttribute(element, attribute: kAXValueAttribute))
+            node.axDescription = MacAppDriver.axAttribute(element, attribute: kAXDescriptionAttribute) as? String
+            node.help = MacAppDriver.axAttribute(element, attribute: kAXHelpAttribute) as? String
+            node.placeholder = MacAppDriver.axAttribute(element, attribute: kAXPlaceholderValueAttribute) as? String
+            node.identifier = MacAppDriver.axAttribute(element, attribute: kAXIdentifierAttribute) as? String
+            node.enabled = (MacAppDriver.axAttribute(element, attribute: kAXEnabledAttribute) as? Bool) ?? true
+            // `AXTitleUIElement` is the platform's own "that element is my
+            // label" pointer. When an app sets it we take it verbatim rather
+            // than inferring anything — it beats adjacency by construction.
+            if let titleRef = MacAppDriver.axAttribute(element, attribute: kAXTitleUIElementAttribute),
+               CFGetTypeID(titleRef) == AXUIElementGetTypeID() {
+                let titleElement = unsafeDowncast(titleRef, to: AXUIElement.self)
+                node.titleElementText =
+                    (MacAppDriver.axAttribute(titleElement, attribute: kAXValueAttribute) as? String)
+                    ?? (MacAppDriver.axAttribute(titleElement, attribute: kAXTitleAttribute) as? String)
+            }
+        }
+
+        let childrenAny = MacAppDriver.axAttribute(element, attribute: kAXChildrenAttribute)
+                       ?? MacAppDriver.axAttribute(element, attribute: kAXVisibleChildrenAttribute)
+        if let children = childrenAny as? [AXUIElement] {
+            var captured: [AXSnapshotNode] = []
+            captured.reserveCapacity(children.count)
+            for child in children {
+                if budget.nodesRemaining <= 0 { break }
+                if let childNode = capture(element: child, frame: frame, depth: depth + 1, budget: &budget) {
+                    captured.append(childNode)
+                }
+            }
+            node.children = captured
+        }
+        return node
+    }
+
+    /// AXValue is not always a string — a checkbox reports a number, a
+    /// slider a double. Only string-ish values can be a label or page text.
+    private static func stringValue(_ raw: AnyObject?) -> String? {
+        if let s = raw as? String { return s }
+        return nil
+    }
+
+    /// Read an element's global-screen-space rect from its position + size.
+    static func axRect(_ element: AXUIElement) -> CGRect? {
+        guard let posRef = MacAppDriver.axAttribute(element, attribute: kAXPositionAttribute),
+              let sizeRef = MacAppDriver.axAttribute(element, attribute: kAXSizeAttribute) else {
             return nil
         }
+        // Both the type check and `AXValueGetValue`'s own result matter. An
+        // unchecked read of a wrong-typed value leaves `pos` at .zero, and a
+        // rect at the global origin is not obviously bogus — on a frame
+        // anchored at (0,0) it becomes a plausible-looking mark in the
+        // corner. No geometry is better than invented geometry.
+        guard CFGetTypeID(posRef) == AXValueGetTypeID(),
+              CFGetTypeID(sizeRef) == AXValueGetTypeID() else { return nil }
         var pos = CGPoint.zero
         var size = CGSize.zero
-        AXValueGetValue(posRef as! AXValue, .cgPoint, &pos)
-        AXValueGetValue(sizeRef as! AXValue, .cgSize, &size)
+        guard AXValueGetValue(unsafeDowncast(posRef, to: AXValue.self), .cgPoint, &pos),
+              AXValueGetValue(unsafeDowncast(sizeRef, to: AXValue.self), .cgSize, &size) else {
+            return nil
+        }
         return CGRect(origin: pos, size: size)
-    }
-
-    /// Resolve a human-readable label from the standard AX
-    /// title-like attributes. AXTitle is the most-used; AXValue
-    /// gives current text-field content; AXDescription / AXHelp
-    /// catch tooltip-style labels on icon buttons; AXIdentifier is
-    /// a last-resort developer-supplied id.
-    nonisolated private static func axLabel(_ element: AXUIElement) -> String {
-        let candidates: [String] = [
-            kAXTitleAttribute as String,
-            kAXValueAttribute as String,
-            kAXDescriptionAttribute as String,
-            kAXHelpAttribute as String,
-            kAXIdentifierAttribute as String
-        ]
-        for attr in candidates {
-            if let raw = axAttribute(element, attribute: attr) as? String,
-               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.count > 80 ? String(trimmed.prefix(77)) + "…" : trimmed
-            }
-        }
-        return ""
-    }
-
-    /// Recursive walker. Bounded depth (24) + max-visited (1500)
-    /// keep pathological apps with deep / wide trees from blowing
-    /// the time budget for a single probe.
-    nonisolated private static func axWalk(
-        element: AXUIElement,
-        windowOrigin: CGPoint,
-        windowSize: CGSize,
-        depth: Int,
-        into out: inout [(rect: CGRect, role: String, label: String)]
-    ) {
-        if depth > 24 { return }
-        if out.count >= 200 { return }  // hard local cap before final 80-mark prefix
-
-        let role = (axAttribute(element, attribute: kAXRoleAttribute) as? String) ?? ""
-        let enabled = (axAttribute(element, attribute: kAXEnabledAttribute) as? Bool) ?? true
-
-        let isActionable = actionableAXRoles.contains(role)
-        let isContainer = containerAXRoles.contains(role)
-
-        if isActionable, enabled, let globalRect = axRect(element) {
-            // Convert global screen rect → window-local point rect.
-            let local = CGRect(
-                x: globalRect.minX - windowOrigin.x,
-                y: globalRect.minY - windowOrigin.y,
-                width: globalRect.width,
-                height: globalRect.height
-            )
-            // Clip to window bounds; reject elements with no
-            // visible intersection or sub-16pt tap targets.
-            let windowBounds = CGRect(origin: .zero, size: windowSize)
-            let visible = local.intersection(windowBounds)
-            if !visible.isNull && visible.width >= 16 && visible.height >= 16 {
-                let label = axLabel(element)
-                out.append((local, role, label))
-                // Don't recurse — avoids double-marking a Row that
-                // contains a Button (the Row mark covers the whole
-                // visible interaction; the agent doesn't need both).
-                return
-            }
-            // Element rejected by size filter — fall through to
-            // recurse in case useful descendants live underneath.
-        }
-        // Containers (and rejected actionables) descend into
-        // children. Read AXChildren; if nil, try AXVisibleChildren
-        // (e.g., for tables that only expose currently-rendered rows).
-        _ = isContainer
-        let childrenAny = axAttribute(element, attribute: kAXChildrenAttribute)
-                       ?? axAttribute(element, attribute: kAXVisibleChildrenAttribute)
-        guard let children = childrenAny as? [AXUIElement] else { return }
-        for child in children {
-            axWalk(
-                element: child,
-                windowOrigin: windowOrigin,
-                windowSize: windowSize,
-                depth: depth + 1,
-                into: &out
-            )
-            if out.count >= 200 { return }
-        }
-    }
-
-    /// Strip the `AX` prefix from a role name for the annotation
-    /// (`AXButton` → `button`). Lowercase-first to match the iOS /
-    /// web role formatting.
-    nonisolated private static func shortAXRole(_ raw: String) -> String {
-        let body: String
-        if raw.hasPrefix("AX") {
-            body = String(raw.dropFirst(2))
-        } else {
-            body = raw
-        }
-        guard let first = body.first else { return body }
-        return first.lowercased() + body.dropFirst()
     }
 }
 

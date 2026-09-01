@@ -87,10 +87,10 @@ enum UIObservationPayload {
                 "height": jsonNumber(mark.rect.size.height)
             ]
         ]
-        // Provenance for `label` (web only). OMITTED — not nulled — on iOS
-        // and macOS: their probes resolve a name without recording where it
-        // came from, and an absent key is the honest form of "unknown", the
-        // same convention `page_text` follows.
+        // Provenance for `label`. Web and macOS both report it; iOS does
+        // not. OMITTED — not nulled — where it is unknown: an absent key is
+        // the honest form of "we didn't record that", the same convention
+        // `page_text` follows.
         if let source = mark.labelSource, !source.isEmpty {
             out["label_source"] = source
         }
@@ -145,12 +145,12 @@ enum UIObservationPayload {
                         "type": "object",
                         "properties": [
                             "id": ["type": "integer", "description": "The badge number; the id tap_mark(id) takes."],
-                            "label": ["type": "string", "description": "Accessible label. Never empty in a web session — an unnameable control gets a synthesized placeholder (see label_source); iOS/macOS can still return an empty string."],
+                            "label": ["type": "string", "description": "Accessible label. Never empty in a web or macOS session — an unnameable control gets a synthesized placeholder (see label_source); iOS can still return an empty string."],
                             "role": ["type": "string", "description": "Source-platform role (web: a/button/…; iOS: XCUIElementType…; macOS: AX…)."],
                             "label_source": [
                                 "type": "string",
-                                "enum": ["aria-label", "labelledby", "label", "placeholder", "title", "value", "secure-field", "text", "img-alt", "svg-title", "text-content", "glyph", "testid", "name", "synthesized", "none"],
-                                "description": "Where `label` came from, in the probe's priority order. Web sessions only — omitted on iOS/macOS, whose probes report no provenance. Prefer aria-label / labelledby / label for durable resolvers; placeholder and value are sample data that move with copy edits. img-alt / svg-title / text-content / glyph name icon-only controls (glyph reports a close ✕ as \"Close\"); secure-field means the control is a password input, whose value is never used as a label (it would be the plaintext) — the label is the constant \"Password\"; testid is the page's own test hook; synthesized means nothing was derivable and the label is a placeholder like \"unlabelled button\" — address that control by position and treat it as a page bug."
+                                "enum": ["aria-label", "labelledby", "label", "placeholder", "title", "value", "secure-field", "text", "img-alt", "svg-title", "text-content", "glyph", "testid", "name", "synthesized", "none", "ax-title", "ax-title-element", "ax-description", "ax-help", "ax-placeholder", "adjacent-text", "ax-identifier"],
+                                "description": "Where `label` came from, in the probe's priority order. Web and macOS report it; omitted on iOS. WEB: aria-label / labelledby / label are the durable ones; placeholder and value are sample data that move with copy edits. img-alt / svg-title / text-content / glyph name icon-only controls (glyph reports a close ✕ as \"Close\"); testid is the page's own test hook. MACOS: ax-title / ax-title-element / ax-description / ax-help are what the app itself declared and are the durable ones; ax-placeholder and value are content, not names; adjacent-text is INFERRED — the visible static text beside an otherwise-unnamed control (the SwiftUI TextField case), correct for ordinary form layouts but a guess, so prefer it over nothing and re-check it if a resolver misfires; text is the control's own visible caption (a table row's contents); ax-identifier is the developer's test hook. BOTH: secure-field means a password field, whose value is never used as a label (it would be the plaintext) — the label is the constant \"Password\"; synthesized means nothing was derivable and the label is a placeholder like \"unlabelled textField\" — address that control by position and treat it as an app bug."
                             ],
                             "rect": [
                                 "type": "object",
@@ -169,7 +169,7 @@ enum UIObservationPayload {
                 ],
                 "page_text": [
                     "type": "string",
-                    "description": "Visible text of the frame, whitespace-normalized and capped at 20000 characters (a trailing … marks truncation). Web sessions only — omitted on iOS and macOS, which have no cheap text roll-up."
+                    "description": "Visible text of the frame, whitespace-normalized and capped at 20000 characters (a trailing … marks truncation). Web sessions (the rendered document's text) and macOS sessions (the front window/sheet/popover's static text, in reading order — scoped to the SAME frame the marks came from). Omitted on iOS, which has no cheap text roll-up."
                 ]
             ],
             "required": ["session_id", "step", "point_size", "marks"]

@@ -98,3 +98,11 @@ sessions/.index.json
 
 # Scarf machine-local project state (host bindings, absolute paths)
 .scarf/project.json
+
+# Build product of the macOS AX fixture app (HarnessMCP/fixtures/macos-app).
+# The source and its build script are checked in; the .app is rebuilt on
+# demand by build-fixture.sh, and the live probe tests skip without it.
+HarnessMCP/fixtures/macos-app/build/
+
+# Python bytecode from running the smoke scripts as modules.
+__pycache__/

@@ -456,7 +456,18 @@ extension MCPServer {
         let runID = try args.requireUUID("run_id")
         let cancelled = await c.supervisor.cancel(id: runID)
         guard cancelled else {
-            throw MCPToolError.notFound("active run \(runID.uuidString) (not started in this process, or already finished)")
+            // W32 — say WHICH kind of "not cancellable" this is. A run this
+            // process knows about but has already finished is a different
+            // fact from a run id it has never seen, and the second one is
+            // what a caller sees after harness-mcp restarted underneath it.
+            if let status = await c.supervisor.status(id: runID) {
+                throw MCPToolError.notFound(
+                    "active run \(runID.uuidString) — that run is in this process but already finished (phase: \(status.phase)\(status.error.map { ", \($0)" } ?? "")). Nothing to cancel; fetch it with get_run_result."
+                )
+            }
+            throw MCPToolError.notFound(
+                "active run \(runID.uuidString) — no run with that id has ever been started in this engine process. If harness-mcp restarted since the run began, the run died with it (runs do not survive the process); get_run_status can still read a persisted record. Call list_runs to see recent runs."
+            )
         }
         return jsonText(["cancelled": ["run_id": runID.uuidString]])
     }

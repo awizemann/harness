@@ -249,6 +249,9 @@ targets:
           # its own xcodeproj during the standalone iOS proof) — never a
           # source of THIS macOS tool. Its `@main` would collide otherwise.
           - "fixtures/ios-app/**"
+          # Same for the macOS AX fixture app, which `build-fixture.sh`
+          # compiles standalone for the live probe tests.
+          - "fixtures/macos-app/**"
       - path: Harness
         excludes:
           # Identical exclude set to HarnessCLI: drop the SwiftUI views,
