@@ -139,6 +139,26 @@ struct UISessionConfig: Sendable {
     var macProjectPath: String?
     /// Xcode scheme for the build-from-source macOS flow.
     var macScheme: String?
+    /// W26 — environment variables applied to the LAUNCHED app, macOS only.
+    /// This is how an app's own test-fixture mode is reached (a sandbox home,
+    /// a seeded database, a "don't touch the user's real data" switch): the
+    /// macOS analogue of web's `session_state` injection.
+    ///
+    /// Applied via `NSWorkspace.OpenConfiguration.environment` — LaunchServices
+    /// ADDS these pairs to the environment the app would normally launch with
+    /// (an existing name is overridden, the rest is untouched; verified against
+    /// a live launch, not assumed). There is no shell anywhere on the path, so
+    /// nothing here is interpolated, expanded, or word-split;
+    /// a value containing `;`, `$(…)` or a newline is just a string the app
+    /// reads back from its own environment.
+    ///
+    /// May carry SECRETS (a test API token, a throwaway password): treat it
+    /// the way `webSessionState` is treated — never log the values.
+    var macLaunchEnvironment: [String: String]?
+    /// W26 — command-line arguments passed to the LAUNCHED app, macOS only
+    /// (`NSWorkspace.OpenConfiguration.arguments`, i.e. argv — again, no
+    /// shell, no interpolation).
+    var macLaunchArguments: [String]?
 
     init(
         platform: PlatformKind,
@@ -157,7 +177,9 @@ struct UISessionConfig: Sendable {
         iosAppBundlePath: String? = nil,
         macAppPath: String? = nil,
         macProjectPath: String? = nil,
-        macScheme: String? = nil
+        macScheme: String? = nil,
+        macLaunchEnvironment: [String: String]? = nil,
+        macLaunchArguments: [String]? = nil
     ) {
         self.platform = platform
         self.artifactDirPath = artifactDirPath
@@ -176,6 +198,8 @@ struct UISessionConfig: Sendable {
         self.macAppPath = macAppPath
         self.macProjectPath = macProjectPath
         self.macScheme = macScheme
+        self.macLaunchEnvironment = macLaunchEnvironment
+        self.macLaunchArguments = macLaunchArguments
     }
 }
 
@@ -295,6 +319,13 @@ enum UISessionError: Error, Sendable, LocalizedError {
     /// A web-only session capability (`session_state`, `visible`,
     /// `export_ui_session_state`) was asked for on an iOS / macOS session.
     case webOnlyCapability(String, PlatformKind)
+    /// A macOS-only session capability (`env`, `launch_args`) was asked for
+    /// on a web / iOS session. Rejected loudly rather than dropped silently:
+    /// a caller who thinks it enabled the app's test-fixture mode and got the
+    /// user's real data deserves the error (W26).
+    case macOnlyCapability(String, PlatformKind)
+    /// An `env` key or `launch_args` entry the launch API cannot carry.
+    case invalidLaunchParameter(String, String)
     /// `credential_id` doesn't resolve to a staged credential in the shared
     /// store (wrong id, or staged against a different Harness install).
     case credentialNotStaged(UUID)
@@ -343,6 +374,10 @@ enum UISessionError: Error, Sendable, LocalizedError {
             return "\(HarnessPaths.wdaSourceEnvVar) is set to \"\(path)\" but no WebDriverAgent.xcodeproj was found there. Point it at a WebDriverAgent checkout (the directory that contains WebDriverAgent.xcodeproj)."
         case .webOnlyCapability(let name, let platform):
             return "'\(name)' applies to web sessions only (this session is \(platform.displayName)). A native app has no cookie jar or localStorage to seed or export."
+        case .macOnlyCapability(let name, let platform):
+            return "'\(name)' applies to macOS sessions only (this session is \(platform.displayName)). A web session is seeded with session_state; an iOS session's launch environment is not settable through this tool."
+        case .invalidLaunchParameter(let name, let why):
+            return "Invalid '\(name)' for this macOS session: \(why)."
         case .credentialNotStaged(let id):
             return "No staged credential with id \(id.uuidString). Stage one with stage_credential (its password goes to the Keychain only), or call list_credentials for an application to see the ids it already has."
         case .credentialPasswordMissing(let id, let label):

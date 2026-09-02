@@ -57,6 +57,53 @@ enum MacInputBackendKind: String, Sendable, Equatable {
     var activatesOnLaunch: Bool { self == .hid }
 }
 
+/// What `tap_mark` MEANS for the element under the badge (WB-23).
+///
+/// Before this, every `tap_mark` was a press, and on the two roles a form
+/// flow actually needs — a text field and a table row — `kAXPressAction`
+/// either isn't advertised or does nothing, so the engine reported a step
+/// that never happened and the next `type` landed wherever focus already
+/// was. The intent is a pure function of the mark's ROLE so it is
+/// predictable from the mark table alone: a client can read the row and know
+/// what the tap will do before it calls.
+enum MacMarkIntent: String, Sendable, Equatable {
+    /// Activate the control (`kAXPressAction`, else a targeted click).
+    /// Buttons, menu items, checkboxes, links — everything not below.
+    case press
+    /// Give the control keyboard focus WITHOUT activating it. Text-entry
+    /// roles: the caller's next step is almost always `type`, and focus is
+    /// exactly what makes that land in the field they addressed.
+    case focus
+    /// SELECT the row — not open it. A single click selects in every
+    /// standard AppKit / SwiftUI list; opening is a double click, and it is
+    /// reachable as `double_tap`, which already exists in the vocabulary.
+    /// Keeping the two apart is what makes `tap_mark` on a row safe to call
+    /// on a list whose activation navigates away.
+    case select
+}
+
+/// Which mark roles get which `tap_mark` semantics. Roles are the SHORT
+/// form the mark table publishes (`MacMarkProbe.shortRole`), so this reads
+/// against exactly what a client sees.
+enum MacMarkActuationPolicy {
+    /// Text-entry roles → focus. Matches `MacMarkProbe.textEntryRoles`, in
+    /// short form.
+    static let focusRoles: Set<String> = [
+        "textField", "textArea", "comboBox", "searchField", "secureTextField"
+    ]
+
+    /// Row-ish roles → select. A cell is included because a click lands on a
+    /// cell far more often than on the row that owns it, and the driver
+    /// climbs to the owning row before selecting.
+    static let selectRoles: Set<String> = ["row", "cell"]
+
+    static func intent(forRole role: String) -> MacMarkIntent {
+        if focusRoles.contains(role) { return .focus }
+        if selectRoles.contains(role) { return .select }
+        return .press
+    }
+}
+
 /// One rung of the actuation ladder. The runtime attempts steps in order
 /// and stops at the first that lands; if all are exhausted it throws
 /// `MacDriverError.unactuatable`.
@@ -68,6 +115,15 @@ enum MacActuationStep: String, Sendable, Equatable {
     /// `AXSetValue(kAXValueAttribute, …)` for whole-value entry.
     /// Contained only.
     case axSetValue
+    /// Set `kAXFocusedAttribute` on the mark's own element, verified by
+    /// read-back. What `tap_mark` on a TEXT FIELD means (WB-23): AXPress on
+    /// a field is a no-op, so pressing it reported a step that never
+    /// happened. Contained only.
+    case axFocus
+    /// Select the mark's row — `kAXSelectedAttribute` on the row, else
+    /// `kAXSelectedRowsAttribute` on its table / outline — verified by
+    /// read-back. What `tap_mark` on a ROW means (WB-23). Contained only.
+    case axSelect
     /// A `CGEvent` posted to the SUT's queue via `postToPid(_:)`. The
     /// real pointer never moves. Contained only.
     case cgEventTargeted
@@ -81,6 +137,8 @@ enum MacActuationStep: String, Sendable, Equatable {
         switch self {
         case .axPress:          return "AX press"
         case .axSetValue:       return "AX set-value"
+        case .axFocus:          return "AX focus"
+        case .axSelect:         return "AX select"
         case .cgEventTargeted:  return "CGEvent→pid"
         case .cgEventGlobalHID: return "CGEvent→HID"
         }
@@ -91,11 +149,25 @@ enum MacActuationStep: String, Sendable, Equatable {
 /// steps the driver attempts. Pure — no I/O — so it is fully unit-tested
 /// and the runtime consults exactly this to stay honest to the tests.
 enum MacActuationPlan {
-    static func steps(for input: ToolInput, backend: MacInputBackendKind) -> [MacActuationStep] {
+    static func steps(
+        for input: ToolInput,
+        backend: MacInputBackendKind,
+        markIntent: MacMarkIntent = .press
+    ) -> [MacActuationStep] {
         switch input {
         // Single-activation clicks: AX press if the point resolves to an
-        // actionable element, else a targeted CGEvent click.
-        case .tap, .tapMark:
+        // actionable element, else a targeted CGEvent click. `tap_mark`
+        // additionally reads its intent from the MARK'S ROLE (WB-23) — a
+        // field wants focus and a row wants selection, and pressing either
+        // is the no-op that made them unaddressable.
+        case .tapMark:
+            if backend == .hid { return [.cgEventGlobalHID] }
+            switch markIntent {
+            case .press:  return [.axPress, .cgEventTargeted]
+            case .focus:  return [.axFocus, .cgEventTargeted]
+            case .select: return [.axSelect, .cgEventTargeted]
+            }
+        case .tap:
             return backend == .hid ? [.cgEventGlobalHID] : [.axPress, .cgEventTargeted]
 
         // Text entry: whole-value AXSetValue on the focused/target field,

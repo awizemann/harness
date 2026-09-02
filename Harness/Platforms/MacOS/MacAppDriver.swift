@@ -68,6 +68,14 @@ actor MacAppDriver: UXDriving {
     /// before capture/input.
     let backend: MacInputBackendKind
 
+    /// W26 — the environment and arguments this SUT was LAUNCHED with, kept
+    /// so `relaunchForNewLeg()` reproduces the same process. Without them a
+    /// chain leg would silently drop the app's fixture mode halfway through a
+    /// run and start driving the user's real data. Never logged: an env value
+    /// can be a secret.
+    let launchEnvironment: [String: String]
+    let launchArguments: [String]
+
     /// The launched SUT's process id. EVERY SUT operation (terminate,
     /// foreground, window lookup, input delivery) binds to this pid, never
     /// to a bundle-id match — a same-bundle-id stranger (e.g. the
@@ -90,8 +98,12 @@ actor MacAppDriver: UXDriving {
         appBundleURL: URL?,
         credential: CredentialBinding? = nil,
         backend: MacInputBackendKind? = nil,
-        processIdentifier: pid_t
+        processIdentifier: pid_t,
+        launchEnvironment: [String: String] = [:],
+        launchArguments: [String] = []
     ) {
+        self.launchEnvironment = launchEnvironment
+        self.launchArguments = launchArguments
         self.bundleIdentifier = bundleIdentifier
         self.appBundleURL = appBundleURL
         self.credential = credential
@@ -314,11 +326,33 @@ actor MacAppDriver: UXDriving {
 
     // MARK: - Set-of-Mark dispatch
 
-    /// Resolve `id` to a cached `InteractiveMark` and click the center of
-    /// its visible-in-window portion. Mirrors the web / iOS dispatchers:
-    /// viewport-clip, then the standard single-left-click ladder
-    /// (`actuateClick` with `planInput: .tapMark`) — AX-press-first in
-    /// contained mode, global HID under the legacy backend.
+    /// Resolve `id` to a cached `InteractiveMark` and actuate the center of
+    /// its visible-in-window portion, with the semantics its ROLE calls for
+    /// (`MacMarkActuationPolicy`, WB-23):
+    ///
+    ///  * a text-entry role is FOCUSED (`kAXFocused`, verified by read-back),
+    ///    because `kAXPressAction` on a field is a no-op — the old ladder
+    ///    reported a landed press and the caller's next `type` went wherever
+    ///    focus already happened to be;
+    ///  * a row / cell is SELECTED (`kAXSelected` on the row, else
+    ///    `kAXSelectedRows` on its table), never pressed. Press on a row can
+    ///    ACTIVATE it — open a document, push a detail view — and a tap that
+    ///    sometimes selects and sometimes navigates is not something a guide
+    ///    can be authored against. Opening is `double_tap` at the mark's
+    ///    centre — the caller has the rect;
+    ///  * everything else keeps the single-left-click ladder (AX press first
+    ///    in contained mode, global HID under the legacy backend).
+    ///
+    /// Every intent falls back to ONE targeted left click at the mark's
+    /// centre, which is what a human does and which focuses a field and
+    /// selects a row on every standard AppKit / SwiftUI control. Note what
+    /// that fallback means for a list whose rows open on a SINGLE click
+    /// (a Finder-style "single click opens" preference, a custom
+    /// `onTapGesture` row): AX selection is tried first precisely because it
+    /// cannot activate anything, and the click is only reached when the app
+    /// exposes no selection at all. When neither lands, the step fails
+    /// honestly (`unactuatable`) rather than reporting a tap that did
+    /// nothing.
     private func dispatchMarkClick(id: Int, info: WindowInfo) async throws {
         guard let mark = lastMarks.first(where: { $0.id == id }) else {
             throw MacDriverError.unknownMark(id: id)
@@ -339,12 +373,70 @@ actor MacAppDriver: UXDriving {
             cx = mark.rect.midX
             cy = mark.rect.midY
         }
-        Self.logger.info("tap_mark(\(id, privacy: .public)) → label=\"\(mark.label, privacy: .public)\" role=\(mark.role, privacy: .public) rect=(\(Int(mark.rect.minX), privacy: .public),\(Int(mark.rect.minY), privacy: .public),\(Int(mark.rect.width), privacy: .public),\(Int(mark.rect.height), privacy: .public)) → click(\(Int(cx), privacy: .public),\(Int(cy), privacy: .public))")
+        let intent = MacMarkActuationPolicy.intent(forRole: mark.role)
+        Self.logger.info("tap_mark(\(id, privacy: .public)) → label=\"\(mark.label, privacy: .public)\" role=\(mark.role, privacy: .public) intent=\(intent.rawValue, privacy: .public) rect=(\(Int(mark.rect.minX), privacy: .public),\(Int(mark.rect.minY), privacy: .public),\(Int(mark.rect.width), privacy: .public),\(Int(mark.rect.height), privacy: .public)) → (\(Int(cx), privacy: .public),\(Int(cy), privacy: .public))")
         if ProcessInfo.processInfo.environment["HARNESS_DUMP_MARKED"] == "1" {
-            let line = "[MacAX] tap_mark(\(id)) label=\"\(mark.label)\" role=\(mark.role) rect=(\(Int(mark.rect.minX)),\(Int(mark.rect.minY)),\(Int(mark.rect.width)),\(Int(mark.rect.height))) → click(\(Int(cx)),\(Int(cy)))\n"
+            let line = "[MacAX] tap_mark(\(id)) label=\"\(mark.label)\" role=\(mark.role) intent=\(intent.rawValue) rect=(\(Int(mark.rect.minX)),\(Int(mark.rect.minY)),\(Int(mark.rect.width)),\(Int(mark.rect.height))) → (\(Int(cx)),\(Int(cy)))\n"
             FileHandle.standardError.write(Data(line.utf8))
         }
-        try await actuateClick(button: .left, count: 1, windowLocal: CGPoint(x: cx, y: cy), info: info, planInput: .tapMark(id: id))
+        try await actuateMark(
+            intent: intent,
+            id: id,
+            role: mark.role,
+            windowLocal: CGPoint(x: cx, y: cy),
+            info: info
+        )
+    }
+
+    /// The `tap_mark` ladder, per intent. `.press` is the pre-WB-23 path,
+    /// unchanged; `.focus` and `.select` swap the AX rung for one that
+    /// actually does what the role means, keeping the same targeted-click
+    /// fallback and the same honest `unactuatable` failure.
+    private func actuateMark(
+        intent: MacMarkIntent,
+        id: Int,
+        role: String,
+        windowLocal: CGPoint,
+        info: WindowInfo
+    ) async throws {
+        guard intent != .press else {
+            try await actuateClick(
+                button: .left, count: 1, windowLocal: windowLocal,
+                info: info, planInput: .tapMark(id: id)
+            )
+            return
+        }
+        let global = toGlobalPoint(windowLocal, info)
+        let pid = info.ownerPID
+        try await runLadder(
+            action: "tap_mark(\(id)) [\(role) → \(intent.rawValue)] at (\(Int(windowLocal.x)),\(Int(windowLocal.y)))",
+            steps: MacActuationPlan.steps(for: .tapMark(id: id), backend: backend, markIntent: intent),
+            axFocus: {
+                guard let element = Self.axFocusableElement(pid: pid, atGlobal: global) else {
+                    return .notApplicable("no focusable AX element at the mark's point")
+                }
+                return Self.axFocus(element)
+                    ? .landed
+                    : .notApplicable("element did not report kAXFocused after being set")
+            },
+            axSelect: {
+                guard let row = Self.axRowElement(pid: pid, atGlobal: global) else {
+                    return .notApplicable("no AXRow at the mark's point")
+                }
+                return Self.axSelectRow(row)
+                    ? .landed
+                    : .notApplicable("neither the row nor its table accepted a verified selection")
+            },
+            cgTargeted: {
+                self.postClickToPid(button: .left, count: 1, global: global, pid: pid)
+                    ? .landed
+                    : .notApplicable("CGEvent construction failed")
+            },
+            cgGlobalHID: {
+                try await self.postClickHID(button: .left, count: 1, global: global)
+                return .landed
+            }
+        )
     }
 
     /// Quit the running SUT: ask it to `terminate()`, wait ~2s, then
@@ -387,6 +479,9 @@ actor MacAppDriver: UXDriving {
         // `launchedPID` to the stranger. A new instance guarantees the pid we
         // adopt is the one we launched.
         cfg.createsNewApplicationInstance = true
+        // W26 — the new leg must be the SAME process shape as the first one.
+        if !launchEnvironment.isEmpty { cfg.environment = launchEnvironment }
+        if !launchArguments.isEmpty { cfg.arguments = launchArguments }
         let launched: NSRunningApplication
         if let bundleURL = appBundleURL {
             // NSWorkspace handles "cold relaunch from .app".
@@ -506,6 +601,8 @@ actor MacAppDriver: UXDriving {
         steps: [MacActuationStep],
         axPress: () -> StepResult = { .notApplicable("no AX-press path for this tool") },
         axSetValue: () -> StepResult = { .notApplicable("no AX-value path for this tool") },
+        axFocus: () -> StepResult = { .notApplicable("no AX-focus path for this tool") },
+        axSelect: () -> StepResult = { .notApplicable("no AX-select path for this tool") },
         cgTargeted: () -> StepResult = { .notApplicable("no targeted-CGEvent path for this tool") },
         cgGlobalHID: () async throws -> StepResult = { .notApplicable("no HID path for this tool") }
     ) async throws {
@@ -515,6 +612,8 @@ actor MacAppDriver: UXDriving {
             switch step {
             case .axPress:          result = axPress()
             case .axSetValue:       result = axSetValue()
+            case .axFocus:          result = axFocus()
+            case .axSelect:         result = axSelect()
             case .cgEventTargeted:  result = cgTargeted()
             case .cgEventGlobalHID: result = try await cgGlobalHID()
             }
@@ -863,6 +962,118 @@ actor MacAppDriver: UXDriving {
 
     nonisolated private static func axPerformPress(_ element: AXUIElement) -> Bool {
         AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+    }
+
+    // MARK: AX focus / selection (WB-23 — what tap_mark means per role)
+
+    /// Hit-test at a global point and climb to the nearest element that will
+    /// accept keyboard focus (`kAXFocused` settable). The deep hit inside a
+    /// SwiftUI `TextField` is routinely the inner text area or a static
+    /// label, so the climb is what finds the field itself.
+    nonisolated private static func axFocusableElement(pid: Int, atGlobal p: CGPoint) -> AXUIElement? {
+        axClimb(pid: pid, atGlobal: p) { element in
+            var settable: DarwinBoolean = false
+            guard AXUIElementIsAttributeSettable(element, kAXFocusedAttribute as CFString, &settable) == .success
+            else { return false }
+            return settable.boolValue
+        }
+    }
+
+    /// Hit-test at a global point and climb to the nearest `AXRow`. A click
+    /// on a list lands on a cell or on the text inside it far more often
+    /// than on the row itself.
+    nonisolated private static func axRowElement(pid: Int, atGlobal p: CGPoint) -> AXUIElement? {
+        axClimb(pid: pid, atGlobal: p) { element in
+            axRole(element) == "AXRow"
+        }
+    }
+
+    /// Shared hit-test-then-climb. At most five hops, and every attribute
+    /// read is CHECKED, never forced: these values come from another
+    /// process's accessibility server, and a SUT publishing a malformed
+    /// attribute must degrade to "nothing here", never crash the engine.
+    nonisolated private static func axClimb(
+        pid: Int,
+        atGlobal p: CGPoint,
+        matches: (AXUIElement) -> Bool
+    ) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(pid_t(pid))
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(app, Float(p.x), Float(p.y), &hit) == .success,
+              var element = hit else { return nil }
+        for _ in 0..<5 {
+            if matches(element) { return element }
+            guard let parent = axAttribute(element, attribute: kAXParentAttribute),
+                  CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+            element = unsafeDowncast(parent, to: AXUIElement.self)
+        }
+        return nil
+    }
+
+    nonisolated private static func axRole(_ element: AXUIElement) -> String? {
+        axAttribute(element, attribute: kAXRoleAttribute) as? String
+    }
+
+    /// Focus an element and PROVE it took. `AXUIElementSetAttributeValue`
+    /// returning `.success` means the app accepted the message, not that
+    /// anything moved — several AppKit views answer success and leave focus
+    /// where it was. Read-back is the difference between a focus and a
+    /// report of one; without it the caller's next `type` lands in the field
+    /// they were already in, which is precisely the bug this replaces.
+    nonisolated private static func axFocus(_ element: AXUIElement) -> Bool {
+        guard AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+        else { return false }
+        if let value = axAttribute(element, attribute: kAXFocusedAttribute) as? Bool, value { return true }
+        // Some views never publish `AXFocused` on the element itself; the
+        // application's own focused-element pointer is the second opinion.
+        let pid = pidOf(element)
+        guard pid > 0, let focused = axFocusedElement(pid: pid) else { return false }
+        return CFEqual(focused, element)
+    }
+
+    /// Select a row, verified by read-back, without ever pressing it.
+    ///
+    /// Two paths, in order: the row's own `kAXSelected`, then the owning
+    /// table / outline / list's `kAXSelectedRows`. `kAXPressAction` is
+    /// deliberately NOT a fallback — press on a row means "activate", which
+    /// on a real list opens a document or navigates, and `tap_mark` promising
+    /// selection must not sometimes navigate instead.
+    nonisolated private static func axSelectRow(_ row: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        if AXUIElementIsAttributeSettable(row, kAXSelectedAttribute as CFString, &settable) == .success,
+           settable.boolValue,
+           AXUIElementSetAttributeValue(row, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success,
+           axIsSelected(row) {
+            return true
+        }
+        // The container path: climb to the nearest ancestor that publishes
+        // `AXSelectedRows` and hand it a one-row selection.
+        var element = row
+        for _ in 0..<5 {
+            guard let parent = axAttribute(element, attribute: kAXParentAttribute),
+                  CFGetTypeID(parent) == AXUIElementGetTypeID() else { return false }
+            element = unsafeDowncast(parent, to: AXUIElement.self)
+            var containerSettable: DarwinBoolean = false
+            guard AXUIElementIsAttributeSettable(element, kAXSelectedRowsAttribute as CFString, &containerSettable) == .success,
+                  containerSettable.boolValue else { continue }
+            let selection = [row] as CFArray
+            guard AXUIElementSetAttributeValue(element, kAXSelectedRowsAttribute as CFString, selection) == .success
+            else { return false }
+            return axIsSelected(row)
+        }
+        return false
+    }
+
+    nonisolated private static func axIsSelected(_ element: AXUIElement) -> Bool {
+        (axAttribute(element, attribute: kAXSelectedAttribute) as? Bool) == true
+    }
+
+    /// The pid that owns an element, for the focused-element second opinion.
+    /// Returns 0 when AX won't say, which resolves to "no focused element".
+    nonisolated private static func pidOf(_ element: AXUIElement) -> Int {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return 0 }
+        return Int(pid)
     }
 
     /// The app's currently focused UI element (where typed text would

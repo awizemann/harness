@@ -31,9 +31,28 @@ struct MacOSPlatformAdapter: PlatformAdapter {
     /// failed/timed-out start) never litters the desktop with running apps.
     let terminatesOnTeardown: Bool
 
-    init(services: PlatformAdapterServices, terminatesOnTeardown: Bool = false) {
+    /// W26 — environment applied to the launched app, and the arguments it
+    /// is launched with. Both go to `NSWorkspace.OpenConfiguration`, which
+    /// hands them to the new process directly: there is no shell on this
+    /// path, so nothing is expanded, word-split, or interpolated. They come
+    /// from the session's caller (an MCP client's flow), and they apply to a
+    /// LOCALLY BUILT app the same caller pointed us at — this widens what
+    /// that app does with its own launch, and nothing else. The values may
+    /// be secrets (a fixture-mode token), so nothing here logs them; the
+    /// launch line records key NAMES only.
+    let launchEnvironment: [String: String]
+    let launchArguments: [String]
+
+    init(
+        services: PlatformAdapterServices,
+        terminatesOnTeardown: Bool = false,
+        launchEnvironment: [String: String] = [:],
+        launchArguments: [String] = []
+    ) {
         self.services = services
         self.terminatesOnTeardown = terminatesOnTeardown
+        self.launchEnvironment = launchEnvironment
+        self.launchArguments = launchArguments
     }
 
     func prepare(
@@ -78,38 +97,103 @@ struct MacOSPlatformAdapter: PlatformAdapter {
         // only legacy HID needs the SUT foregrounded so global-HID events
         // land on it. Backend is resolved once, from HARNESS_MACOS_INPUT.
         let backend = MacInputBackendKind.fromEnvironment(ProcessInfo.processInfo.environment)
-        let cfg = NSWorkspace.OpenConfiguration()
-        cfg.activates = backend.activatesOnLaunch
-        cfg.addsToRecentItems = false
-        let runningApp = try await NSWorkspace.shared.openApplication(at: bundleURL, configuration: cfg)
-        Self.logger.info("Launched macOS app pid=\(runningApp.processIdentifier, privacy: .public) bundleID=\(bundleID, privacy: .public) backend=\(backend.rawValue, privacy: .public) activates=\(backend.activatesOnLaunch, privacy: .public)")
-
-        // Wait for the SUT to expose a frontmost window. Bail with a clear
-        // error if it never does — the run can't proceed without one.
         let credential = await services.resolveCredentialBinding(for: request)
-        // Bind the driver to the launched instance's pid — every SUT op
-        // (terminate, foreground, window lookup, input) scopes to THIS pid,
-        // never a bundle-id match, so a same-bundle-id stranger (the dev's
-        // own copy) is never touched.
-        let driver = MacAppDriver(bundleIdentifier: bundleID, appBundleURL: bundleURL, credential: credential, backend: backend, processIdentifier: runningApp.processIdentifier)
+
+        func launch(freshInstance: Bool) async throws -> NSRunningApplication {
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.activates = backend.activatesOnLaunch
+            cfg.addsToRecentItems = false
+            // W26. Applied straight to the launch — no shell, no
+            // interpolation: LaunchServices carries the pairs into the new
+            // process's environment and argv verbatim.
+            if !launchEnvironment.isEmpty { cfg.environment = launchEnvironment }
+            if !launchArguments.isEmpty { cfg.arguments = launchArguments }
+            cfg.createsNewApplicationInstance = freshInstance
+            return try await NSWorkspace.shared.openApplication(at: bundleURL, configuration: cfg)
+        }
+
+        var driver: MacAppDriver?
         var pointSize = CGSize(width: 1280, height: 800) // safe default until first capture refines it
-        var ready = false
-        for _ in 0..<60 {
-            try? await Task.sleep(for: .milliseconds(150))
-            let probe = try? await Self.probeWindowSize(driver: driver)
-            if let p = probe {
-                pointSize = p
-                ready = true
+        var lastPID: pid_t = 0
+
+        // WB-23 — one bounded retry around the whole launch.
+        //
+        // The failure this fixes: end a macOS session and immediately start
+        // another on the same bundle id. The previous instance is still
+        // winding down, LaunchServices hands back THAT dying process rather
+        // than starting a new one, and the window we then wait for belongs to
+        // a pid that is on its way out — reported as "launched but never
+        // showed a visible window", which describes the symptom and none of
+        // the cause. Attempt 2 waits for every same-bundle-id instance to
+        // actually exit and then forces a genuinely new process.
+        //
+        // The wait is bounded and only happens on the failure path, so a
+        // legitimately running copy of the app (a developer's own) costs a
+        // normal start nothing.
+        for attempt in 1...2 {
+            if attempt == 2 {
+                let cleared = await MacLaunchSettle.awaitQuiet(
+                    stillRunning: { !Self.livePIDs(bundleID: bundleID).isEmpty }
+                )
+                Self.logger.info("macOS start retry for \(bundleID, privacy: .public): previous instances cleared=\(cleared, privacy: .public)")
+            }
+            // The race shows up here as well as later: while the previous
+            // instance is winding down, LaunchServices can refuse the open
+            // outright ("a miscellaneous error occurred") rather than hand
+            // back the dying process. Attempt 1 swallows that so attempt 2 —
+            // which waits for the field to clear first — gets its turn;
+            // attempt 2's failure is the caller's answer.
+            let runningApp: NSRunningApplication
+            do {
+                runningApp = try await launch(freshInstance: attempt == 2)
+            } catch {
+                Self.logger.info("macOS launch attempt \(attempt, privacy: .public) for \(bundleID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                if attempt == 1 { continue }
+                throw error
+            }
+            lastPID = runningApp.processIdentifier
+            Self.logger.info("Launched macOS app pid=\(lastPID, privacy: .public) bundleID=\(bundleID, privacy: .public) backend=\(backend.rawValue, privacy: .public) activates=\(backend.activatesOnLaunch, privacy: .public) attempt=\(attempt, privacy: .public) env_keys=\(launchEnvironment.keys.sorted().joined(separator: ","), privacy: .public) args=\(launchArguments.count, privacy: .public)")
+
+            // Bind the driver to the launched instance's pid — every SUT op
+            // (terminate, foreground, window lookup, input) scopes to THIS
+            // pid, never a bundle-id match, so a same-bundle-id stranger
+            // (the dev's own copy) is never touched.
+            let candidate = MacAppDriver(
+                bundleIdentifier: bundleID,
+                appBundleURL: bundleURL,
+                credential: credential,
+                backend: backend,
+                processIdentifier: lastPID,
+                launchEnvironment: launchEnvironment,
+                launchArguments: launchArguments
+            )
+            var ready = false
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(150))
+                if let size = try? await Self.probeWindowSize(driver: candidate) {
+                    pointSize = size
+                    ready = true
+                    break
+                }
+                // Stop waiting on a process that has gone: it will never show
+                // a window, and the seconds spent proving that are seconds
+                // the retry could be using.
+                if NSRunningApplication(processIdentifier: lastPID)?.isTerminated ?? true { break }
+            }
+            if ready {
+                driver = candidate
                 break
             }
+            // The app launched but never showed a window. A non-final
+            // attempt's instance is ALWAYS quit — it showed no window, so
+            // there is nothing in it for anyone to inspect, and leaving it
+            // running would mean the retry launches a second copy beside a
+            // wedged first one. Only the FINAL failure keeps the legacy GUI
+            // behaviour of leaving the app up for the user.
+            if attempt < 2 || terminatesOnTeardown { await candidate.terminateApp() }
         }
-        if !ready {
-            // The app launched but never showed a window. For a ui-session
-            // this is a failed start — quit the SUT before throwing so a
-            // headless / broken app doesn't leak onto the desktop. GUI runs
-            // (terminatesOnTeardown == false) keep the legacy behavior of
-            // leaving it for the user to inspect.
-            if terminatesOnTeardown { await driver.terminateApp() }
+
+        guard let driver else {
             throw MacOSAdapterError.windowNeverAppeared(bundleID: bundleID)
         }
 
@@ -196,6 +280,15 @@ struct MacOSPlatformAdapter: PlatformAdapter {
         return dict["CFBundleIdentifier"] as? String
     }
 
+    /// The pids of every running instance of `bundleID`, terminated ones
+    /// excluded. Used ONLY on the retry path, to tell "the previous instance
+    /// is still quitting" from "the app is genuinely broken".
+    static func livePIDs(bundleID: String) -> [pid_t] {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { !$0.isTerminated }
+            .map(\.processIdentifier)
+    }
+
     /// Quick probe — capture once and discard the PNG; we just want the
     /// resolved point size. Times out via the surrounding loop in
     /// `prepare(...)`.
@@ -205,6 +298,44 @@ struct MacOSPlatformAdapter: PlatformAdapter {
         defer { try? FileManager.default.removeItem(at: tmp) }
         let meta = try await driver.screenshot(into: tmp)
         return meta.pointSize
+    }
+}
+
+/// The bounded settle that stands between a session ending and the next one
+/// starting on the same app (WB-23).
+///
+/// Pure but for the two closures it is handed, so the suite can pin the
+/// timing contract — polls, gives up, reports honestly which — without
+/// launching or killing anything.
+enum MacLaunchSettle {
+    /// How long to wait for the previous instance(s) to actually exit.
+    /// `terminate()` → `forceTerminate()` on the way out takes at most ~2s
+    /// in `MacAppDriver.terminateApp`, so 4s covers a normal quit with room
+    /// to spare; past that the process is not merely slow to die and waiting
+    /// longer buys nothing a retry can use.
+    static let maxWaitMs = 4_000
+    static let pollIntervalMs = 100
+
+    /// Poll `stillRunning` until it answers false or the budget expires.
+    ///
+    /// Returns TRUE when the field cleared and FALSE when it timed out. The
+    /// caller relaunches either way — a stranger's copy of the same app may
+    /// legitimately be running forever, and refusing to start because of it
+    /// would be worse than starting beside it — but the two are different
+    /// facts and the log says which happened.
+    static func awaitQuiet(
+        maxWaitMs: Int = maxWaitMs,
+        pollIntervalMs: Int = pollIntervalMs,
+        stillRunning: () -> Bool,
+        sleep: (Int) async -> Void = { try? await Task.sleep(for: .milliseconds($0)) }
+    ) async -> Bool {
+        var waited = 0
+        while true {
+            if !stillRunning() { return true }
+            if waited >= maxWaitMs { return false }
+            await sleep(pollIntervalMs)
+            waited += pollIntervalMs
+        }
     }
 }
 
@@ -220,7 +351,7 @@ enum MacOSAdapterError: Error, Sendable, LocalizedError {
         case .bundleIdentifierMissing(let path):
             return "Couldn't read CFBundleIdentifier from \(path)/Contents/Info.plist."
         case .windowNeverAppeared(let bid):
-            return "macOS app '\(bid)' launched but never showed a visible window. Make sure Harness has Screen Recording permission and the app opens a window on launch."
+            return "macOS app '\(bid)' launched but never showed a visible window — twice: the second attempt waited for any previous instance to exit and forced a new process, so this is not a still-quitting predecessor. Make sure Harness has Screen Recording permission and the app opens a window on launch (and, if you passed launch_args or env, that they don't put it into a headless mode)."
         }
     }
 }

@@ -24,13 +24,18 @@
 //     child of the window, and the old walk emitted every item twice with
 //     identical label, role AND rect, which made every macOS menu item
 //     unaddressable by a resolver that (correctly) refuses on ambiguity.
-//  3. **Named** (W19) — a chain that never yields an empty string, plus the
+//  3. **Named** (W19 / W15) — a chain that never yields an empty string, plus the
 //     `label_source` that produced it (macOS reported no provenance at all
 //     before). When AX gives nothing — the SwiftUI `TextField` case, which
 //     exposes neither title nor value — the probe associates the visible
 //     sibling `AXStaticText` that a human reads as the field's label, and
 //     says so with `label_source: "adjacent-text"` so a consumer can weigh
-//     an inferred name differently from an authored one.
+//     an inferred name differently from an authored one. And when nothing
+//     names it at all, the synthesized placeholder is made UNIQUE on the
+//     frame (W15, ported from the web probe in WB-23): the nearest
+//     deliberate ancestor name as a parenthetical, then a reading-order
+//     ordinal for whatever still collides. Two traffic-light buttons are
+//     the shape that made `unlabelled button` unresolvable.
 //
 //  And it sweeps the same subtree's static text into `page_text` (W20) so
 //  `text_visible`-style assertions have something to assert against.
@@ -223,6 +228,7 @@ enum MacMarkProbe {
             node: scoped,
             frame: frame,
             ancestry: [],
+            ancestorNames: [],
             depth: 0,
             visited: &visited,
             candidates: &candidates,
@@ -246,7 +252,17 @@ enum MacMarkProbe {
         }
 
         var seenKeys: Set<String> = []
-        var marks: [InteractiveMark] = []
+        /// One surviving row, before ids are minted. Kept mutable because the
+        /// W15 ordinal pass below can only run once the whole table (post
+        /// occlusion, post collapse, post cap) is known — the number a client
+        /// sees has to be a position in the table it was actually handed.
+        struct Pending {
+            var rect: CGRect
+            var role: String
+            var label: String
+            var source: String
+        }
+        var pending: [Pending] = []
         for entry in ordered {
             let c = entry.candidate
             // Occlusion (optional), evaluated LAZILY in reading order: a
@@ -257,24 +273,59 @@ enum MacMarkProbe {
             // each check is an IPC round trip to the target app.
             if let hitTest, !reachable(c, frame: frame, hitTest: hitTest) { continue }
             let resolved = labels[c.identity] ?? Label(text: synthesized(for: c.role), source: "synthesized")
+            // W15 — a nameless control takes its nearest DELIBERATE ancestor
+            // name as a discriminator, BEFORE the collapse key is built: two
+            // icon buttons in different toolbars are different rows, and the
+            // key should say so.
+            var label = resolved.text
+            if resolved.source == "synthesized",
+               let context = synthesizedContext(c.ancestorNames) {
+                label = "\(label) (\(context))"
+            }
             // W21 — collapse marks that are indistinguishable to a resolver:
             // same role, same label, same rect. Identity de-duplication in
             // the walk catches the same ELEMENT twice; this catches two
             // distinct elements the agent could never tell apart anyway.
-            let key = "\(c.role)|\(resolved.text)|\(Int(c.rect.minX.rounded()))|\(Int(c.rect.minY.rounded()))|\(Int(c.rect.width.rounded()))|\(Int(c.rect.height.rounded()))"
+            let key = "\(c.role)|\(label)|\(Int(c.rect.minX.rounded()))|\(Int(c.rect.minY.rounded()))|\(Int(c.rect.width.rounded()))|\(Int(c.rect.height.rounded()))"
             if seenKeys.contains(key) { continue }
             seenKeys.insert(key)
-            marks.append(
-                InteractiveMark(
-                    id: marks.count + 1,
-                    rect: c.rect,
-                    role: shortRole(c.role),
-                    inputType: nil,
-                    label: resolved.text,
-                    labelSource: resolved.source
-                )
+            pending.append(Pending(rect: c.rect, role: shortRole(c.role), label: label, source: resolved.source))
+            if pending.count >= cap { break }
+        }
+
+        // W15 — make a synthesized placeholder unique on THIS frame. Any
+        // synthesized label still shared after the ancestor-context pass gets
+        // its 1-based rank in reading order appended ("unlabelled button 2"),
+        // so no two nameless controls answer to the same string. Run after
+        // the collapse and the cap — the number is a position in the table
+        // the client was handed — and, being a pure function of reading
+        // order, identical across runs against an unchanged screen. Same
+        // rule, same shape, as `WebMarkProbe`'s.
+        var collisions: [String: Int] = [:]
+        for p in pending where p.source == "synthesized" {
+            collisions[p.label, default: 0] += 1
+        }
+        var ranks: [String: Int] = [:]
+        for i in pending.indices where pending[i].source == "synthesized" {
+            let base = pending[i].label
+            guard (collisions[base] ?? 0) >= 2 else { continue }
+            ranks[base, default: 0] += 1
+            pending[i].label = "\(base) \(ranks[base]!)"
+        }
+
+        // Length cap LAST, for the same reason the web probe caps last:
+        // capping earlier would strand an ordinal after an ellipsis.
+        let marks = pending.enumerated().map { (i, p) in
+            InteractiveMark(
+                id: i + 1,
+                rect: p.rect,
+                role: p.role,
+                inputType: nil,
+                // `MacMarkProbe.cap`, not the `cap:` mark-count parameter
+                // this function also takes.
+                label: MacMarkProbe.cap(p.label),
+                labelSource: p.source
             )
-            if marks.count >= cap { break }
         }
 
         return Result(marks: marks, pageText: pageText(texts: texts))
@@ -377,6 +428,12 @@ enum MacMarkProbe {
         var node: AXSnapshotNode
         /// Root→parent identity chain, for the common-ancestor guardrail.
         var ancestry: [UInt64]
+        /// Root→parent chain of DELIBERATE ancestor names, index-aligned with
+        /// `ancestry` (nil where that ancestor named nothing). Names, not
+        /// nodes: an `AXSnapshotNode` carries its whole subtree, so keeping
+        /// ancestor nodes on every candidate would copy the tree once per
+        /// mark. This is all the W15 discriminator needs.
+        var ancestorNames: [String?]
         /// Every identity in this element's own subtree, for occlusion.
         var subtree: Set<UInt64>
     }
@@ -397,6 +454,7 @@ enum MacMarkProbe {
         node: AXSnapshotNode,
         frame: CGRect,
         ancestry: [UInt64],
+        ancestorNames: [String?],
         depth: Int,
         insideControl: Bool = false,
         suppressCandidates: Bool = false,
@@ -463,6 +521,7 @@ enum MacMarkProbe {
                     globalRect: global,
                     node: node,
                     ancestry: ancestry,
+                    ancestorNames: ancestorNames,
                     subtree: subtreeIdentities(node)
                 )
             )
@@ -481,11 +540,13 @@ enum MacMarkProbe {
         if overlayRoles.contains(node.role) { childSuppress = false }
 
         let nextAncestry = ancestry + [node.identity]
+        let nextAncestorNames = ancestorNames + [deliberateName(node)]
         for child in node.children {
             walk(
                 node: child,
                 frame: frame,
                 ancestry: nextAncestry,
+                ancestorNames: nextAncestorNames,
                 depth: depth + 1,
                 insideControl: childInsideControl,
                 suppressCandidates: childSuppress,
@@ -845,6 +906,61 @@ enum MacMarkProbe {
 
     static func synthesized(for role: String) -> String {
         synthesizedLabelPrefix + shortRole(role)
+    }
+
+    // MARK: Synthesized-label discriminator (W15)
+
+    /// How far up the ancestry the discriminator will look. Same budget as
+    /// the web probe's five `parentElement` hops.
+    static let maxSynthesizedContextDepth = 5
+
+    /// Longest discriminator fragment. Parity with the web probe: a long
+    /// container name would push the whole label past its own cap.
+    static let synthesizedContextCap = 32
+
+    /// A name the APP deliberately supplied for this node — the macOS
+    /// analogue of the web probe's `aria-label` / `data-testid` / `title`
+    /// trio. `AXValue` is deliberately NOT here: a text field's value is the
+    /// user's content and moves under the resolver's feet, and a container's
+    /// value is rarely a name at all.
+    static func deliberateName(_ node: AXSnapshotNode) -> String? {
+        normalizedText(node.title)
+            ?? normalizedText(node.axDescription)
+            ?? normalizedText(node.identifier)
+            ?? normalizedText(node.help)
+    }
+
+    /// W15 — a discriminator for a control nothing can name.
+    ///
+    /// `unlabelled button` is uniform: two icon-only controls on one screen
+    /// produce the same string and a resolver keyed on it matches both (the
+    /// traffic lights are the canonical pair). So a synthesized label takes
+    /// the nearest deliberate name an ancestor carries — a group's
+    /// `AXTitle`, a row's `AXDescription`, a developer's `AXIdentifier` — as
+    /// a parenthetical. Nearest first, at most `maxSynthesizedContextDepth`
+    /// levels: a pure function of the snapshot, so two probes of an
+    /// unchanged screen produce the same string.
+    ///
+    /// `label_source` stays `synthesized`. The label is still a placeholder
+    /// and a consumer must keep reading it as "this control has no name" —
+    /// a discriminator makes it addressable, not authored.
+    ///
+    /// Index 0 is the WALK ROOT (the window, sheet, popover or menu the
+    /// frame belongs to) and is skipped: its title names the frame, not the
+    /// control, so it would decorate every nameless control on screen
+    /// identically — a longer string that discriminates nothing.
+    static func synthesizedContext(_ ancestorNames: [String?]) -> String? {
+        guard ancestorNames.count > 1 else { return nil }
+        var hops = 0
+        for name in ancestorNames.dropFirst().reversed() {
+            hops += 1
+            if hops > maxSynthesizedContextDepth { break }
+            guard let name, !name.isEmpty else { continue }
+            return name.count > synthesizedContextCap
+                ? String(name.prefix(synthesizedContextCap - 1)) + "…"
+                : name
+        }
+        return nil
     }
 
     /// Strip the trailing colon a form label usually carries, so

@@ -56,7 +56,7 @@ required on this path** (`EnvKeychain` is untouched).
 
 | Tool | Purpose |
 | --- | --- |
-| `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected) and `credential_id` (a `stage_credential` id, all platforms — see [Staged credentials](#staged-credentials-credential_id--fill_credential)). Web also accepts `visible: true` (show the window for a human) and `session_state` (inject cookies / `localStorage`) — see [Authenticated apps](#authenticated-apps-session_state--visible). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
+| `start_ui_session` | Launch a target and open a session. `platform`: `web` (`url` + optional `viewport` = `desktop`/`mobile`), `ios` (`project_path` + `scheme` + `simulator_udid`), or `macos` (`app_path` to a built `.app` — the preferred QA flow — **or** `project_path` + `scheme`; contained backend, so the real pointer never moves and focus is never stolen; ending the session quits the app). Optional `artifact_dir` (**absolute**; relative rejected) and `credential_id` (a `stage_credential` id, all platforms — see [Staged credentials](#staged-credentials-credential_id--fill_credential)). Web also accepts `visible: true` (show the window for a human) and `session_state` (inject cookies / `localStorage`) — see [Authenticated apps](#authenticated-apps-session_state--visible). macOS also accepts `env` (a string→string object) and `launch_args` (an array of strings), applied to the launched app — see [Fixture modes](#fixture-modes-env--launch_args-macos). Blocks until ready (iOS/macOS builds take minutes) but is wedge-proof. Returns `session_id`, `display_label`, `point_size`, `platform`. |
 | `observe_ui` | Capture the current screen. Returns the **marked** PNG (numbered badges over interactive elements, downscaled to point size) as image content + a text block with the `id → label (role)` mark table, point size, and session label — **plus `structuredContent`** carrying the same marks as machine-readable rects (see below). `clean: true` returns the unmarked frame. |
 | `act_ui` | Perform one action (`tool` = `tap`, `tap_mark`, `double_tap`, `type`, `key_shortcut`, `scroll`, `scroll_into_view` (web), `swipe` (iOS), `navigate`/`back`/`forward`/`refresh` (web), `press_button` (iOS), `right_click`, `fill_credential` (**all platforms**, arg `field`: `username`|`password`), `wait`), pass that tool's args at the top level, then auto-observe. Returns the same payload as `observe_ui`, `structuredContent` included. Meta tools (`read_screen` / `note_friction` / `mark_goal_done`) are rejected. |
 | `end_ui_session` | Tear down the target. Idempotent — an unknown/closed id returns a calm `already closed`. |
@@ -192,6 +192,31 @@ annotation, element-scoped visual diffs, and resolving an intent to a target by 
   in a window behind the overlay are not in the frame and are not in the table. Each element is
   marked at most once, however many paths the AX graph offers to it (menus are reachable through
   two, which used to double every menu item and make it unaddressable by label + role).
+- **`tap_mark` on macOS means what the mark's ROLE means.** A `textField` / `textArea` /
+  `comboBox` / `searchField` / `secureTextField` is **focused** (`kAXFocused`, verified by
+  read-back) — `kAXPressAction` on a field is a no-op, so pressing one used to report a landed tap
+  while the following `type` went wherever focus already was. A `row` / `cell` is **selected**
+  (`kAXSelected`, else the owning table's `kAXSelectedRows`, again verified) and never *activated*:
+  pressing a row opens a document or navigates on a real list, so **opening is a separate
+  gesture**: `double_tap` at the row's centre, whose rect is in `structuredContent.marks`. Everything else is pressed exactly as before. Each intent falls back to one targeted
+  click at the mark's centre — what a human does — and when neither path lands, the step fails
+  honestly rather than reporting a tap that did nothing. Because the intent is a pure function of
+  the role, a client can read the mark table and know what a tap will do before it calls.
+- **A macOS menu closes itself after ~7s of no input.** That is AppKit's behaviour, not a Harness
+  timeout and not something the engine can hold open, so an open menu's marks are good for about
+  that long: observe, then act on the *next* call rather than deliberating between them, and
+  re-open the menu if its items have left the table. Nothing here fights it — it is written down so
+  a flow can be built around it.
+- **A synthesized macOS label is unique on the frame** (the same W15 rule the web probe holds).
+  `unlabelled button` named every icon-only control, so two of them collided and a resolver keyed
+  on one matched both — the traffic lights are the canonical pair. A placeholder now takes the
+  nearest *deliberate* ancestor name (an `AXTitle`, `AXDescription`, `AXIdentifier` or `AXHelp` on
+  the group or row it sits in) as a parenthetical, and any that still collide get their 1-based
+  rank in reading order: `unlabelled button (Toolbar) 2`. Both are pure functions of the AX
+  snapshot, so an unchanged screen yields the same strings run after run. The window's own title is
+  deliberately *not* used — it names the frame, not the control, and would decorate everything
+  identically. `label_source` stays `synthesized`: a discriminator makes a control addressable, not
+  named.
 - **Back-compatible.** The `image` and `text` content blocks are unchanged;
   `structuredContent` is an additive sibling field on the `tools/call` result that clients which
   don't know it ignore. A failed `act_ui` still returns `structuredContent` alongside
@@ -243,6 +268,39 @@ staged…"), never a silent no-op — a caller staring at an unchanged screen de
 only on the driver for the session's lifetime; `steps.jsonl` records only `{"field": "..."}`; no
 result, log line, or artifact carries the value; and a driver-level fill failure is scrubbed
 through the binding before its message is thrown. The live smoke asserts all of it.
+
+#### Fixture modes (`env` / `launch_args`, macOS)
+
+The macOS counterpart of `session_state`: not "log this session in", but **"don't point this
+session at the user's real data"**. Most desktop apps already have a switch for it — a sandbox
+home, a seeded database, a `--test-mode` flag — and until now there was no way to reach it, so a
+QA session drove the developer's live dashboard and every guide it authored was full of real data.
+
+```jsonc
+start_ui_session({
+  "platform": "macos",
+  "app_path": "/Users/me/Developer/Scarf/build/Scarf.app",
+  "launch_args": ["--scarf-test-mode"],
+  "env": { "SCARF_HERMES_HOME": "/tmp/scarf-fixture" }
+})
+```
+
+- **Both apply to the launched app and nothing else** — the locally built `.app` the same call
+  named. They are not applied to Harness, to any other process, or to a later session.
+- **There is no shell on this path.** Both go to `NSWorkspace.OpenConfiguration` (`environment` /
+  `arguments`), which hands them to the new process's environment and argv directly. `env` is
+  **additive**: the app still launches with its normal environment, with these names overridden. Nothing is
+  expanded, word-split, quoted or interpolated: `$(whoami)`, `;` and a newline are all just
+  characters an app reads back. The only rejections are what the exec contract genuinely cannot
+  carry — an empty env key, an `=` inside a key, a NUL anywhere, an empty argument — and those
+  errors name the **key**, never the value.
+- **Rejected on web and iOS**, loudly, rather than dropped: a caller who believes it enabled a
+  fixture mode and instead got the real data deserves an error.
+- **May carry secrets.** A fixture token in `env` is treated like a password: Harness logs the key
+  *names* and the argument *count*, never a value.
+- **Carried across a relaunch.** A chain leg that restarts the app relaunches it with the same
+  environment and arguments — a fixture mode that lapsed halfway through a run would be worse than
+  one that never engaged.
 
 #### Authenticated apps (`session_state` / `visible`)
 
@@ -346,7 +404,12 @@ python3 HarnessMCP/macos-session-smoke.py
 ```
 
 It proves adjacent-text labels, `label_source`, `page_text`, menu de-duplication,
-front-frame scoping and rect space on a real app, and SKIPS (exit 0) when the fixture
+front-frame scoping and rect space on a real app — and, since WB-23, the actuation
+half: that `tap_mark` on a field FOCUSES it and the following `type` lands in **that**
+field with the neighbour untouched, that `tap_mark` on a row selects **the row it
+named**, that `env` / `launch_args` reach the launched process, that no two synthesized
+labels collide, and that a session started immediately after another one ended on the
+same app starts anyway. It SKIPS (exit 0) when the fixture
 isn't built or the Accessibility / Screen Recording grants are missing — those are
 machine facts, not regressions. `Tests/HarnessTests/MacAXLiveProbeTests.swift` drives the
 same app from the unit suite and skips on the same conditions.

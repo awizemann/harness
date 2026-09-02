@@ -261,7 +261,16 @@ struct AdapterUISessionPreparer: UISessionPreparing {
             )
             // terminatesOnTeardown: a ui-session ending must QUIT the SUT
             // (unlike a GUI run, which leaves it open for inspection).
-            adapter = MacOSPlatformAdapter(services: services, terminatesOnTeardown: true)
+            // W26 — the caller's fixture-mode switches ride on the adapter,
+            // not on `RunRequest`: a RunRequest is a persisted, Codable
+            // record, and an env value can be a secret. Keeping them here
+            // means they exist only for the life of this session's launch.
+            adapter = MacOSPlatformAdapter(
+                services: services,
+                terminatesOnTeardown: true,
+                launchEnvironment: config.macLaunchEnvironment ?? [:],
+                launchArguments: config.macLaunchArguments ?? []
+            )
         }
 
         // Drain the adapter's build-progress stream (iOS emits buildStarted /

@@ -131,6 +131,25 @@ actor UISessionSupervisor {
             }
         }
 
+        // 1c. The mirror rule for W26: `env` / `launch_args` reach the app
+        //     through NSWorkspace's launch configuration, which only the
+        //     macOS path uses. A web session has no process to launch and the
+        //     iOS path installs into a simulator, so accepting either there
+        //     would silently drop the fixture-mode switch the caller believes
+        //     it set.
+        if config.platform != .macosApp {
+            if let env = config.macLaunchEnvironment, !env.isEmpty {
+                throw UISessionError.macOnlyCapability("env", config.platform)
+            }
+            if let args = config.macLaunchArguments, !args.isEmpty {
+                throw UISessionError.macOnlyCapability("launch_args", config.platform)
+            }
+        }
+        try Self.validateLaunchParameters(
+            env: config.macLaunchEnvironment,
+            args: config.macLaunchArguments
+        )
+
         // 2. Platform target sanity (clearer than letting the adapter throw).
         switch config.platform {
         case .web:
@@ -206,6 +225,45 @@ actor UISessionSupervisor {
             createdAt: now,
             idleSeconds: 0
         )
+    }
+
+    /// W26 — what `env` / `launch_args` may contain.
+    ///
+    /// These are handed to LaunchServices as the new process's environment
+    /// and argv. There is NO shell on that path, so the checks here are not
+    /// about quoting or escaping — nothing is interpolated — they are about
+    /// what the C-level `execve` contract can carry at all:
+    ///
+    ///  * an environment key may not be empty and may not contain `=` (the
+    ///    separator itself) or a NUL — such a pair cannot be represented, and
+    ///    a launch API given one either truncates it or drops the whole
+    ///    environment, both silently;
+    ///  * no value or argument may contain a NUL, for the same reason;
+    ///  * an argument may not be empty — argv[n] = "" is legal but is almost
+    ///    always a caller bug (a missing interpolation), and it is cheaper to
+    ///    say so than to debug a fixture mode that didn't engage.
+    ///
+    /// Errors name the KEY and never the value: an env value may be a token.
+    static func validateLaunchParameters(env: [String: String]?, args: [String]?) throws {
+        for (key, value) in env ?? [:] {
+            if key.isEmpty {
+                throw UISessionError.invalidLaunchParameter("env", "an environment key may not be empty")
+            }
+            if key.contains("=") {
+                throw UISessionError.invalidLaunchParameter("env", "key \"\(key)\" contains '=', which is the name/value separator")
+            }
+            if key.contains("\0") || value.contains("\0") {
+                throw UISessionError.invalidLaunchParameter("env", "key \"\(key)\" or its value contains a NUL byte")
+            }
+        }
+        for (i, arg) in (args ?? []).enumerated() {
+            if arg.isEmpty {
+                throw UISessionError.invalidLaunchParameter("launch_args", "entry \(i) is an empty string")
+            }
+            if arg.contains("\0") {
+                throw UISessionError.invalidLaunchParameter("launch_args", "entry \(i) contains a NUL byte")
+            }
+        }
     }
 
     // MARK: - observe

@@ -81,6 +81,72 @@ struct MacInputBackendTests {
         #expect(MacActuationPlan.steps(for: .keyShortcut(keys: ["cmd", "s"]), backend: .contained) == expected)
     }
 
+    // MARK: - tap_mark intent per role (WB-23)
+
+    @Test("A mark's role decides what tap_mark MEANS")
+    func markIntentByRole() {
+        // Text entry → focus. Pressing a field is a no-op, and the caller's
+        // next step is a `type` that has to land in the field they named.
+        for role in ["textField", "textArea", "comboBox", "searchField", "secureTextField"] {
+            #expect(MacMarkActuationPolicy.intent(forRole: role) == .focus, "\(role) should focus")
+        }
+        // Rows → select, never activate. `double_tap` is the open gesture.
+        for role in ["row", "cell"] {
+            #expect(MacMarkActuationPolicy.intent(forRole: role) == .select, "\(role) should select")
+        }
+        // Everything else keeps the press it always had.
+        for role in ["button", "menuItem", "checkBox", "link", "popUpButton", "image", "slider"] {
+            #expect(MacMarkActuationPolicy.intent(forRole: role) == .press, "\(role) should press")
+        }
+    }
+
+    @Test("The intent is keyed on the SHORT role the mark table publishes")
+    func markIntentMatchesPublishedRoles() {
+        // A policy keyed on `AXTextField` while the table publishes
+        // `textField` would silently degrade every field back to a press —
+        // the exact bug this fixes, with a passing unit test to go with it.
+        // Pin the two vocabularies together instead.
+        for axRole in MacMarkProbe.textEntryRoles {
+            #expect(MacMarkActuationPolicy.intent(forRole: MacMarkProbe.shortRole(axRole)) == .focus,
+                    "\(axRole) publishes as \(MacMarkProbe.shortRole(axRole))")
+        }
+        #expect(MacMarkActuationPolicy.intent(forRole: MacMarkProbe.shortRole("AXRow")) == .select)
+        #expect(MacMarkActuationPolicy.intent(forRole: MacMarkProbe.shortRole("AXCell")) == .select)
+        #expect(MacMarkActuationPolicy.intent(forRole: MacMarkProbe.shortRole("AXButton")) == .press)
+    }
+
+    @Test("Contained tap_mark swaps its AX rung for the intent, keeping the click fallback")
+    func containedMarkLadderPerIntent() {
+        #expect(MacActuationPlan.steps(for: .tapMark(id: 1), backend: .contained, markIntent: .press)
+                == [.axPress, .cgEventTargeted])
+        #expect(MacActuationPlan.steps(for: .tapMark(id: 1), backend: .contained, markIntent: .focus)
+                == [.axFocus, .cgEventTargeted])
+        #expect(MacActuationPlan.steps(for: .tapMark(id: 1), backend: .contained, markIntent: .select)
+                == [.axSelect, .cgEventTargeted])
+        // A row's ladder must never contain a PRESS: press on a row means
+        // ACTIVATE, and a tap that sometimes selects and sometimes navigates
+        // is not something a guide can be authored against.
+        #expect(!MacActuationPlan.steps(for: .tapMark(id: 1), backend: .contained, markIntent: .select)
+                .contains(.axPress))
+    }
+
+    @Test("Legacy HID ignores the intent — one global click, as before",
+          arguments: [MacMarkIntent.press, .focus, .select])
+    func hidMarkLadderIgnoresIntent(_ intent: MacMarkIntent) {
+        #expect(MacActuationPlan.steps(for: .tapMark(id: 1), backend: .hid, markIntent: intent)
+                == [.cgEventGlobalHID])
+    }
+
+    @Test("Containment holds for the new rungs too", arguments: [MacMarkIntent.press, .focus, .select])
+    func newRungsRespectContainment(_ intent: MacMarkIntent) {
+        // The suite's load-bearing invariant, restated for tap_mark: no AX
+        // rung under legacy HID, no global-HID rung under contained.
+        let contained = MacActuationPlan.steps(for: .tapMark(id: 1), backend: .contained, markIntent: intent)
+        #expect(!contained.contains(.cgEventGlobalHID))
+        let hid = MacActuationPlan.steps(for: .tapMark(id: 1), backend: .hid, markIntent: intent)
+        #expect(!hid.contains(.axFocus) && !hid.contains(.axSelect) && !hid.contains(.axPress))
+    }
+
     // MARK: - Ladder selection (legacy HID)
 
     @Test("Legacy HID: every actuating tool is a single global-HID rung")

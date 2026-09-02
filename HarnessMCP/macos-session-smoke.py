@@ -25,6 +25,27 @@ native AX session can prove, and what the Scarf shakedown found missing
   * **Session death (W32)** — acting on an ended session must say the session
     ENDED, not merely that no session was found.
 
+WB-23 adds the actuation half — everything above proves the app is
+*addressable*, and the Scarf acceptance run found that almost nothing but a
+button was *operable*:
+
+  * **tap_mark FOCUSES a field** — then `type` must land in THAT field, with
+    the typed value readable back out of `page_text` and the neighbouring
+    field untouched. `AXPress` on a text field is a no-op, so this used to
+    report a landed tap and type into whatever had focus already.
+  * **tap_mark SELECTS a row** — and the fixture's echo line names the row
+    that got selected, so "it selected something" can't pass for "it selected
+    the row I asked for".
+  * **env / launch_args (W26)** — the fixture renders its own
+    `HARNESS_FIXTURE_MODE` and argv, so a passthrough that silently dropped
+    would fail here rather than in an app's real data.
+  * **Synthesized-label uniqueness (W15)** — two unnameable icon buttons must
+    not answer to the same string.
+  * **Relaunch resilience** — ending a session and immediately starting
+    another on the same bundle id must WORK; it used to fail with "launched
+    but never showed a visible window" because the previous instance was
+    still quitting.
+
 Requires a built fixture app (`fixtures/macos-app/build-fixture.sh`) and the
 Accessibility + Screen Recording grants for the process that runs this. Both
 are checked up front and reported as a SKIP (exit 0) rather than a failure —
@@ -109,6 +130,14 @@ def content_text(result):
     return ""
 
 
+def page_text(result):
+    return result.get("structuredContent", {}).get("page_text") or ""
+
+
+# A value the fixture can only be rendering because THIS run's env reached it.
+FIXTURE_MODE = "smoke-%d" % os.getpid()
+
+
 def main():
     binary = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_BIN)
     app = os.path.abspath(sys.argv[2] if len(sys.argv) > 2 else DEFAULT_APP)
@@ -137,10 +166,13 @@ def main():
                                 "clientInfo": {"name": "macos-session-smoke", "version": "1"}})
         mcp.notify("notifications/initialized")
 
-        print("\n--- start_ui_session (macos) ---")
+        print("\n--- start_ui_session (macos, with env + launch_args) ---")
         try:
             start = mcp.tool("start_ui_session", {
                 "platform": "macos", "app_path": app, "artifact_dir": artifact_dir,
+                # W26 — the fixture renders both back into its window.
+                "env": {"HARNESS_FIXTURE_MODE": FIXTURE_MODE},
+                "launch_args": ["--harness-fixture-arg"],
             })
         except RuntimeError as e:
             print("SKIP: could not start a macOS session (%s)" % e)
@@ -186,9 +218,21 @@ def main():
         check(len(set(keys)) == len(keys), "no two marks share role + label + position")
 
         # W20.
-        page_text = sc.get("page_text")
-        check(isinstance(page_text, str) and "Fixture ready" in page_text,
+        text = sc.get("page_text")
+        check(isinstance(text, str) and "Fixture ready" in text,
               "page_text carries the window's visible prose")
+
+        # W26 — the launch parameters reached the launched process.
+        check("mode=%s" % FIXTURE_MODE in (text or ""),
+              "env reached the app (looked for mode=%s in page_text)" % FIXTURE_MODE)
+        check("--harness-fixture-arg" in (text or ""),
+              "launch_args reached the app's argv")
+
+        # W15 (macOS) — a synthesized label is a discriminator, not a
+        # collision. The fixture's two icon buttons can be named by nothing.
+        synth = [m["label"] for m in all_marks if m.get("label_source") == "synthesized"]
+        check(len(set(synth)) == len(synth),
+              "no two synthesized labels collide (got %s)" % synth)
 
         # WB-17 — `frame_url` is a WEB concept. A macOS window has no
         # location, and an absent key is the honest form of that; a null or
@@ -227,6 +271,37 @@ def main():
             mcp.tool("act_ui", {"session_id": sid, "tool": "key_shortcut", "keys": ["escape"]})
             obs = mcp.tool("observe_ui", {"session_id": sid})
 
+        print("\n--- WB-23: tap_mark FOCUSES a field, and type lands in it ---")
+        host = mark_named(obs, "Host")
+        check(host is not None, "the Host field is addressable")
+        if host:
+            focused = mcp.tool("act_ui", {"session_id": sid, "tool": "tap_mark", "id": host["id"]})
+            check(not focused.get("isError"),
+                  "tap_mark on a text field does not fail (%s)" % content_text(focused)[:200])
+            typed = mcp.tool("act_ui", {"session_id": sid, "tool": "type", "text": "example.internal"})
+            echo = page_text(typed)
+            check("host=[example.internal]" in echo,
+                  "the typed value landed in the field that was tapped (echo: %r)"
+                  % [l for l in echo.split("\n") if l.startswith("echo ")])
+            check("port=[22]" in echo,
+                  "the NEIGHBOURING field is untouched — focus went where it was asked")
+            obs = mcp.tool("observe_ui", {"session_id": sid})
+
+        print("\n--- WB-23: tap_mark SELECTS a row ---")
+        row = mark_named(obs, "Tidewater")
+        check(row is not None, "a list row is addressable by its own text (%s)"
+              % [m["label"] for m in marks(obs)])
+        if row:
+            check(row.get("role") in ("row", "cell"),
+                  "the row is marked with a row-ish role (got %r)" % row.get("role"))
+            selected = mcp.tool("act_ui", {"session_id": sid, "tool": "tap_mark", "id": row["id"]})
+            check(not selected.get("isError"),
+                  "tap_mark on a row does not fail (%s)" % content_text(selected)[:200])
+            check("project=[Tidewater]" in page_text(selected),
+                  "the row the tap named is the one that got selected (echo: %r)"
+                  % [l for l in page_text(selected).split("\n") if l.startswith("echo ")])
+            obs = mcp.tool("observe_ui", {"session_id": sid})
+
         print("\n--- act: open the sheet, then check front-frame scoping ---")
         add = mark_named(obs, "Add server")
         check(add is not None, "the sheet's opener is addressable")
@@ -249,6 +324,8 @@ def main():
 
         print("\n--- W32: a session that ENDED says so ---")
         mcp.tool("end_ui_session", {"session_id": sid})
+
+
         dead = mcp.tool("observe_ui", {"session_id": sid})
         msg = content_text(dead)
         check(dead.get("isError") is True, "observing an ended session is an error")
@@ -258,6 +335,24 @@ def main():
         never_msg = content_text(never)
         check("has ever been open" in never_msg,
               "an id that was never a session says so distinctly (%r)" % never_msg[:200])
+
+        # WB-23 — and the NEXT session on the same bundle id starts, with no
+        # pause here on purpose: the previous instance is still quitting, and
+        # that is exactly the race that used to surface as "launched but never
+        # showed a visible window".
+        print("\n--- WB-23: a new session starts while the old app is still quitting ---")
+        restart = mcp.tool("start_ui_session", {
+            "platform": "macos", "app_path": app, "artifact_dir": artifact_dir,
+            "env": {"HARNESS_FIXTURE_MODE": FIXTURE_MODE + "-again"},
+        })
+        check(not restart.get("isError"),
+              "an immediate restart on the same app succeeds (%s)" % content_text(restart)[:300])
+        if not restart.get("isError"):
+            sid2 = json.loads(content_text(restart))["session_id"]
+            again = mcp.tool("observe_ui", {"session_id": sid2})
+            check("mode=%s-again" % FIXTURE_MODE in page_text(again),
+                  "the restarted session is the NEW process (its own env is what's on screen)")
+            mcp.tool("end_ui_session", {"session_id": sid2})
 
     finally:
         mcp.close()

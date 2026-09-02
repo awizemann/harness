@@ -1279,6 +1279,135 @@ struct UISessionStateCapabilityTests {
         }
     }
 
+    // MARK: - W26: env / launch_args (WB-23)
+
+    @Test("env / launch_args on a NON-macOS session are rejected, not dropped")
+    func nonMacRejectsLaunchParameters() async {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sup = Self.supervisor(platform: .web, seen: ConfigProbe(), root: root)
+
+        // A caller that thinks it enabled an app's fixture mode and got the
+        // user's real data deserves the error — the same rule `session_state`
+        // holds on a native platform, in the other direction.
+        for config in [
+            UISessionConfig(platform: .web, webURL: "https://example.com",
+                            macLaunchEnvironment: ["MODE": "fixture"]),
+            UISessionConfig(platform: .web, webURL: "https://example.com",
+                            macLaunchArguments: ["--fixture"])
+        ] {
+            await #expect(throws: UISessionError.self) { _ = try await sup.start(config) }
+        }
+    }
+
+    @Test("An empty env / launch_args on another platform is not an error")
+    func emptyLaunchParametersAreHarmless() async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sup = Self.supervisor(platform: .web, seen: ConfigProbe(), root: root)
+        // Nothing was asked for, so nothing is being silently dropped.
+        let info = try await sup.start(UISessionConfig(
+            platform: .web, webURL: "https://example.com",
+            macLaunchEnvironment: [:], macLaunchArguments: []
+        ))
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("A macOS session carries env / launch_args through to the preparer")
+    func macCarriesLaunchParameters() async throws {
+        let root = UISessionTestSupport.tempArtifactRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let seen = ConfigProbe()
+        let sup = Self.supervisor(platform: .macosApp, seen: seen, root: root)
+        let info = try await sup.start(UISessionConfig(
+            platform: .macosApp, macAppPath: "/tmp/Fake.app",
+            macLaunchEnvironment: ["HARNESS_FIXTURE_MODE": "on"],
+            macLaunchArguments: ["--fixture"]
+        ))
+        let config = try #require(await seen.last)
+        #expect(config.macLaunchEnvironment == ["HARNESS_FIXTURE_MODE": "on"])
+        #expect(config.macLaunchArguments == ["--fixture"])
+        _ = await sup.end(id: info.id)
+    }
+
+    @Test("A launch parameter the exec contract cannot carry is refused")
+    func invalidLaunchParametersRefused() {
+        // These are not shell-escaping checks — there is no shell on this
+        // path. They are the pairs `execve` cannot represent at all, which a
+        // launch API given them either truncates or drops WHOLE, silently.
+        #expect(throws: UISessionError.self) {
+            try UISessionSupervisor.validateLaunchParameters(env: ["": "x"], args: nil)
+        }
+        #expect(throws: UISessionError.self) {
+            try UISessionSupervisor.validateLaunchParameters(env: ["A=B": "x"], args: nil)
+        }
+        #expect(throws: UISessionError.self) {
+            try UISessionSupervisor.validateLaunchParameters(env: ["A": "x\0y"], args: nil)
+        }
+        #expect(throws: UISessionError.self) {
+            try UISessionSupervisor.validateLaunchParameters(env: nil, args: [""])
+        }
+        // Shell metacharacters are ORDINARY here: nothing expands them, and
+        // refusing them would be theatre that blocks a legitimate value.
+        #expect(throws: Never.self) {
+            try UISessionSupervisor.validateLaunchParameters(
+                env: ["SCARF_HOME": "/tmp/a b; echo $(whoami)"],
+                args: ["--flag=a b", "--json={\"k\":1}"]
+            )
+        }
+    }
+
+    @Test("An invalid env key is named in the error — the VALUE never is")
+    func launchParameterErrorsDoNotLeakValues() {
+        do {
+            try UISessionSupervisor.validateLaunchParameters(env: ["A=B": "s3cret-token"], args: nil)
+            Issue.record("expected a throw")
+        } catch {
+            let message = error.localizedDescription
+            #expect(message.contains("A=B"))
+            #expect(!message.contains("s3cret-token"))
+        }
+    }
+
+    // MARK: - Launch settle (WB-23)
+
+    @Test("The settle returns as soon as the field is clear")
+    func settleReturnsOnQuiet() async {
+        var polls = 0
+        let cleared = await MacLaunchSettle.awaitQuiet(
+            stillRunning: { polls += 1; return polls <= 3 },
+            sleep: { _ in }
+        )
+        #expect(cleared)
+        #expect(polls == 4)
+    }
+
+    @Test("A process that never exits times out — and says so rather than blocking")
+    func settleTimesOutHonestly() async {
+        var slept = 0
+        let cleared = await MacLaunchSettle.awaitQuiet(
+            maxWaitMs: 500, pollIntervalMs: 100,
+            stillRunning: { true },
+            sleep: { _ in slept += 1 }
+        )
+        // FALSE, not a hang: a stranger's copy of the same app may run
+        // forever, and refusing to start beside it would be worse than
+        // starting. The caller relaunches either way; the log says which.
+        #expect(cleared == false)
+        #expect(slept == 5)
+    }
+
+    @Test("An already-quiet field costs nothing")
+    func settleDoesNotSleepWhenAlreadyQuiet() async {
+        var slept = 0
+        let cleared = await MacLaunchSettle.awaitQuiet(
+            stillRunning: { false },
+            sleep: { _ in slept += 1 }
+        )
+        #expect(cleared)
+        #expect(slept == 0)
+    }
+
     @Test("export on a non-web session names the capability and the platform")
     func exportRejectedOnNative() async throws {
         let root = UISessionTestSupport.tempArtifactRoot()

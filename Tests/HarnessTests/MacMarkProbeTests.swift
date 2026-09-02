@@ -721,6 +721,157 @@ struct MacMarkProbeTests {
         #expect(result.pageText == nil)
     }
 
+    // MARK: - W15: the synthesized-label discriminator (WB-23)
+
+    /// A control nothing can name: no title, no description, no help, no
+    /// identifier, no caption, and — where the test places it — nothing
+    /// adjacent to borrow. The traffic lights, in fixture form.
+    static func namelessButton(_ ids: IDs, rect: CGRect) -> AXSnapshotNode {
+        AXSnapshotNode(identity: ids.take(), role: "AXButton", rect: rect)
+    }
+
+    @Test("Two nameless controls do not answer to the same string")
+    func synthesizedLabelsAreUnique() {
+        let ids = IDs()
+        let root = Self.window(ids, rect: Self.frame, children: [
+            Self.namelessButton(ids, rect: CGRect(x: 120, y: 210, width: 20, height: 20)),
+            Self.namelessButton(ids, rect: CGRect(x: 150, y: 210, width: 20, height: 20)),
+            Self.namelessButton(ids, rect: CGRect(x: 180, y: 210, width: 20, height: 20))
+        ])
+        let labels = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        #expect(labels == ["unlabelled button 1", "unlabelled button 2", "unlabelled button 3"])
+        #expect(Set(labels).count == labels.count)
+    }
+
+    @Test("A lone nameless control keeps the plain placeholder — no gratuitous ordinal")
+    func loneSynthesizedLabelIsUnnumbered() {
+        let ids = IDs()
+        let root = Self.window(ids, rect: Self.frame, children: [
+            Self.namelessButton(ids, rect: CGRect(x: 120, y: 210, width: 20, height: 20)),
+            Self.button(ids, title: "Save", rect: CGRect(x: 300, y: 210, width: 60, height: 24))
+        ])
+        let labels = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        #expect(labels.contains("unlabelled button"))
+        #expect(!labels.contains { $0.hasPrefix("unlabelled button ") })
+    }
+
+    @Test("The nearest DELIBERATE ancestor name discriminates before the ordinal does")
+    func synthesizedTakesAncestorContext() {
+        let ids = IDs()
+        var toolbar = Self.group(ids, rect: CGRect(x: 120, y: 210, width: 100, height: 24), children: [
+            Self.namelessButton(ids, rect: CGRect(x: 120, y: 210, width: 20, height: 20))
+        ])
+        toolbar.title = "Toolbar"
+        var sidebar = Self.group(ids, rect: CGRect(x: 300, y: 210, width: 100, height: 24), children: [
+            Self.namelessButton(ids, rect: CGRect(x: 300, y: 210, width: 20, height: 20))
+        ])
+        sidebar.axDescription = "Sidebar"
+        let root = Self.window(ids, rect: Self.frame, children: [toolbar, sidebar])
+        let labels = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks
+            .filter { $0.labelSource == "synthesized" }
+            .map(\.label)
+        // Context alone separates them, so no ordinal is needed.
+        #expect(labels == ["unlabelled button (Toolbar)", "unlabelled button (Sidebar)"])
+    }
+
+    @Test("Same context, two controls: the context stays and the ordinal breaks the tie")
+    func contextPlusOrdinal() {
+        let ids = IDs()
+        var toolbar = Self.group(ids, rect: CGRect(x: 120, y: 210, width: 200, height: 24), children: [
+            Self.namelessButton(ids, rect: CGRect(x: 120, y: 210, width: 20, height: 20)),
+            Self.namelessButton(ids, rect: CGRect(x: 160, y: 210, width: 20, height: 20))
+        ])
+        toolbar.title = "Toolbar"
+        let root = Self.window(ids, rect: Self.frame, children: [toolbar])
+        let labels = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        #expect(labels == ["unlabelled button (Toolbar) 1", "unlabelled button (Toolbar) 2"])
+    }
+
+    @Test("The WINDOW's own title is not a discriminator")
+    func windowTitleIsNotContext() {
+        // The walk root names the FRAME, not the control: using it would
+        // decorate every nameless control on screen identically — a longer
+        // string that discriminates nothing.
+        let ids = IDs()
+        var root = Self.window(ids, rect: Self.frame, children: [
+            Self.namelessButton(ids, rect: CGRect(x: 120, y: 210, width: 20, height: 20)),
+            Self.namelessButton(ids, rect: CGRect(x: 150, y: 210, width: 20, height: 20))
+        ])
+        root.title = "Scarf"
+        let labels = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        #expect(labels == ["unlabelled button 1", "unlabelled button 2"])
+    }
+
+    @Test("The discriminator never edits a name the app supplied")
+    func discriminatorDoesNotTouchNamedControls() {
+        let ids = IDs()
+        var toolbar = Self.group(ids, rect: CGRect(x: 120, y: 210, width: 200, height: 24), children: [
+            Self.button(ids, title: "Save", rect: CGRect(x: 120, y: 210, width: 60, height: 24)),
+            Self.button(ids, title: "Save", rect: CGRect(x: 300, y: 210, width: 60, height: 24))
+        ])
+        toolbar.title = "Toolbar"
+        let root = Self.window(ids, rect: Self.frame, children: [toolbar])
+        let marks = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks
+            .filter { $0.role == "button" }
+        // Two genuinely identical AUTHORED names stay identical: the app
+        // said this, and decorating it would be the probe editing the app's
+        // words. Only a placeholder is ours to disambiguate.
+        #expect(marks.map(\.label) == ["Save", "Save"])
+        #expect(marks.allSatisfy { $0.labelSource == "ax-title" })
+    }
+
+    @Test("A distant ancestor's name is out of reach")
+    func contextIsBounded() {
+        let ids = IDs()
+        // Six nested groups between the named ancestor and the control —
+        // one more than the budget.
+        var nested = Self.group(ids, rect: CGRect(x: 120, y: 210, width: 40, height: 24), children: [
+            Self.namelessButton(ids, rect: CGRect(x: 120, y: 210, width: 20, height: 20))
+        ])
+        for _ in 0..<5 {
+            nested = Self.group(ids, rect: CGRect(x: 120, y: 210, width: 40, height: 24), children: [nested])
+        }
+        nested.title = "Far away"
+        let root = Self.window(ids, rect: Self.frame, children: [nested])
+        let labels = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        #expect(labels == ["unlabelled button"])
+    }
+
+    @Test("A very long ancestor name is truncated, not carried whole")
+    func contextIsCapped() {
+        let long = String(repeating: "context ", count: 20)
+        let context = MacMarkProbe.synthesizedContext([nil, long])
+        #expect(context != nil)
+        #expect((context ?? "").count == MacMarkProbe.synthesizedContextCap)
+        #expect((context ?? "").hasSuffix("…"))
+    }
+
+    @Test("The same tree probed twice yields the same labels")
+    func discriminatorIsDeterministic() {
+        let ids = IDs()
+        var toolbar = Self.group(ids, rect: CGRect(x: 120, y: 210, width: 300, height: 24), children: [
+            Self.namelessButton(ids, rect: CGRect(x: 120, y: 210, width: 20, height: 20)),
+            Self.namelessButton(ids, rect: CGRect(x: 160, y: 210, width: 20, height: 20)),
+            Self.namelessButton(ids, rect: CGRect(x: 200, y: 210, width: 20, height: 20))
+        ])
+        toolbar.title = "Toolbar"
+        let root = Self.window(ids, rect: Self.frame, children: [toolbar])
+        let first = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        let second = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        #expect(first == second)
+    }
+
+    @Test("A value is not a deliberate name")
+    func valueIsNotContext() {
+        // A container's AXValue is content, not a name — and a text field's
+        // value moves the instant the user types. Keying a discriminator on
+        // it would rename a control mid-flow.
+        var node = AXSnapshotNode(identity: 1, role: "AXGroup", value: "typed text")
+        #expect(MacMarkProbe.deliberateName(node) == nil)
+        node.title = "Group"
+        #expect(MacMarkProbe.deliberateName(node) == "Group")
+    }
+
     // MARK: - Root selection
 
     @Test("The root matching the captured frame wins over the app's main window")

@@ -42,6 +42,38 @@ extension MCPServer {
         // inside the adapter and never touch this layer.
         let credential = try await validatedCredentialID(c, args)
 
+        // W26 — macOS launch parameters. Parsed strictly: a caller that
+        // passes `env: {"MODE": 1}` believes it set a fixture mode, and
+        // coercing the 1 to "1" (or dropping the pair) would let it think so
+        // while the app read nothing. The KEY appears in any error, never the
+        // value — an env value can be a token.
+        let launchEnv: [String: String]? = try {
+            guard let raw = args.raw["env"] else { return nil }
+            guard let dict = raw as? [String: Any] else {
+                throw MCPToolError.invalidArgument("env", "expected an object of string→string pairs")
+            }
+            var out: [String: String] = [:]
+            for (key, value) in dict {
+                guard let s = value as? String else {
+                    throw MCPToolError.invalidArgument("env", "value for \"\(key)\" is not a string")
+                }
+                out[key] = s
+            }
+            return out
+        }()
+        let launchArgs: [String]? = try {
+            guard let raw = args.raw["launch_args"] else { return nil }
+            guard let list = raw as? [Any] else {
+                throw MCPToolError.invalidArgument("launch_args", "expected an array of strings")
+            }
+            return try list.enumerated().map { (i, value) in
+                guard let s = value as? String else {
+                    throw MCPToolError.invalidArgument("launch_args", "entry \(i) is not a string")
+                }
+                return s
+            }
+        }()
+
         let config = UISessionConfig(
             platform: platform,
             artifactDirPath: args.string("artifact_dir"),
@@ -62,7 +94,9 @@ extension MCPServer {
             // reads only the fields that apply to the chosen platform.
             macAppPath: args.string("app_path"),
             macProjectPath: args.string("project_path"),
-            macScheme: args.string("scheme")
+            macScheme: args.string("scheme"),
+            macLaunchEnvironment: launchEnv,
+            macLaunchArguments: launchArgs
         )
 
         let info = try await c.uiSessions.start(config)
