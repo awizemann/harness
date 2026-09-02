@@ -295,6 +295,35 @@ actor MacAppDriver: UXDriving {
         await awaitWindowStable(idleMs: idleMs, minMs: minMs, maxMs: maxMs)
     }
 
+    /// WB-25 — the settle gate is pixels AND scoped AX geometry.
+    ///
+    /// The pixel half is unchanged: two consecutive dHash-equivalent frames.
+    /// The geometry half is new, and it exists because the pixel half is
+    /// perceptually blind to exactly the motion that matters. A popover
+    /// finishing its presentation animation moves its `Add` button from x=395
+    /// to x=400 — five points, invisible to an 8×8 perceptual hash, and
+    /// decisive to a resolver comparing rects. `settle` therefore returned
+    /// mid-animation, the next observation reported different geometry from
+    /// the one the flow was authored against, and the staleness net called a
+    /// step `changed` on a screen where nothing had changed (about one run in
+    /// three on Scarf's popover step).
+    ///
+    /// So a poll now resolves only when BOTH halves agree with the previous
+    /// poll. The geometry sample is scoped the same way the mark table is
+    /// (`MacMarkProbe.geometrySignature`), so it describes the front
+    /// container's elements — the popover's, when a popover owns the frame —
+    /// and not the whole app.
+    ///
+    /// Two properties keep this from ever becoming a hang. `maxMs` is the same
+    /// budget as before and still governs the whole loop: a screen that never
+    /// stops moving costs exactly what it used to. And a nil signature — no
+    /// matching AX root, Accessibility denied, the snapshot budget spent — is
+    /// "no opinion", NOT "unstable": the gate falls back to the pixel-only
+    /// behaviour rather than spinning out the full budget on an app whose AX
+    /// tree we simply cannot read.
+    ///
+    /// This is the macOS driver only. The web path settles on its own DOM
+    /// signal and is untouched.
     private func awaitWindowStable(idleMs: Int, minMs: Int, maxMs: Int) async {
         let clock = ContinuousClock()
         let start = clock.now
@@ -302,8 +331,9 @@ actor MacAppDriver: UXDriving {
         let floor = start.advanced(by: .milliseconds(minMs))
         let pollInterval: Duration = .milliseconds(150)
 
-        var lastHash: UInt64?
+        var previous: MacSettleGate.Sample?
         while clock.now < deadline {
+            if Task.isCancelled { return }
             try? await Task.sleep(for: pollInterval)
             guard let info = (try? findFrontWindow()) ?? nil else { continue }
             guard let cgImage = CGWindowListCreateImage(
@@ -314,14 +344,110 @@ actor MacAppDriver: UXDriving {
             ) else { continue }
             let bitmap = NSBitmapImageRep(cgImage: cgImage)
             guard let png = bitmap.representation(using: .png, properties: [:]) else { continue }
-            let hash = ScreenshotHasher.dHash(jpeg: png)
-            if let prev = lastHash,
-               ScreenshotHasher.hammingDistance(hash, prev) <= AgentLoop.cycleHashThreshold,
-               clock.now >= floor {
-                return
-            }
-            lastHash = hash
+            let current = MacSettleGate.Sample(
+                hash: ScreenshotHasher.dHash(jpeg: png),
+                geometry: Self.geometrySignature(pid: info.ownerPID, frame: info.bounds)
+            )
+            let settled = clock.now >= floor
+                && MacSettleGate.isSettled(previous: previous, current: current)
+            previous = current
+            if settled { return }
         }
+    }
+
+    /// Sample the front frame's scoped AX geometry for the settle gate.
+    ///
+    /// Deliberately cheaper than the mark probe's own snapshot: this runs on
+    /// every settle poll, and it needs positions, not labels.
+    ///
+    /// The budget is a CORRECTNESS boundary, not just a cost one.
+    /// `MacAXSnapshot.capture` does not fail when it runs out — it returns the
+    /// root with a truncated child list, and the cut lands wherever the wall
+    /// clock happened to stop it. A digest built from that is a prefix whose
+    /// length varies poll to poll, which would make a static screen look like
+    /// a moving one and burn the whole settle budget on every action. So an
+    /// exhausted budget is reported as nil, and the gate reverts to the
+    /// pixel-only behaviour it had before this change.
+    ///
+    /// The numbers sit close to the mark probe's own (1500 nodes / 1200ms) so
+    /// the settle really is looking at the geometry the mark table is built
+    /// from, and not a shorter prefix of it. A sample slower than the 150ms
+    /// poll interval costs polls AND overshoots the deadline by at most one
+    /// sample — the loop checks `maxMs` at the top — which is bounded and
+    /// acceptable; a wrong stability verdict is not.
+    private static let settleSnapshotNodes = 1500
+    private static let settleSnapshotBudgetMs = 400
+
+    /// Static, not `nonisolated`: it touches no instance state, and
+    /// `nonisolated` on a synchronous method would only imply an offload that
+    /// does not happen — the AX walk still blocks the caller's executor.
+    private static func geometrySignature(pid: Int, frame: CGRect) -> String? {
+        let appElem = AXUIElementCreateApplication(pid_t(pid))
+        AXUIElementSetMessagingTimeout(appElem, Float(axMessagingTimeoutSeconds))
+        // The clock starts HERE, before the per-root rect reads below: each of
+        // those is an AX round trip that can take up to the messaging timeout,
+        // and a budget that only starts after them could be spent before the
+        // first node is captured.
+        var budget = MacAXSnapshot.Budget(
+            nodesRemaining: settleSnapshotNodes,
+            deadline: ContinuousClock().now.advanced(by: .milliseconds(settleSnapshotBudgetMs))
+        )
+        var rootElements: [AXUIElement] = []
+        if let windows = axAttribute(appElem, attribute: kAXWindowsAttribute) as? [AXUIElement] {
+            rootElements.append(contentsOf: windows)
+        }
+        for attr in [kAXFocusedWindowAttribute as String, kAXMainWindowAttribute as String] {
+            if let w = axAttribute(appElem, attribute: attr),
+               CFGetTypeID(w) == AXUIElementGetTypeID() {
+                rootElements.append(unsafeDowncast(w, to: AXUIElement.self))
+            }
+        }
+        guard !rootElements.isEmpty else { return nil }
+        var seen: Set<UInt64> = []
+        var roots: [AXSnapshotNode] = []
+        // Capture in the order `selectRoot` would CHOOSE: most of the frame
+        // covered first, and among roots that cover it equally the smallest —
+        // which is the overlay. An overlay and the window behind it both
+        // "contain" a popover's frame, so overlap alone leaves the tie to
+        // enumeration order, and losing that tie spends the whole budget on
+        // the background window before reaching the frame the settle is about.
+        //
+        // Sorted on a QUANTISED overlap rather than an epsilon comparison: an
+        // "equal within 0.05" predicate is not a strict weak ordering (the
+        // relation isn't transitive across the epsilon) and leaves the result
+        // undefined for three or more roots straddling it — a second, silent
+        // source of poll-to-poll signature churn.
+        struct RootRank {
+            var element: AXUIElement
+            var bucket: Int
+            var area: CGFloat
+        }
+        var ranked: [RootRank] = []
+        for element in rootElements {
+            let rect: CGRect? = MacAXSnapshot.axRect(element)
+            let overlap: CGFloat = frameOverlap(rect, frame)
+            let width: CGFloat = rect?.width ?? CGFloat.greatestFiniteMagnitude
+            let height: CGFloat = rect?.height ?? CGFloat(1)
+            ranked.append(RootRank(
+                element: element,
+                bucket: Int((overlap * 20).rounded()),
+                area: width * height
+            ))
+        }
+        ranked.sort { a, b in a.bucket == b.bucket ? a.area < b.area : a.bucket > b.bucket }
+        let ordered = ranked.map(\.element)
+        for element in ordered {
+            let identity = MacAXSnapshot.identity(of: element)
+            if !seen.insert(identity).inserted { continue }
+            guard let node = MacAXSnapshot.capture(
+                element: element, frame: frame, depth: 0, budget: &budget
+            ) else { continue }
+            roots.append(node)
+        }
+        // An exhausted budget means the tree we captured is a truncation, not
+        // a description. Say so.
+        guard budget.nodesRemaining > 0, !budget.expired else { return nil }
+        return MacMarkProbe.geometrySignature(roots: roots, frame: frame)
     }
 
     // MARK: - Set-of-Mark dispatch
@@ -529,6 +655,15 @@ actor MacAppDriver: UXDriving {
         let windowNumber: Int
         let bounds: CGRect      // global screen coordinates, top-left origin in macOS-y space
         let ownerPID: Int
+    }
+
+    /// The SUT's front window, or nil when there isn't one (still launching,
+    /// hidden, or the process is gone). Non-throwing: the launch settle polls
+    /// this and treats every "not yet" the same way, so folding the
+    /// `appNotRunning` throw into nil here keeps that caller from having to
+    /// distinguish two flavours of "no window".
+    func frontWindow() -> WindowInfo? {
+        (try? findFrontWindow()) ?? nil
     }
 
     private func findFrontWindow() throws -> WindowInfo? {
@@ -1211,6 +1346,7 @@ actor MacAppDriver: UXDriving {
         return MacMarkProbe.probe(roots: roots, frame: frame, hitTest: hitTest)
     }
 
+
     /// Pull a single AX attribute. Returns nil on any error (missing
     /// attribute, permission denied, etc.) so the caller can keep
     /// walking instead of throwing.
@@ -1363,6 +1499,49 @@ enum MacAXSnapshot {
             return nil
         }
         return CGRect(origin: pos, size: size)
+    }
+}
+
+// MARK: - Settle gate (WB-25)
+
+/// The decision `awaitWindowStable` makes on each poll, as a pure function so
+/// the suite can pin it. The loop around it is timing and IPC; THIS is the
+/// contract, and it was the part with no test.
+enum MacSettleGate {
+
+    /// One poll's reading of the front frame.
+    struct Sample: Equatable, Sendable {
+        /// Perceptual hash of the captured window.
+        var hash: UInt64
+        /// Scoped AX geometry digest, or nil when the probe could not describe
+        /// the frame completely (Accessibility denied, app mid-relaunch,
+        /// snapshot budget exhausted). Nil is "no opinion", never "stable".
+        var geometry: String?
+    }
+
+    /// Has the screen stopped moving?
+    ///
+    /// Both halves must agree with the previous poll:
+    ///
+    ///  * the pixels, within `AgentLoop.cycleHashThreshold` — unchanged from
+    ///    the pre-WB-25 gate;
+    ///  * the scoped AX geometry, exactly — because an 8×8 perceptual hash
+    ///    cannot see a control still sliding five points into place, and five
+    ///    points is the difference between a resolver matching and a flow
+    ///    being reported `changed`.
+    ///
+    /// A nil on EITHER side is "no opinion": the pixel verdict then stands
+    /// alone, which is exactly the behaviour this gate replaced. That is a
+    /// deliberate asymmetry — treating an unreadable AX tree as instability
+    /// would spend the full settle budget on every action of every app whose
+    /// accessibility we cannot read, and would fail closed on a permission
+    /// problem rather than degrading.
+    static func isSettled(previous: Sample?, current: Sample) -> Bool {
+        guard let previous else { return false }
+        guard ScreenshotHasher.hammingDistance(current.hash, previous.hash)
+                <= AgentLoop.cycleHashThreshold else { return false }
+        if let a = previous.geometry, let b = current.geometry, a != b { return false }
+        return true
     }
 }
 

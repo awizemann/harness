@@ -690,14 +690,21 @@ struct MacMarkProbeTests {
             == ["First", "Second", "Third"])
     }
 
-    @Test("Disabled controls and sub-16pt targets aren't marked")
+    @Test("Disabled controls and degenerate rects aren't marked")
     func filtersUnusableTargets() {
         let ids = IDs()
         let root = Self.window(ids, rect: Self.frame, children: [
             AXSnapshotNode(identity: ids.take(), role: "AXButton", title: "Disabled",
                            enabled: false, rect: CGRect(x: 120, y: 240, width: 60, height: 24)),
-            AXSnapshotNode(identity: ids.take(), role: "AXButton", title: "Tiny",
-                           rect: CGRect(x: 120, y: 280, width: 8, height: 8)),
+            // A hairline and a collapsed view: no click can be AIMED at
+            // either, which is what the extent floor is actually for. (WB-25
+            // lowered that floor from 16pt to 4pt — see
+            // `sidebarBandBelowSixteenPointsIsMarked` for the band of real
+            // controls the old value was swallowing.)
+            AXSnapshotNode(identity: ids.take(), role: "AXButton", title: "Hairline",
+                           rect: CGRect(x: 120, y: 280, width: 1, height: 24)),
+            AXSnapshotNode(identity: ids.take(), role: "AXButton", title: "Collapsed",
+                           rect: CGRect(x: 120, y: 300, width: 60, height: 0)),
             Self.button(ids, title: "Usable", rect: CGRect(x: 120, y: 320, width: 60, height: 24))
         ])
         #expect(MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label) == ["Usable"])
@@ -882,5 +889,257 @@ struct MacMarkProbeTests {
         let menu = Self.window(ids, rect: menuFrame, children: [])
         #expect(MacMarkProbe.selectRoot(roots: [main, menu], frame: menuFrame)?.identity == menu.identity)
         #expect(MacMarkProbe.selectRoot(roots: [main, menu], frame: main.rect!)?.identity == main.identity)
+    }
+
+    // MARK: - WB-25: the missing-controls band
+
+    /// Scarf's Projects sidebar, at the AX geometry the live tree actually
+    /// reported (measured 2026-09-01 against `scarf.app` under
+    /// `--scarf-test-mode`, translated into this fixture's frame): a filter
+    /// field ABOVE a `List`, an add button and an archived toggle BELOW it.
+    ///
+    /// Every one of the three band controls measures under 16pt in at least
+    /// one dimension, because AppKit reports a SwiftUI control's TEXT extent
+    /// rather than its hit region. The `List`'s 32pt rows, sitting between
+    /// them, do not. That is the whole shape of the bug: the rows came
+    /// through, the band around them did not, and nothing in the observation
+    /// said anything had been dropped.
+    static func sidebarBand(_ ids: IDs) -> AXSnapshotNode {
+        group(ids, rect: CGRect(x: 100, y: 200, width: 200, height: 400), children: [
+            // 138×15 — the `Filter projects` field.
+            AXSnapshotNode(identity: ids.take(), role: "AXTextField",
+                           axDescription: "Filter projects",
+                           rect: CGRect(x: 120, y: 210, width: 138, height: 15)),
+            group(ids, rect: CGRect(x: 100, y: 240, width: 180, height: 300), children: [
+                AXSnapshotNode(identity: ids.take(), role: "AXRow",
+                               rect: CGRect(x: 100, y: 240, width: 180, height: 32),
+                               children: [staticText(ids, "Ridgeline", rect: CGRect(x: 110, y: 248, width: 80, height: 16))]),
+                AXSnapshotNode(identity: ids.take(), role: "AXRow",
+                               rect: CGRect(x: 100, y: 272, width: 180, height: 32),
+                               children: [staticText(ids, "Tidewater", rect: CGRect(x: 110, y: 280, width: 80, height: 16))])
+            ]),
+            // 11×11 — the Add-a-project button.
+            AXSnapshotNode(identity: ids.take(), role: "AXButton",
+                           axDescription: "Add a project",
+                           rect: CGRect(x: 110, y: 560, width: 11, height: 11)),
+            // 12×11 — the show-archived toggle.
+            AXSnapshotNode(identity: ids.take(), role: "AXCheckBox",
+                           axDescription: "Show archived projects",
+                           rect: CGRect(x: 132, y: 560, width: 12, height: 11))
+        ])
+    }
+
+    @Test("The band of sub-16pt controls around a List is marked, not silently dropped")
+    func sidebarBandBelowSixteenPointsIsMarked() {
+        let ids = IDs()
+        let root = Self.window(ids, rect: Self.frame, children: [Self.sidebarBand(ids)])
+        let labels = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        // The rows were never the problem; the band around them was.
+        #expect(labels.contains("Ridgeline"))
+        #expect(labels.contains("Tidewater"))
+        #expect(labels.contains("Filter projects"))
+        #expect(labels.contains("Add a project"))
+        #expect(labels.contains("Show archived projects"))
+    }
+
+    @Test("The band's marks keep the app's OWN names — a small control is not a nameless one")
+    func sidebarBandKeepsItsProvenance() {
+        let ids = IDs()
+        let root = Self.window(ids, rect: Self.frame, children: [Self.sidebarBand(ids)])
+        let marks = MacMarkProbe.probe(roots: [root], frame: Self.frame).marks
+        for name in ["Filter projects", "Add a project", "Show archived projects"] {
+            let mark = marks.first { $0.label == name }
+            #expect(mark?.labelSource == "ax-description", "\(name) lost its provenance")
+        }
+    }
+
+    @Test("Marking the band does NOT readmit a background window's controls")
+    func sidebarBandFixDoesNotReopenBackgroundBleed() {
+        // The adversarial half of the fix: lowering the extent floor must not
+        // widen the FRAME scope by even a point. A background window's tiny
+        // controls are exactly the population the floor used to hide by
+        // accident, so if W24's rect scoping were load-bearing on size, this
+        // is where it would show.
+        let ids = IDs()
+        let popoverFrame = CGRect(x: 300, y: 250, width: 200, height: 150)
+        let background = Self.window(ids, rect: Self.frame, children: [
+            AXSnapshotNode(identity: ids.take(), role: "AXButton", axDescription: "Background tiny",
+                           rect: CGRect(x: 110, y: 210, width: 11, height: 11)),
+            AXSnapshotNode(identity: ids.take(), role: "AXTextField", axDescription: "Background field",
+                           rect: CGRect(x: 110, y: 230, width: 138, height: 15))
+        ])
+        let popover = Self.window(ids, rect: popoverFrame, children: [
+            AXSnapshotNode(identity: ids.take(), role: "AXButton", axDescription: "Popover tiny",
+                           rect: CGRect(x: 310, y: 260, width: 11, height: 11))
+        ])
+        let labels = MacMarkProbe.probe(roots: [background, popover], frame: popoverFrame)
+            .marks.map(\.label)
+        #expect(labels == ["Popover tiny"])
+    }
+
+    // MARK: - WB-25: settle geometry
+
+    @Test("An unchanged tree yields an identical geometry signature")
+    func geometrySignatureIsStableAcrossIdenticalTrees() {
+        func tree(idOffset: Int) -> AXSnapshotNode {
+            let ids = IDs()
+            // Burn ids so the two captures do NOT agree on element identity —
+            // a fresh AX read mints fresh references, and the signature must
+            // not depend on them.
+            for _ in 0..<idOffset { _ = ids.take() }
+            return Self.window(ids, rect: Self.frame, children: [Self.sidebarBand(ids)])
+        }
+        let a = tree(idOffset: 0)
+        let b = tree(idOffset: 100)
+        // Identities differ between the two captures (a fresh AX read mints
+        // fresh element references); the SIGNATURE must not, because the
+        // question it answers is "did the layout move", not "is this the same
+        // object graph".
+        #expect(MacMarkProbe.geometrySignature(roots: [a], frame: Self.frame)
+                == MacMarkProbe.geometrySignature(roots: [b], frame: Self.frame))
+    }
+
+    @Test("A five-point drift the pixel hash can't see changes the geometry signature")
+    func geometrySignatureCatchesSubPerceptualDrift() {
+        // The measured failure: a popover's `Add` button settling from x=395
+        // to x=400. Five points is invisible to an 8×8 perceptual hash and
+        // decisive to a resolver comparing rects.
+        func tree(addX: CGFloat) -> AXSnapshotNode {
+            let ids = IDs()
+            return Self.window(ids, rect: Self.frame, children: [
+                Self.button(ids, title: "Add", rect: CGRect(x: addX, y: 300, width: 60, height: 24))
+            ])
+        }
+        let before = MacMarkProbe.geometrySignature(roots: [tree(addX: 395)], frame: Self.frame)
+        let after = MacMarkProbe.geometrySignature(roots: [tree(addX: 400)], frame: Self.frame)
+        #expect(before != nil)
+        #expect(before != after)
+    }
+
+    @Test("The signature is scoped to the front overlay, not the window behind it")
+    func geometrySignatureFollowsTheFrame() {
+        let sheetFrame = CGRect(x: 150, y: 250, width: 400, height: 300)
+        // Rebuilt per tree with DIFFERENT identities, so sheet-side equality
+        // is a property of the signature rather than of sharing one object.
+        func window(idOffset: Int, backgroundButtonY: CGFloat) -> AXSnapshotNode {
+            let ids = IDs()
+            for _ in 0..<idOffset { _ = ids.take() }
+            return Self.window(ids, rect: Self.frame, children: [
+                Self.button(ids, title: "Behind", rect: CGRect(x: 120, y: backgroundButtonY, width: 60, height: 24)),
+                AXSnapshotNode(identity: ids.take(), role: "AXSheet", rect: sheetFrame, children: [
+                    Self.button(ids, title: "Cancel", rect: CGRect(x: 160, y: 260, width: 60, height: 24))
+                ])
+            ])
+        }
+        // Motion BEHIND the sheet must not keep the sheet's settle spinning:
+        // the frame belongs to the sheet, and so does the question.
+        let a = MacMarkProbe.geometrySignature(roots: [window(idOffset: 0, backgroundButtonY: 210)], frame: sheetFrame)
+        let b = MacMarkProbe.geometrySignature(roots: [window(idOffset: 100, backgroundButtonY: 900)], frame: sheetFrame)
+        #expect(a != nil)
+        #expect(a == b)
+    }
+
+    @Test("No root matching the frame yields nil — 'no opinion', never 'stable'")
+    func geometrySignatureRefusesWithoutAScope() {
+        #expect(MacMarkProbe.geometrySignature(roots: [], frame: Self.frame) == nil)
+        // The case that actually happens: roots exist, but none of them holds
+        // the captured frame and none carries an overlay that does — an app
+        // mid-relaunch, or a frame belonging to a window AX won't admit to.
+        // `selectRoot` refuses (W24: a wrong table is worse than none), and
+        // the signature must refuse with it rather than describing the wrong
+        // window and calling that a stable layout.
+        let ids = IDs()
+        let elsewhere = Self.window(ids, rect: CGRect(x: 2000, y: 2000, width: 300, height: 300), children: [
+            Self.button(ids, title: "Somewhere else", rect: CGRect(x: 2010, y: 2010, width: 60, height: 24))
+        ])
+        #expect(MacMarkProbe.selectRoot(roots: [elsewhere], frame: Self.frame) == nil)
+        #expect(MacMarkProbe.geometrySignature(roots: [elsewhere], frame: Self.frame) == nil)
+    }
+
+    @Test("A signature that would be truncated is nil, not a prefix")
+    func geometrySignatureRefusesRatherThanTruncate() {
+        // A partial digest is worse than none: its cut-off point moves with
+        // whatever budget produced it, so two polls of a STATIC screen can
+        // disagree and a gate requiring agreement never resolves.
+        let ids = IDs()
+        var children: [AXSnapshotNode] = []
+        for i in 0..<(MacMarkProbe.geometrySignatureNodeCap + 10) {
+            children.append(Self.staticText(ids, "t\(i)", rect: CGRect(x: 120, y: 210, width: 20, height: 12)))
+        }
+        let root = Self.window(ids, rect: Self.frame, children: children)
+        #expect(MacMarkProbe.geometrySignature(roots: [root], frame: Self.frame) == nil)
+    }
+
+    // MARK: - WB-25: the extent floor's boundary
+
+    @Test("The extent floor keeps 4pt and refuses 3pt — both sides pinned")
+    func extentFloorBoundary() {
+        func labels(extent: CGFloat) -> [String] {
+            let ids = IDs()
+            let root = Self.window(ids, rect: Self.frame, children: [
+                AXSnapshotNode(identity: ids.take(), role: "AXButton", title: "At \(extent)",
+                               rect: CGRect(x: 120, y: 240, width: extent, height: extent))
+            ])
+            return MacMarkProbe.probe(roots: [root], frame: Self.frame).marks.map(\.label)
+        }
+        // Without both sides, the constant could drift to 1 or back to 16 and
+        // nothing here would notice.
+        #expect(labels(extent: 4) == ["At 4.0"])
+        #expect(labels(extent: 3).isEmpty)
+    }
+
+    // MARK: - WB-25: the settle gate itself
+
+    @Test("Agreeing pixels AND agreeing geometry settle")
+    func settleGateResolvesWhenBothAgree() {
+        let s = MacSettleGate.Sample(hash: 42, geometry: "AXButton@10,10,60,24")
+        #expect(MacSettleGate.isSettled(previous: s, current: s))
+    }
+
+    @Test("The FIRST poll never settles — there is nothing to agree with")
+    func settleGateNeedsAPredecessor() {
+        #expect(!MacSettleGate.isSettled(
+            previous: nil,
+            current: MacSettleGate.Sample(hash: 42, geometry: "a")
+        ))
+    }
+
+    @Test("Identical pixels with drifted geometry do NOT settle — the whole point")
+    func settleGateRefusesOnGeometryDrift() {
+        // Same perceptual hash, five points of movement. This is the measured
+        // failure: settle returned here, and the next observation disagreed
+        // with the one the flow was authored against.
+        #expect(!MacSettleGate.isSettled(
+            previous: MacSettleGate.Sample(hash: 42, geometry: "AXButton@395,300,60,24"),
+            current: MacSettleGate.Sample(hash: 42, geometry: "AXButton@400,300,60,24")
+        ))
+    }
+
+    @Test("Moving pixels never settle, however stable the geometry looks")
+    func settleGateStillRequiresPixels() {
+        #expect(!MacSettleGate.isSettled(
+            previous: MacSettleGate.Sample(hash: 0x0000_0000_0000_0000, geometry: "a"),
+            current: MacSettleGate.Sample(hash: 0xFFFF_FFFF_FFFF_FFFF, geometry: "a")
+        ))
+    }
+
+    @Test("An unreadable AX tree is 'no opinion' — the pixel verdict stands alone")
+    func settleGateFallsBackWhenGeometryIsUnavailable() {
+        // Deliberate asymmetry. Treating nil as instability would spend the
+        // full settle budget on every action of every app whose accessibility
+        // we cannot read — failing closed on a permission problem instead of
+        // degrading to the behaviour that shipped before this gate existed.
+        #expect(MacSettleGate.isSettled(
+            previous: MacSettleGate.Sample(hash: 42, geometry: nil),
+            current: MacSettleGate.Sample(hash: 42, geometry: "a")
+        ))
+        #expect(MacSettleGate.isSettled(
+            previous: MacSettleGate.Sample(hash: 42, geometry: "a"),
+            current: MacSettleGate.Sample(hash: 42, geometry: nil)
+        ))
+        #expect(MacSettleGate.isSettled(
+            previous: MacSettleGate.Sample(hash: 42, geometry: nil),
+            current: MacSettleGate.Sample(hash: 42, geometry: nil)
+        ))
     }
 }

@@ -1408,6 +1408,101 @@ struct UISessionStateCapabilityTests {
         #expect(slept == 0)
     }
 
+    // MARK: - Launch settle (WB-25 — the window must also STOP MOVING)
+
+    @Test("A window is ready only once two consecutive polls agree on it")
+    func readyWindowNeedsTwoAgreeingSamples() async {
+        // The measured failure: back-to-back sessions on one bundle id broke
+        // 2 runs in 5, because the FIRST successful capture is routinely a
+        // window the app has created but not laid out. Here the app reports a
+        // window that resizes once before settling; resolving on sample one
+        // would hand the session the 200×100 layout.
+        let sizes: [CGSize] = [
+            CGSize(width: 200, height: 100),
+            CGSize(width: 620, height: 900),
+            CGSize(width: 620, height: 900)
+        ]
+        var poll = 0
+        let settled = await MacLaunchSettle.awaitReadyWindow(
+            alive: { true },
+            reading: {
+                defer { poll += 1 }
+                guard poll < sizes.count else { return nil }
+                return MacLaunchSettle.WindowReading(windowNumber: 7, size: sizes[poll])
+            },
+            sleep: { _ in }
+        )
+        #expect(settled?.size == CGSize(width: 620, height: 900))
+        #expect(poll == 3)
+    }
+
+    @Test("A window that never appears times out rather than blocking")
+    func readyWindowTimesOutHonestly() async {
+        var slept = 0
+        let settled = await MacLaunchSettle.awaitReadyWindow(
+            maxWaitMs: 500, pollIntervalMs: 100,
+            alive: { true },              // the process is up, just window-less
+            reading: { nil },
+            sleep: { _ in slept += 1 }
+        )
+        #expect(settled == nil)
+        #expect(slept == 5)
+    }
+
+    @Test("A window that never stops moving times out inside the budget")
+    func readyWindowRefusesAPerpetuallyMovingWindow() async {
+        var poll = 0
+        var slept = 0
+        let settled = await MacLaunchSettle.awaitReadyWindow(
+            maxWaitMs: 500, pollIntervalMs: 100,
+            alive: { true },
+            reading: {
+                defer { poll += 1 }
+                return MacLaunchSettle.WindowReading(
+                    windowNumber: 7,
+                    size: CGSize(width: 400 + CGFloat(poll), height: 300)
+                )
+            },
+            sleep: { _ in slept += 1 }
+        )
+        // Never two agreeing samples → nil, and BOUNDED: the caller retries or
+        // fails with a message naming this wait, rather than hanging.
+        #expect(settled == nil)
+        #expect(slept == 5)
+    }
+
+    @Test("A dead process ends the window wait immediately")
+    func readyWindowStopsWaitingOnADeadProcess() async {
+        var slept = 0
+        let settled = await MacLaunchSettle.awaitReadyWindow(
+            maxWaitMs: 5_000, pollIntervalMs: 100,
+            alive: { false },
+            reading: { nil },
+            sleep: { _ in slept += 1 }
+        )
+        #expect(settled == nil)
+        // One poll, not fifty: a process that has exited will never draw, and
+        // the seconds spent proving it are seconds the retry could use.
+        #expect(slept == 1)
+    }
+
+    @Test("A start failure names WHICH wait ran out")
+    func startFailureNamesTheTimedOutPhase() {
+        let quitting = MacOSAdapterError.windowNeverAppeared(
+            bundleID: "com.example.app", phase: .previousInstanceExit
+        ).localizedDescription
+        let drawing = MacOSAdapterError.windowNeverAppeared(
+            bundleID: "com.example.app", phase: .windowReady
+        ).localizedDescription
+        #expect(quitting.contains("waiting for the previous instance to exit"))
+        #expect(quitting.contains("still running"))
+        // "still quitting" and "never drew a window" are different problems
+        // with different fixes; the two messages must not be interchangeable.
+        #expect(drawing.contains("stop moving"))
+        #expect(drawing.contains("Screen Recording"))
+        #expect(quitting != drawing)
+    }
+
     @Test("export on a non-web session names the capability and the platform")
     func exportRejectedOnNative() async throws {
         let root = UISessionTestSupport.tempArtifactRoot()

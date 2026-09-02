@@ -130,12 +130,24 @@ struct MacOSPlatformAdapter: PlatformAdapter {
         // The wait is bounded and only happens on the failure path, so a
         // legitimately running copy of the app (a developer's own) costs a
         // normal start nothing.
+        // WB-25 — which wait ran out, so the failure can name it.
+        var lastPhase: MacLaunchSettle.Phase = .windowReady
         for attempt in 1...2 {
             if attempt == 2 {
+                lastPhase = .previousInstanceExit
                 let cleared = await MacLaunchSettle.awaitQuiet(
                     stillRunning: { !Self.livePIDs(bundleID: bundleID).isEmpty }
                 )
                 Self.logger.info("macOS start retry for \(bundleID, privacy: .public): previous instances cleared=\(cleared, privacy: .public)")
+                if !cleared {
+                    // The predecessor is still up. Relaunch anyway (it may be
+                    // a stranger's copy, which is allowed to run forever) but
+                    // remember that THIS is what ran out, so a subsequent
+                    // window failure isn't blamed on the app's drawing.
+                    Self.logger.info("macOS start retry for \(bundleID, privacy: .public): predecessor still live after \(MacLaunchSettle.maxWaitMs, privacy: .public)ms")
+                } else {
+                    lastPhase = .windowReady
+                }
             }
             // The race shows up here as well as later: while the previous
             // instance is winding down, LaunchServices can refuse the open
@@ -145,7 +157,31 @@ struct MacOSPlatformAdapter: PlatformAdapter {
             // attempt 2's failure is the caller's answer.
             let runningApp: NSRunningApplication
             do {
-                runningApp = try await launch(freshInstance: attempt == 2)
+                // WB-25 — a genuinely new process from attempt 1, but ONLY
+                // where this adapter owns the app's lifecycle.
+                //
+                // Attempt 1 used to launch with `createsNewApplicationInstance
+                // = false` always, and under a back-to-back re-run
+                // LaunchServices answered that by ACTIVATING the previous
+                // instance and handing its `NSRunningApplication` back. The
+                // start then "succeeded" — a window was found, because the
+                // dying app still had one — and the session bound to a pid on
+                // its way out, driving the predecessor's window with the
+                // PREDECESSOR'S environment. A session's fixture-mode env was
+                // silently the last run's, and the failure surfaced later and
+                // somewhere else. `relaunchForNewLeg()` has forced a fresh
+                // instance since WB-23 for exactly this reason.
+                //
+                // Scoped to `terminatesOnTeardown` because that flag is
+                // precisely "this run quits the app when it ends". A GUI run
+                // deliberately leaves the SUT up for the user to inspect, so
+                // forcing a new process there would stack a fresh copy beside
+                // every previous one with nothing ever reaping them — and
+                // would take an app that is not multi-instance safe (a shared
+                // store, a lock file) somewhere it never used to go on a first
+                // attempt. GUI runs keep the reuse they had; the retry path
+                // still forces a fresh instance for both.
+                runningApp = try await launch(freshInstance: terminatesOnTeardown || attempt == 2)
             } catch {
                 Self.logger.info("macOS launch attempt \(attempt, privacy: .public) for \(bundleID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 if attempt == 1 { continue }
@@ -167,20 +203,23 @@ struct MacOSPlatformAdapter: PlatformAdapter {
                 launchEnvironment: launchEnvironment,
                 launchArguments: launchArguments
             )
-            var ready = false
-            for _ in 0..<60 {
-                try? await Task.sleep(for: .milliseconds(150))
-                if let size = try? await Self.probeWindowSize(driver: candidate) {
-                    pointSize = size
-                    ready = true
-                    break
-                }
-                // Stop waiting on a process that has gone: it will never show
-                // a window, and the seconds spent proving that are seconds
-                // the retry could be using.
-                if NSRunningApplication(processIdentifier: lastPID)?.isTerminated ?? true { break }
-            }
-            if ready {
+            // WB-25 — wait for a window that has APPEARED and STOPPED MOVING,
+            // not merely for the first capture that succeeds. Under a rapid
+            // re-run the first successful capture is routinely a window the
+            // app has created but not laid out, and the session's opening
+            // observation then reads a half-assembled screen.
+            let settled = await MacLaunchSettle.awaitReadyWindow(
+                alive: { !(NSRunningApplication(processIdentifier: lastPID)?.isTerminated ?? true) },
+                reading: { await Self.probeWindowReading(driver: candidate) }
+            )
+            // The window wait reads the CG window list, which needs no Screen
+            // Recording grant — so it would happily declare a window ready on
+            // a machine that cannot capture it, and the failure would move to
+            // the caller's first `observe_ui` with none of the launch-time
+            // context. One real capture, once, keeps the grant check where it
+            // has always been and where the error message still points.
+            if let settled, await Self.canCapture(driver: candidate) {
+                pointSize = settled.size
                 driver = candidate
                 break
             }
@@ -194,7 +233,7 @@ struct MacOSPlatformAdapter: PlatformAdapter {
         }
 
         guard let driver else {
-            throw MacOSAdapterError.windowNeverAppeared(bundleID: bundleID)
+            throw MacOSAdapterError.windowNeverAppeared(bundleID: bundleID, phase: lastPhase)
         }
 
         // Borrow the iOS RunEvent.simulatorReady to mean "target is ready
@@ -289,31 +328,59 @@ struct MacOSPlatformAdapter: PlatformAdapter {
             .map(\.processIdentifier)
     }
 
-    /// Quick probe — capture once and discard the PNG; we just want the
-    /// resolved point size. Times out via the surrounding loop in
-    /// `prepare(...)`.
-    static func probeWindowSize(driver: MacAppDriver) async throws -> CGSize? {
+    /// Can this driver actually CAPTURE the window it just found? Window
+    /// enumeration works without the Screen Recording grant; capture does not.
+    /// Run once, after the window has settled, so a start still fails at
+    /// launch — with the message that names the grant — rather than succeeding
+    /// into a session whose every observation will fail.
+    static func canCapture(driver: MacAppDriver) async -> Bool {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("harness-mac-probe-\(UUID().uuidString).png")
         defer { try? FileManager.default.removeItem(at: tmp) }
-        let meta = try await driver.screenshot(into: tmp)
-        return meta.pointSize
+        return (try? await driver.screenshot(into: tmp)) != nil
+    }
+
+    /// One window reading for `MacLaunchSettle.awaitReadyWindow`: which CG
+    /// window is front and how big it is. Deliberately does NOT capture an
+    /// image — the launch wait polls this repeatedly and only needs geometry,
+    /// so paying for a PNG encode per poll would be pure waste. nil means "no
+    /// window yet" and is the wait's cue to keep polling.
+    static func probeWindowReading(driver: MacAppDriver) async -> MacLaunchSettle.WindowReading? {
+        guard let info = await driver.frontWindow() else { return nil }
+        return MacLaunchSettle.WindowReading(
+            windowNumber: info.windowNumber,
+            size: CGSize(width: info.bounds.width, height: info.bounds.height)
+        )
     }
 }
 
 /// The bounded settle that stands between a session ending and the next one
-/// starting on the same app (WB-23).
+/// starting on the same app (WB-23, strengthened by WB-25).
 ///
-/// Pure but for the two closures it is handed, so the suite can pin the
-/// timing contract — polls, gives up, reports honestly which — without
-/// launching or killing anything.
+/// Pure but for the closures it is handed, so the suite can pin the timing
+/// contract — polls, gives up, reports honestly which and at WHICH phase —
+/// without launching or killing anything.
 enum MacLaunchSettle {
+    /// Which of the two waits a start was in when it ran out of budget. The
+    /// failure message names it: "still quitting" and "never drew a window"
+    /// are different problems with different fixes, and a caller told only
+    /// that the start failed has to guess which one they have.
+    enum Phase: String, Sendable {
+        case previousInstanceExit = "waiting for the previous instance to exit"
+        case windowReady = "waiting for the new instance's window to appear and stop moving"
+    }
+
     /// How long to wait for the previous instance(s) to actually exit.
-    /// `terminate()` → `forceTerminate()` on the way out takes at most ~2s
-    /// in `MacAppDriver.terminateApp`, so 4s covers a normal quit with room
-    /// to spare; past that the process is not merely slow to die and waiting
-    /// longer buys nothing a retry can use.
-    static let maxWaitMs = 4_000
+    ///
+    /// WB-23 set this to 4s, reasoning that `terminate()` → `forceTerminate()`
+    /// takes at most ~2s in `MacAppDriver.terminateApp`. WB-25 measured
+    /// back-to-back sessions on one bundle id breaking 2 runs in 5 anyway: a
+    /// SwiftUI app's teardown (window server handoff, LaunchServices
+    /// bookkeeping) routinely outlives the pid's own death rattle, and 4s
+    /// landed right on top of the distribution's tail. 10s clears it with room
+    /// to spare and costs a healthy start nothing — the wait ends the moment
+    /// the field is clear.
+    static let maxWaitMs = 10_000
     static let pollIntervalMs = 100
 
     /// Poll `stillRunning` until it answers false or the budget expires.
@@ -337,12 +404,63 @@ enum MacLaunchSettle {
             waited += pollIntervalMs
         }
     }
+
+    /// One reading of the launched app's front window: which CG window it is
+    /// and how big. Equality is the whole point — two consecutive equal
+    /// readings mean the window has appeared AND stopped moving.
+    struct WindowReading: Equatable, Sendable {
+        var windowNumber: Int
+        var size: CGSize
+    }
+
+    /// Total budget for the window wait. The pre-WB-25 loop was 60 polls at
+    /// 150ms (9s) and resolved on the FIRST successful capture — which, under
+    /// a rapid re-run, is routinely a window that has been created but not yet
+    /// laid out, so the session's opening observation caught the app
+    /// mid-assembly. Requiring a second, identical reading costs one poll on a
+    /// healthy launch and is the difference between "a window exists" and "the
+    /// window is ready to be observed".
+    static let windowReadyMaxWaitMs = 12_000
+    static let windowReadyPollIntervalMs = 150
+
+    /// Poll `reading` until two CONSECUTIVE polls return the same window and
+    /// size, or the budget expires. Returns the settled reading, or nil on
+    /// timeout / the app dying under us.
+    ///
+    /// `alive` is checked every poll so a process that has already exited ends
+    /// the wait immediately: it will never show a window, and the seconds
+    /// spent proving that are seconds the retry could be using.
+    ///
+    /// Cancellation ends the wait too. The default `sleep` is
+    /// `Task.sleep`, which returns IMMEDIATELY once the task is cancelled — so
+    /// without an explicit check a cancelled launch would spin the whole
+    /// budget's worth of polls at full speed, each one a real window-list call.
+    static func awaitReadyWindow(
+        maxWaitMs: Int = windowReadyMaxWaitMs,
+        pollIntervalMs: Int = windowReadyPollIntervalMs,
+        alive: () -> Bool,
+        reading: () async -> WindowReading?,
+        sleep: (Int) async -> Void = { try? await Task.sleep(for: .milliseconds($0)) }
+    ) async -> WindowReading? {
+        var waited = 0
+        var previous: WindowReading?
+        while waited < maxWaitMs {
+            if Task.isCancelled { return nil }
+            await sleep(pollIntervalMs)
+            waited += pollIntervalMs
+            let current = await reading()
+            if let current, let previous, current == previous { return current }
+            previous = current
+            if current == nil, !alive() { return nil }
+        }
+        return nil
+    }
 }
 
 enum MacOSAdapterError: Error, Sendable, LocalizedError {
     case bundleNotFound(path: String)
     case bundleIdentifierMissing(path: String)
-    case windowNeverAppeared(bundleID: String)
+    case windowNeverAppeared(bundleID: String, phase: MacLaunchSettle.Phase)
 
     var errorDescription: String? {
         switch self {
@@ -350,8 +468,22 @@ enum MacOSAdapterError: Error, Sendable, LocalizedError {
             return "macOS app bundle not found at \(path). Pick a valid .app or check the path in Application settings."
         case .bundleIdentifierMissing(let path):
             return "Couldn't read CFBundleIdentifier from \(path)/Contents/Info.plist."
-        case .windowNeverAppeared(let bid):
-            return "macOS app '\(bid)' launched but never showed a visible window — twice: the second attempt waited for any previous instance to exit and forced a new process, so this is not a still-quitting predecessor. Make sure Harness has Screen Recording permission and the app opens a window on launch (and, if you passed launch_args or env, that they don't put it into a headless mode)."
+        case .windowNeverAppeared(let bid, let phase):
+            switch phase {
+            case .previousInstanceExit:
+                // The retry's quiet wait ALSO ran out: a same-bundle-id
+                // process was still running after the full budget. That is a
+                // real extra fact and worth naming — but it is not proof of
+                // the cause, because a developer's own copy of the app is
+                // allowed to run forever and would produce this every time.
+                // So this message ADDS the still-running instance to the
+                // window guidance; it must not replace it, or the one user who
+                // always has their own copy open would never be told about the
+                // grant that is actually the problem.
+                return "macOS app '\(bid)' launched but never showed a visible window — twice. The retry also timed out \(phase.rawValue) (\(MacLaunchSettle.maxWaitMs)ms): another copy of '\(bid)' is still running, which may be the previous session's instance still quitting, or simply your own copy. Quit any other copy and try again. If that isn't it, make sure Harness has Screen Recording permission and the app opens a window on launch (and, if you passed launch_args or env, that they don't put it into a headless mode)."
+            case .windowReady:
+                return "macOS app '\(bid)' launched but never showed a visible window — twice: the second attempt waited for any previous instance to exit and forced a new process, so this is not a still-quitting predecessor. It timed out \(phase.rawValue) (\(MacLaunchSettle.windowReadyMaxWaitMs)ms). Make sure Harness has Screen Recording permission and the app opens a window on launch (and, if you passed launch_args or env, that they don't put it into a headless mode)."
+            }
         }
     }
 }

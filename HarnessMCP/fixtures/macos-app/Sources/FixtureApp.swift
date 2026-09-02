@@ -42,7 +42,7 @@ struct HarnessMacFixtureApp: App {
     var body: some Scene {
         WindowGroup("Harness Mac Fixture") {
             FixtureView()
-                .frame(width: 620, height: 760)
+                .frame(width: 620, height: 900)
         }
         .windowResizability(.contentSize)
     }
@@ -57,6 +57,10 @@ struct FixtureView: View {
     @State private var showingSheet = false
     @State private var selectedServer = "none"
     @State private var selectedProject: Project.ID?
+    // WB-25 — the sidebar band's own state.
+    @State private var filterText = ""
+    @State private var showArchived = false
+    @State private var addedProject = false
 
     /// W26 — what the LAUNCH handed this process. Read once, rendered as
     /// plain text, so a smoke can assert the passthrough landed without
@@ -76,6 +80,9 @@ struct FixtureView: View {
             // typed into the wrong field — which is the failure this whole
             // ticket is about.
             Text("echo host=[\(host)] port=[\(port)] project=[\(selectedProjectName)]")
+            // WB-25 — the sidebar band's own echo, so "the toggle below the
+            // list is marked" can be followed by "and tapping it did something".
+            Text("echo archived=[\(showArchived)] added=[\(addedProject)] filter=[\(filterText)]")
 
             // W19: label on the left, field on the right, no AX label set.
             VStack(alignment: .leading, spacing: 8) {
@@ -114,10 +121,63 @@ struct FixtureView: View {
 
             // WB-23: rows. `tap_mark` on one must SELECT it — AXPress on an
             // AXRow is the no-op that left "setting up a project" blocked.
-            List(Self.projects, selection: $selectedProject) { project in
-                Text(project.name)
+            //
+            // WB-25: and the band AROUND the list. Scarf's Projects sidebar is
+            // exactly this column — a filter field above a `List`, an add
+            // button and an archived toggle below it — and the whole band was
+            // missing from the mark table while the rows came through. Every
+            // control here is deliberately `.caption`-sized and unadorned,
+            // because that is what produced the sub-16pt AX rects (the filter
+            // field measured 138×15, the add button 11×11, the toggle 12×11)
+            // that the old `minimumMarkExtent` silently dropped. Keep them
+            // small: sizing them comfortably would make this fixture pass
+            // without testing anything.
+            VStack(spacing: 0) {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    TextField("Filter projects", text: $filterText)
+                        .accessibilityLabel("Filter projects")
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 9))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+
+                Divider()
+
+                List(Self.projects, selection: $selectedProject) { project in
+                    Text(project.name)
+                }
+                .frame(height: 110)
+
+                Divider()
+
+                HStack(spacing: 8) {
+                    Button {
+                        addedProject = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add a project")
+
+                    Toggle(isOn: $showArchived) {
+                        Image(systemName: "archivebox")
+                            .font(.system(size: 8))
+                    }
+                    .toggleStyle(.button)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Show archived projects")
+
+                    Spacer()
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
             }
-            .frame(width: 260, height: 110)
+            .frame(width: 260)
 
             // WB-23: two controls nothing can name — no title, no
             // description, no help, no caption, and nothing adjacent to

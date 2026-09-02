@@ -177,9 +177,39 @@ enum MacMarkProbe {
     /// modal rule).
     static let overlayRoles: Set<String> = ["AXSheet", "AXPopover", "AXMenu", "AXDrawer"]
 
-    /// Minimum on-screen size for a mark. Below this a badge can't be
-    /// placed legibly and the target can't be clicked reliably.
-    static let minimumMarkExtent: CGFloat = 16
+    /// Smallest on-screen extent (both dimensions) a control must have before
+    /// the probe will mark it.
+    ///
+    /// WB-25 — this floor used to be 16pt, on the reasoning that "below this a
+    /// badge can't be placed legibly and the target can't be clicked
+    /// reliably". Both halves were wrong, and the cost was an entire band of
+    /// real controls.
+    ///
+    /// Measured on Scarf's Projects screen: the `Filter projects` field
+    /// reports `138×15`, the Add-a-project button `11×11`, the show-archived
+    /// toggle `12×11`. All three are visible, enabled, uniquely named, and
+    /// operable by a human — and all three were silently absent from the mark
+    /// table while the `List`'s 32pt rows beside them came through. AppKit
+    /// reports a SwiftUI control's TEXT extent, not its hit region, so a
+    /// `.caption`-styled control routinely measures under 16pt while
+    /// occupying far more of the screen than that.
+    ///
+    /// Neither justification survives contact with the code it appealed to:
+    ///
+    ///  * `MarkRenderer.draw` floats a FIXED 32×30 badge above the element's
+    ///    top edge — its legibility has never depended on the element's own
+    ///    size;
+    ///  * `MacAppDriver.dispatchMarkClick` insets 4pt per edge and falls back
+    ///    to the rect's CENTRE when that inset collapses, which is exactly
+    ///    what an 11×11 button needs and what a human does anyway.
+    ///
+    /// So the floor is now what it always should have been: the point below
+    /// which AX geometry is degenerate rather than merely small — a 1pt
+    /// splitter, a collapsed zero-height view — and no click can be aimed at
+    /// it at all. Marking a small control honestly beats dropping it silently;
+    /// a caller can see a small rect, but nothing tells them about a row that
+    /// was never emitted.
+    static let minimumMarkExtent: CGFloat = 4
 
     // MARK: Result
 
@@ -416,6 +446,75 @@ enum MacMarkProbe {
         return found
     }
 
+    // MARK: Settle geometry (WB-25)
+
+    /// A digest of the CAPTURED frame's AX geometry — every element's role and
+    /// rounded rect, in reading order, inside the same scope the probe marks.
+    ///
+    /// Why the settle gate needs this at all: the screenshot-stability settle
+    /// resolves on two visually equivalent frames, and `dHash` is a 8×8
+    /// perceptual hash — a popover whose `Add` button is still sliding from
+    /// x=395 to x=400 looks IDENTICAL to it, so `settle` returned while
+    /// layout was still moving. The observation taken a moment later then
+    /// disagreed with the one the flow was authored against, and the staleness
+    /// net reported `changed` on a screen nothing had actually changed on
+    /// (measured at roughly one run in three on Scarf's popover step).
+    ///
+    /// Pixels alone can't see that; the AX rects can, because they are the
+    /// very numbers the mark table is built from and the very numbers a
+    /// resolver compares. Two consecutive equal signatures mean the layout the
+    /// NEXT observation would report is the layout this one saw.
+    ///
+    /// Returns nil when there is no scope to describe (no matching root — an
+    /// app mid-relaunch, or Accessibility denied), or when the description
+    /// would be INCOMPLETE. Nil is "no opinion", never "stable": the caller
+    /// must fall back to the pixel gate rather than resolve on an absence.
+    ///
+    /// The completeness half matters more than it looks. A signature that
+    /// silently stops at a cap is a PREFIX whose cut-off point depends on how
+    /// far the caller's own budget got, so two polls of a perfectly static
+    /// screen can disagree from timing jitter alone — and a gate that requires
+    /// agreement would then never resolve, quietly spending the full settle
+    /// budget on every action. Truncating is no safer in the other direction:
+    /// a cut landing before the animating control declares a moving screen
+    /// stable. Either way the honest answer is not "here is part of it", it is
+    /// "I don't know" — so an overflow returns nil and the caller keeps the
+    /// pixel-only behaviour it had before.
+    static let geometrySignatureNodeCap = 4000
+
+    /// How many candidates the walk will collect before it stops looking.
+    ///
+    /// This one truncates in TREE order, not reading order, so whatever it
+    /// drops is chosen by AX enumeration and reported to nobody — the same
+    /// shape of silent loss WB-25 exists to remove. It was 200 when the 16pt
+    /// extent floor was doing a lot of unintentional thinning; with that floor
+    /// at 4pt, a dense SwiftUI screen offers considerably more candidates, so
+    /// the headroom above the 80-mark cap grows to match. The extra cost is
+    /// bounded and cheap: candidates are plain values, and the expensive part
+    /// — the occlusion hit test — is evaluated LAZILY over the marks actually
+    /// emitted, never over the candidate pool.
+    static let candidateCap = 400
+
+    static func geometrySignature(roots: [AXSnapshotNode], frame: CGRect) -> String? {
+        guard let root = selectRoot(roots: roots, frame: frame) else { return nil }
+        let scoped = frontOverlay(in: root, frame: frame) ?? root
+        var parts: [String] = []
+        var visited: Set<UInt64> = []
+        var overflowed = false
+        func recurse(_ node: AXSnapshotNode, depth: Int) {
+            if overflowed || depth > 24 { return }
+            if visited.count >= geometrySignatureNodeCap { overflowed = true; return }
+            if !visited.insert(node.identity).inserted { return }
+            if let r = node.rect, let local = localRect(r, frame: frame) {
+                parts.append("\(node.role)@\(Int(local.minX.rounded())),\(Int(local.minY.rounded())),\(Int(local.width.rounded())),\(Int(local.height.rounded()))")
+            }
+            for child in node.children { recurse(child, depth: depth + 1) }
+        }
+        recurse(scoped, depth: 0)
+        guard !overflowed, !parts.isEmpty else { return nil }
+        return parts.joined(separator: ";")
+    }
+
     // MARK: Walk
 
     struct Candidate: Sendable {
@@ -512,7 +611,7 @@ enum MacMarkProbe {
            actionableRoles.contains(node.role), node.enabled, let global = node.rect,
            let local = localRect(global, frame: frame),
            local.width >= minimumMarkExtent, local.height >= minimumMarkExtent,
-           candidates.count < 200 {
+           candidates.count < candidateCap {
             candidates.append(
                 Candidate(
                     identity: node.identity,

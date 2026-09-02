@@ -46,6 +46,23 @@ button was *operable*:
     but never showed a visible window" because the previous instance was
     still quitting.
 
+WB-25 adds the three findings the Scarf acceptance pass left open:
+
+  * **The sidebar band (WB-25.1)** — the fixture's filter field, add button
+    and archived toggle sit above and below a `List`, sized exactly as
+    Scarf's are, and every one of them reported an AX rect under 16pt. The
+    probe used to drop all three and mark the rows between them, with nothing
+    in the observation saying anything had been withheld. All three must now
+    be addressable by their own names.
+  * **Settle on stable geometry (WB-25.2)** — two consecutive observations of
+    the SAME unchanged overlay must agree on every mark's rect. They did not:
+    settle resolved on a perceptual pixel hash, which is blind to a control
+    still sliding five points into place, so roughly one run in three
+    reported a spurious `changed`.
+  * **Launch settle under rapid re-runs (WB-25.3)** — three back-to-back
+    start/observe/end cycles on one bundle id, with no pause between them,
+    must all succeed. Two runs in five used to fail.
+
 Requires a built fixture app (`fixtures/macos-app/build-fixture.sh`) and the
 Accessibility + Screen Recording grants for the process that runs this. Both
 are checked up front and reported as a SKIP (exit 0) rather than a failure —
@@ -132,6 +149,11 @@ def content_text(result):
 
 def page_text(result):
     return result.get("structuredContent", {}).get("page_text") or ""
+
+
+def rect_key(mark):
+    r = mark["rect"]
+    return (r["x"], r["y"], r["width"], r["height"])
 
 
 # A value the fixture can only be rendering because THIS run's env reached it.
@@ -242,12 +264,44 @@ def main():
 
         # W24 — rects live in the reported frame's space.
         ps = sc.get("point_size", {})
+        # The fixture's window is a fixed size, so this FIRST unhurried
+        # observation is the reference every rapid re-run below must match: a
+        # window that had been created but not laid out is exactly what the
+        # old launch wait used to resolve on, and a wrong size is what that
+        # looks like from here.
+        reference_point_size = dict(ps)
         off = [m for m in all_marks
                if m["rect"]["x"] < 0 or m["rect"]["y"] < 0
                or m["rect"]["x"] + m["rect"]["width"] > ps.get("width", 0) + 1
                or m["rect"]["y"] + m["rect"]["height"] > ps.get("height", 0) + 1]
         check(not off, "every rect is inside point_size %s (escapees: %s)"
               % (ps, [m["label"] for m in off]))
+
+        # WB-25.1 — the band of controls above and below the list. Every one
+        # of these reports an AX rect under 16pt in at least one dimension
+        # (AppKit publishes a SwiftUI control's TEXT extent, not its hit
+        # region), which is exactly why all three used to be absent while the
+        # `List`'s 32pt rows beside them came through.
+        print("\n--- WB-25: the sidebar band around the List is marked ---")
+        for name in ["Filter projects", "Add a project", "Show archived projects"]:
+            m = mark_named(obs, name)
+            check(m is not None, "band control '%s' is in the mark table" % name)
+            if m:
+                check(m.get("label_source") == "ax-description",
+                      "'%s' keeps the app's own name (got %r)" % (name, m.get("label_source")))
+                small = m["rect"]["width"] < 16 or m["rect"]["height"] < 16
+                check(small,
+                      "'%s' is genuinely sub-16pt, so this really pins the fix (rect %s)"
+                      % (name, m["rect"]))
+        # And it is OPERABLE, not merely listed.
+        toggle = mark_named(obs, "Show archived projects")
+        if toggle:
+            after = mcp.tool("act_ui", {"session_id": sid, "tool": "tap_mark", "id": toggle["id"]})
+            check("archived=[true]" in page_text(after),
+                  "tapping the sub-16pt toggle actually toggled it (echo: %r)"
+                  % [l for l in page_text(after).split("\n") if l.startswith("echo archived")])
+            mcp.tool("act_ui", {"session_id": sid, "tool": "tap_mark", "id": toggle["id"]})
+            obs = mcp.tool("observe_ui", {"session_id": sid})
 
         print("\n--- act: open the menu, check de-duplication + menu-frame scoping ---")
         servers = mark_named(obs, "Servers")
@@ -322,6 +376,30 @@ def main():
             check(not off2, "sheet rects are in the sheet frame's space (escapees: %s)"
                   % [m["label"] for m in off2])
 
+            # WB-25.2 — with the sheet (an overlay, the frame class the drift
+            # was measured on) still up, two consecutive observations of an
+            # unchanged screen must agree on EVERY mark's rect. Before the
+            # settle gate looked at AX geometry, a control still sliding into
+            # place produced a table that differed between two reads of the
+            # same screen, and the staleness net called that `changed`.
+            print("\n--- WB-25: two observations of an unchanged overlay agree on geometry ---")
+            # Compared as an ORDERED list of (label, rect), not a dict keyed by
+            # label: two marks can legitimately share a label, and a dict would
+            # let one of them drift while the other's entry hid it.
+            first = [(m["label"], rect_key(m)) for m in marks(after)]
+            agreed = True
+            for _ in range(3):
+                again = mcp.tool("observe_ui", {"session_id": sid})
+                second = [(m["label"], rect_key(m)) for m in marks(again)]
+                if first != second:
+                    agreed = False
+                    print("      differed:\n        was: %s\n        now: %s"
+                          % (first, second))
+                    break
+            check(agreed, "repeat observations of the same overlay report identical rects")
+            # Close the sheet so the session ends from a clean screen.
+            mcp.tool("act_ui", {"session_id": sid, "tool": "key_shortcut", "keys": ["escape"]})
+
         print("\n--- W32: a session that ENDED says so ---")
         mcp.tool("end_ui_session", {"session_id": sid})
 
@@ -353,6 +431,40 @@ def main():
             check("mode=%s-again" % FIXTURE_MODE in page_text(again),
                   "the restarted session is the NEW process (its own env is what's on screen)")
             mcp.tool("end_ui_session", {"session_id": sid2})
+
+        # WB-25.3 — and it holds under REPETITION, which is where it broke: 2
+        # of 5 back-to-back replays failed at varying steps, and putting ~6s
+        # between runs made the failures disappear entirely. No pause here on
+        # purpose. Each cycle must both start AND come back with a laid-out
+        # window, so a start that "succeeds" onto a half-assembled screen
+        # fails here rather than in someone's flow.
+        print("\n--- WB-25: three back-to-back session cycles, no pause ---")
+        for cycle in range(1, 4):
+            mode = "%s-cycle%d" % (FIXTURE_MODE, cycle)
+            started = mcp.tool("start_ui_session", {
+                "platform": "macos", "app_path": app, "artifact_dir": artifact_dir,
+                "env": {"HARNESS_FIXTURE_MODE": mode},
+            })
+            ok = not started.get("isError")
+            check(ok, "cycle %d starts with no pause after the last (%s)"
+                  % (cycle, content_text(started)[:300]))
+            if not ok:
+                continue
+            csid = json.loads(content_text(started))["session_id"]
+            cobs = mcp.tool("observe_ui", {"session_id": csid})
+            ctext = page_text(cobs)
+            check("mode=%s" % mode in ctext,
+                  "cycle %d observes ITS OWN process, not a predecessor" % cycle)
+            # A window that had been created but not laid out is what the old
+            # launch wait resolved on; the fixture is a fixed-size window, so
+            # the wrong size is exactly what that used to look like.
+            cps = cobs.get("structuredContent", {}).get("point_size", {})
+            check(cps == reference_point_size,
+                  "cycle %d observed a fully laid-out window (point_size %s, expected %s)"
+                  % (cycle, cps, reference_point_size))
+            check(mark_named(cobs, "Filter projects") is not None,
+                  "cycle %d sees the full mark table, not a mid-launch one" % cycle)
+            mcp.tool("end_ui_session", {"session_id": csid})
 
     finally:
         mcp.close()
