@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>set_value fixture</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, system-ui, sans-serif; padding: 16px; }
+    label { display:block; margin: 12px 0 4px; font-weight: 600; }
+    input, select { font-size: 15px; padding: 6px; width: 260px; }
+    #state { margin-top: 20px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <!--
+    WB-27 fixture for the `set_value` act (and the `type` no-op guard).
+
+    * #checkin is a datetime-local wearing a React-style value tracker: an
+      instance `value` setter records into `tracked`, and an input listener
+      REVERTS to committed state whenever the tracker already equals the DOM
+      value (which is what a naive `el.value = …` or a synthetic keystroke
+      produces) and COMMITS otherwise (a native-prototype-setter change — the
+      technique `set_value` uses). This is the W36 failure reproduced: plain
+      typing clears the field; `set_value` lands it and #state updates.
+
+    * #room is an ordinary <select>. set_value matches by option value OR by
+      visible label and fires change, so #state reflects the pick.
+
+    * #coupon clears itself on every input — a deterministic stand-in for a
+      control that ignores synthetic keystrokes. `type` here must report the
+      field did not change rather than a clean success.
+  -->
+  <h1>Booking</h1>
+
+  <label for="checkin">Check-in</label>
+  <input id="checkin" type="datetime-local" aria-label="Check-in">
+
+  <label for="room">Room type</label>
+  <select id="room" aria-label="Room type">
+    <option value="">Choose…</option>
+    <option value="std">Standard</option>
+    <option value="ste">Suite</option>
+  </select>
+
+  <label for="coupon">Coupon</label>
+  <input id="coupon" type="text" aria-label="Coupon">
+
+  <div id="state">check-in: (none) · room: (none)</div>
+
+  <script>
+    (function () {
+      var el = document.getElementById('checkin');
+      var proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      var tracked = proto.get.call(el);
+      var state = proto.get.call(el);
+      Object.defineProperty(el, 'value', {
+        configurable: true,
+        get: function () { return proto.get.call(this); },
+        set: function (v) { tracked = v; proto.set.call(this, v); }
+      });
+      el.addEventListener('input', function () {
+        var dom = proto.get.call(el);
+        if (tracked === dom) { proto.set.call(el, state); tracked = state; }
+        else { state = dom; tracked = dom; commit(); }
+      });
+    })();
+
+    var committedRoom = '';
+    document.getElementById('room').addEventListener('change', function (e) {
+      committedRoom = e.target.value; commit();
+    });
+
+    // Ignores synthetic keystrokes: reverts to empty on every input.
+    document.getElementById('coupon').addEventListener('input', function (e) {
+      e.target.value = '';
+    });
+
+    function commit() {
+      var ci = document.getElementById('checkin').value || '(none)';
+      var rm = committedRoom || '(none)';
+      document.getElementById('state').textContent = 'check-in: ' + ci + ' · room: ' + rm;
+    }
+  </script>
+</body>
+</html>

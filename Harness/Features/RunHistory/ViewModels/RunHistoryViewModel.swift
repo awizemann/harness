@@ -261,6 +261,8 @@ final class RunHistoryViewModel {
             input = .tapMark(id: (dict["id"] as? Int) ?? 0)
         case .scrollIntoView:
             input = .scrollIntoView(id: (dict["id"] as? Int) ?? 0)
+        case .setValue:
+            input = .setValue(id: (dict["id"] as? Int) ?? 0, value: (dict["value"] as? String) ?? "")
         }
         return ToolCall(
             tool: kind,

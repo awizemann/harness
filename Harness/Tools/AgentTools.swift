@@ -216,6 +216,7 @@ enum ToolSchema {
         ToolKind.scroll.rawValue,
         ToolKind.scrollIntoView.rawValue,
         ToolKind.type.rawValue,
+        ToolKind.setValue.rawValue,
         ToolKind.fillCredential.rawValue,
         ToolKind.keyShortcut.rawValue,
         ToolKind.navigate.rawValue,
@@ -272,6 +273,7 @@ enum ToolSchema {
             scroll(),
             scrollIntoView(),
             type(),
+            setValue(),
             fillCredential(),
             keyShortcut(),
             navigate(),
@@ -415,6 +417,44 @@ enum ToolSchema {
                     "intent": ["type": "string"]
                 ],
                 "required": ["id", "observation", "intent"]
+            ]
+        )
+    }
+
+    private static func setValue() -> CanonicalTool {
+        CanonicalTool(
+            name: "set_value",
+            description: """
+            Set the value of an input, textarea, or select behind a numbered \
+            Set-of-Mark badge — the reliable way to fill a field that plain \
+            `type` cannot. Use it for `<input type="date">` / `datetime-local` \
+            / `time` / `month` / `week` / `number`, for `<select>` dropdowns, \
+            and for any text field a framework "controls" (React / Vue) where \
+            typed characters get cleared on the next render. Unlike `type`, \
+            which sends keystrokes to whatever is focused, `set_value` \
+            addresses the element by its mark `id` and writes the value the \
+            way a controlled component requires, so the app's own state \
+            actually updates and the value survives submit. \
+            \
+            `value` formats: a datetime-local field wants `yyyy-MM-ddThh:mm` \
+            (e.g. `2026-09-10T15:00`); a date field `yyyy-MM-dd`; a time field \
+            `hh:mm`. For a `<select>`, pass either the option's value or its \
+            visible label. \
+            \
+            Takes the same `id` as `tap_mark`, read from the CURRENT turn's \
+            marks (ids re-number every screenshot). The returned observation \
+            reports whether the value stuck — if it did not, check the format. \
+            WEB ONLY.
+            """,
+            jsonSchema: [
+                "type": "object",
+                "properties": [
+                    "id": ["type": "integer", "minimum": 1],
+                    "value": ["type": "string", "description": "The value to set. Date/time fields use ISO-like formats (see above); a select takes the option value or label."],
+                    "observation": ["type": "string"],
+                    "intent": ["type": "string"]
+                ],
+                "required": ["id", "value", "observation", "intent"]
             ]
         )
     }

@@ -250,7 +250,7 @@ actor MacAppDriver: UXDriving {
             }
         case .tapMark(let id):
             try await dispatchMarkClick(id: id, info: info)
-        case .swipe, .pressButton, .navigate, .back, .forward, .refresh, .scrollIntoView:
+        case .swipe, .pressButton, .navigate, .back, .forward, .refresh, .scrollIntoView, .setValue:
             // `scroll_into_view` is web-only for now: AX exposes
             // `NSAccessibilityScrollToVisibleAction`, but only some views
             // implement it, and a silent no-op that REPORTS a scroll is
@@ -289,7 +289,7 @@ actor MacAppDriver: UXDriving {
             maxMs = 2500
         case .type, .wait, .readScreen, .noteFriction, .markGoalDone,
              .swipe, .pressButton, .navigate, .back, .forward, .refresh,
-             .scrollIntoView:
+             .scrollIntoView, .setValue:
             return
         }
         await awaitWindowStable(idleMs: idleMs, minMs: minMs, maxMs: maxMs)

@@ -290,6 +290,8 @@ actor WebDriver: UXDriving {
             try await dispatchScroll(x: x, y: y, dx: dx, dy: dy)
         case .type(let text):
             try await dispatchType(text)
+        case .setValue(let id, let value):
+            try await dispatchSetValue(id: id, value: value)
         case .keyShortcut(let keys):
             try await dispatchKeyShortcut(keys)
         case .navigate(let urlString):
@@ -317,7 +319,7 @@ actor WebDriver: UXDriving {
                 throw UXDriverError.credentialUnavailable(field: field)
             }
             do {
-                try await dispatchType(credential.value(for: field))
+                try await dispatchType(credential.value(for: field), passwordSafe: true)
             } catch {
                 // A WebKit JS-evaluation error can echo page/script text;
                 // scrub the credential out of it before it reaches the
@@ -1191,58 +1193,98 @@ actor WebDriver: UXDriving {
         }
     }
 
-    private func dispatchType(_ text: String) async throws {
-        // Insert text into the focused field.
-        //
-        // **React-controlled inputs need the native value setter.**
-        // React maintains an internal "value tracker" on every input it
-        // controls; setting `el.value = ...` directly bypasses that
-        // tracker, so on the next render React believes the value
-        // hasn't changed and resets it to its own state — the user
-        // sees their typed text vanish, and form validation rejects
-        // the empty submit. The fix is to call the native setter via
-        // its property descriptor (which React's tracker hooks into),
-        // then dispatch input/change events so listeners run. This is
-        // the well-known pattern used by every browser test framework
-        // that drives React forms (Cypress, Playwright internals, etc.).
-        //
-        // Contenteditable falls back to `document.execCommand("insertText")`,
-        // which dispatches the right input events natively.
-        let escaped = Self.jsEscape(text)
-        let js = """
-        (() => {
-          const el = document.activeElement;
-          if (!el) return false;
-          const text = "\(escaped)";
-          if (el.isContentEditable) {
-            document.execCommand && document.execCommand('insertText', false, text);
-          } else if ('value' in el) {
-            const start = el.selectionStart ?? el.value.length;
-            const end = el.selectionEnd ?? el.value.length;
-            const newValue = el.value.slice(0, start) + text + el.value.slice(end);
-            // Resolve the appropriate prototype's `value` setter: <input>
-            // and <textarea> have separate descriptors. The native setter
-            // calls into React's value tracker (or any framework's
-            // equivalent) so the change is recognised; a direct `el.value
-            // = ...` assignment doesn't.
-            const proto = el instanceof HTMLTextAreaElement
-              ? HTMLTextAreaElement.prototype
-              : HTMLInputElement.prototype;
-            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-            if (desc && desc.set) {
-              desc.set.call(el, newValue);
+    /// Type `text` into the focused field. The JS (in `WebMarkProbe.typeJS`,
+    /// so the test suite runs the identical source) drives the value through
+    /// the native prototype setter + input/change events — the React-tracker-
+    /// correct path — and reports whether the field's value actually moved.
+    ///
+    /// **The no-op guard (WB-27, from W36).** A synthetic-keystroke `type`
+    /// can land nothing — no field is focused, or the field is controlled /
+    /// readonly and reverts the insert on the same tick — and the old code
+    /// returned success regardless, so the caller saw a clean "typed" step
+    /// and an unchanged screen with no reason why. Now the JS returns
+    /// `{ had, changed }` and a no-op sets `lastDriverDetail` to say so and
+    /// point at `set_value`. The mechanism is unchanged; it just stops
+    /// lying. It stays best-effort: a controlled component that reverts on a
+    /// LATER render (not synchronously) can still read as changed here — for
+    /// that class `set_value` is the reliable tool, which the warning names.
+    ///
+    /// `passwordSafe` = this is the `fill_credential` path. The JS never
+    /// returns the field's value (only booleans), so nothing leaks either
+    /// way, but the warning copy is kept generic on this path so a run
+    /// transcript never even implies the credential's shape.
+    @discardableResult
+    private func dispatchType(_ text: String, passwordSafe: Bool = false) async throws -> Bool {
+        let js = WebMarkProbe.typeJS(text: text)
+        let result = try await runJSAndReturn(js)
+        guard let dict = result as? [String: Any] else {
+            // Timed out (navigation in flight) or a genuinely opaque return.
+            // The insert was already dispatched; don't invent a warning.
+            return true
+        }
+        let had = (dict["had"] as? Bool) ?? false
+        let changed = (dict["changed"] as? Bool) ?? false
+        if !had {
+            lastDriverDetail = passwordSafe
+                ? "fill_credential — no editable field was focused, so nothing was entered. Tap the field first (tap_mark), then fill."
+                : "type — no editable field was focused, so nothing was typed. Tap the field first (tap_mark), or use set_value(id) to address a marked field directly."
+            return false
+        }
+        if !changed && !text.isEmpty {
+            lastDriverDetail = passwordSafe
+                ? "fill_credential — the focused field did not change; it may be a controlled or read-only input that ignores synthetic keystrokes."
+                : "type — the focused field's value did not change; it may be a controlled or read-only input (a date/number/datetime-local picker, or a framework-controlled field) that ignores synthetic keystrokes. Use set_value(id, value) on its mark instead."
+            return false
+        }
+        return true
+    }
+
+    /// `set_value(id, value)` — WB-27. Set the input/textarea/select behind
+    /// mark `id` to `value` the controlled-component way, then read the value
+    /// back and report whether it stuck.
+    ///
+    /// **Why a distinct act rather than a `value` arg on `type`.** `type`
+    /// sends its text to whatever `document.activeElement` happens to be and
+    /// leaves the value's fate to the field; `set_value` addresses the mark's
+    /// element directly (via the same parked registry `scroll_into_view`
+    /// uses), focuses it itself, drives the native setter, and VERIFIES the
+    /// read-back. The two have different contracts — one keystroke-shaped and
+    /// caret-relative, one whole-value and verified — so they read cleaner as
+    /// two tools than as one overloaded switch on which arg was passed. It is
+    /// web-only for the same reason `scroll_into_view` is: the AX value-set on
+    /// macOS/iOS needs per-role verification this ticket didn't buy, and a
+    /// value-set that silently no-ops while reporting success is the exact
+    /// dishonesty W36 was about.
+    private func dispatchSetValue(id: Int, value: String) async throws {
+        guard lastMarks.contains(where: { $0.id == id }) else {
+            throw WebDriverError.unknownMark(id: id)
+        }
+        let js = WebMarkProbe.setValueJS(id: id, value: value)
+        let result = try await runJSAndReturn(js)
+        guard let dict = result as? [String: Any],
+              let status = dict["status"] as? String else {
+            lastDriverDetail = "set_value(\(id)) — the page returned nothing; it may have navigated mid-action."
+            return
+        }
+        let label = lastMarks.first(where: { $0.id == id })?.label ?? ""
+        switch status {
+        case "no-registry", "stale":
+            throw WebDriverError.markElementGone(id: id, reason: status == "no-registry" ? "no-registry" : "stale")
+        case "not-settable":
+            let tag = (dict["tag"] as? String) ?? "element"
+            throw WebDriverError.valueNotSettable(id: id, tag: tag)
+        case "ok":
+            let stuck = (dict["stuck"] as? Bool) ?? false
+            let after = (dict["after"] as? String) ?? ""
+            if stuck {
+                lastDriverDetail = "set_value(\(id)) — set \"\(label)\" to \"\(after)\"; the field holds the value."
             } else {
-              el.value = newValue;
+                let expected = (dict["expected"] as? String) ?? value
+                lastDriverDetail = "set_value(\(id)) — set \"\(label)\", but the field now reads \"\(after)\" (expected \"\(expected)\"); the value did not stick. Check the format — a datetime-local wants yyyy-MM-ddThh:mm, a date yyyy-MM-dd, a select an existing option value or label."
             }
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          } else {
-            return false;
-          }
-          return true;
-        })();
-        """
-        try await runJS(js)
+        default:
+            lastDriverDetail = "set_value(\(id)) — unexpected status \"\(status)\"."
+        }
     }
 
     private func dispatchKeyShortcut(_ keys: [String]) async throws {
@@ -1711,6 +1753,11 @@ enum WebDriverError: Error, Sendable, LocalizedError {
     /// unmounted. Distinct from `unknownMark` because the advice differs:
     /// re-observing does help here, and only here.
     case markElementGone(id: Int, reason: String)
+    /// WB-27 — `set_value(id)` resolved to an element that is neither a
+    /// value-bearing control (input/textarea/select) nor contenteditable, so
+    /// there is nothing to set. An honest failure beats writing a value the
+    /// element can't hold and reporting success.
+    case valueNotSettable(id: Int, tag: String)
 
     var errorDescription: String? {
         switch self {
@@ -1725,6 +1772,8 @@ enum WebDriverError: Error, Sendable, LocalizedError {
                 ? "the element behind it has been removed from the page"
                 : "the frame it was probed in is gone (a navigation cleared it)"
             return "scroll_into_view(id: \(id)) — \(why). Observe again and use an id from the new mark set."
+        case .valueNotSettable(let id, let tag):
+            return "set_value(id: \(id)) — the marked element (<\(tag.lowercased())>) is not an input, textarea, select, or editable field, so it has no value to set. Pick the mark on the actual form control."
         }
     }
 }

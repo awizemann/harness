@@ -651,6 +651,8 @@ extension LogRow {
             dict = ["field": field.rawValue]
         case .tapMark(let id), .scrollIntoView(let id):
             dict = ["id": id]
+        case .setValue(let id, let value):
+            dict = ["id": id, "value": value]
         }
         let data = try JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])
         return String(data: data, encoding: .utf8) ?? "{}"

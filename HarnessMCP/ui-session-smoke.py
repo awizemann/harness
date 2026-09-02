@@ -77,6 +77,7 @@ FIXTURE_DIR = os.path.join(HERE, "fixtures")
 FIXTURE_NAME = "ui-session-fixture.html"
 SETTLE_FIXTURE_NAME = "spa-settle-fixture.html"
 SCROLL_FIXTURE_NAME = "scroll-into-view-fixture.html"
+SET_VALUE_FIXTURE_NAME = "set-value-fixture.html"
 CONFIRM_FIXTURE_NAME = "confirm-dialog-fixture.html"
 DEFAULT_BIN = os.path.join(HERE, "..", ".build", "derived", "Build", "Products", "Debug", "harness-mcp")
 
@@ -281,6 +282,9 @@ def main():
               "act_ui's description no longer claims fill_credential is macOS-only")
         check("scroll_into_view" in act_desc.split("web:")[1].split(";")[0],
               "act_ui advertises scroll_into_view on web")
+        check("set_value" in act_desc.split("web:")[1].split(";")[0],
+              "act_ui advertises set_value on web")
+        check("value" in act_props, "act_ui accepts a `value` argument (set_value)")
         obs_schema_props = by_name["observe_ui"]["outputSchema"]["properties"]
         check("frame_url" in obs_schema_props, "observe_ui's outputSchema describes frame_url")
         check("frame_url" not in by_name["observe_ui"]["outputSchema"].get("required", []),
@@ -604,6 +608,58 @@ def main():
         scroll_rows = open(os.path.join(scroll_dir, "steps.jsonl")).read()
         check('"scroll_into_view"' in scroll_rows, "the act is recorded in steps.jsonl")
         _ = mcp.tool("end_ui_session", {"session_id": sid_scroll})
+
+        # ------------------------------------------------------------------
+        # WB-27 — set_value lands a controlled datetime-local & a select
+        # where a synthetic-keystroke `type` cannot, and `type` now flags its
+        # own no-op instead of reporting a clean success. #checkin wears a
+        # React-style value tracker that reverts a naive assignment; only the
+        # native-setter path set_value uses commits, and #state proves it
+        # persisted. #coupon ignores keystrokes, so `type` must warn.
+        # ------------------------------------------------------------------
+        print("\n--- set_value fills a controlled datetime-local & a select (WB-27) ---")
+        sv_url = "http://127.0.0.1:%d/%s" % (port, SET_VALUE_FIXTURE_NAME)
+        sv_dir = tempfile.mkdtemp(prefix="harness-ui-setvalue-")
+        s_sv = json.loads(content_text(mcp.tool("start_ui_session", {
+            "platform": "web", "url": sv_url, "artifact_dir": sv_dir})))
+        sid_sv = s_sv["session_id"]
+        obs_sv0 = mcp.tool("observe_ui", {"session_id": sid_sv})
+        txt_sv0 = content_text(obs_sv0)
+        checkin_id = find_mark_id(txt_sv0, "Check-in")
+        room_id = find_mark_id(txt_sv0, "Room type")
+        coupon_id = find_mark_id(txt_sv0, "Coupon")
+        check(checkin_id is not None, "resolved the datetime-local's mark id (%s)" % checkin_id)
+        check(room_id is not None, "resolved the select's mark id (%s)" % room_id)
+        check(coupon_id is not None, "resolved the coupon field's mark id (%s)" % coupon_id)
+
+        # set_value the datetime-local — the value must survive the controlled revert.
+        act_ci = mcp.tool("act_ui", {"session_id": sid_sv, "tool": "set_value",
+                                     "id": checkin_id, "value": "2026-09-10T15:00"})
+        check(act_ci.get("isError") is not True, "set_value on the datetime-local executed")
+        ci_page = (act_ci.get("structuredContent", {}) or {}).get("page_text") or ""
+        check("check-in: 2026-09-10T15:00" in ci_page,
+              "the datetime value PERSISTED through the controlled onChange (state shows it)")
+        check("holds the value" in content_text(act_ci),
+              "the act result confirms the value stuck")
+
+        # set_value the select by its visible label.
+        act_rm = mcp.tool("act_ui", {"session_id": sid_sv, "tool": "set_value",
+                                     "id": room_id, "value": "Suite"})
+        rm_page = (act_rm.get("structuredContent", {}) or {}).get("page_text") or ""
+        check("room: ste" in rm_page,
+              "set_value matched the select option by its visible label ('Suite' → 'ste')")
+
+        # type on the keystroke-ignoring field must WARN, not lie.
+        _ = mcp.tool("act_ui", {"session_id": sid_sv, "tool": "tap_mark", "id": coupon_id})
+        act_cp = mcp.tool("act_ui", {"session_id": sid_sv, "tool": "type", "text": "SAVE20"})
+        check("did not change" in content_text(act_cp),
+              "type on a field that ignores keystrokes reports the no-op instead of a clean success")
+
+        sv_rows = open(os.path.join(sv_dir, "steps.jsonl")).read()
+        check('"set_value"' in sv_rows, "set_value is recorded in steps.jsonl")
+        check('"value": "2026-09-10T15:00"' in sv_rows or '"value":"2026-09-10T15:00"' in sv_rows,
+              "the set value is logged (model-authored, not a secret)")
+        _ = mcp.tool("end_ui_session", {"session_id": sid_sv})
 
         # ------------------------------------------------------------------
         # WB-14 — fill_credential in a STEP-LEVEL SESSION. Stage a real

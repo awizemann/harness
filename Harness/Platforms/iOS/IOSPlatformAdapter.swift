@@ -230,7 +230,7 @@ struct IOSSimDriver: UXDriving {
             }
         case .tapMark(let id):
             try await simulatorDriver.tapMark(id: id, on: ref)
-        case .rightClick, .keyShortcut, .scroll, .scrollIntoView, .navigate, .back, .forward, .refresh:
+        case .rightClick, .keyShortcut, .scroll, .scrollIntoView, .setValue, .navigate, .back, .forward, .refresh:
             // These tool variants belong to other platforms. The iOS
             // adapter never advertises them via toolDefinitions, so an
             // emission here is a contract bug — surface it loudly.
@@ -283,7 +283,7 @@ struct IOSSimDriver: UXDriving {
             // animation worth gating on.
             return
         case .wait, .readScreen, .noteFriction, .markGoalDone,
-             .rightClick, .keyShortcut, .scroll, .scrollIntoView, .navigate,
+             .rightClick, .keyShortcut, .scroll, .scrollIntoView, .setValue, .navigate,
              .back, .forward, .refresh:
             return
         }

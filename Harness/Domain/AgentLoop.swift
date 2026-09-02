@@ -358,6 +358,8 @@ actor AgentLoop: AgentLooping {
             // already centred does not move, so a model that keeps asking
             // for it makes no progress at all.
             return aid == bid
+        case let (.setValue(aid, av), .setValue(bid, bv)):
+            return aid == bid && av == bv
         case let (.type(ta), .type(tb)):
             return ta == tb
         case let (.keyShortcut(ka), .keyShortcut(kb)):

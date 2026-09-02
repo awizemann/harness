@@ -159,6 +159,8 @@ final class RunSessionViewModel {
                 return "Tap mark \(id)"
             case .scrollIntoView(let id):
                 return "Scroll mark \(id) into view"
+            case .setValue(let id, let value):
+                return "Set mark \(id) to \"\(value)\""
             }
         }
     }

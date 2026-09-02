@@ -37,7 +37,7 @@ extension PreviewToolKind {
     init(_ kind: ToolKind) {
         switch kind {
         case .tap, .doubleTap, .rightClick, .tapMark: self = .tap
-        case .type, .fillCredential:        self = .type
+        case .type, .fillCredential, .setValue: self = .type
         case .swipe, .scroll, .scrollIntoView: self = .swipe
         case .wait, .readScreen:             self = .wait
         case .pressButton, .keyShortcut, .noteFriction, .markGoalDone,
@@ -104,6 +104,9 @@ extension PreviewToolCall {
             return "#\(id)"
         case .scrollIntoView(let id):
             return "#\(id)↕"
+        case .setValue(let id, let value):
+            let v = value.count > 20 ? String(value.prefix(19)) + "…" : value
+            return "#\(id)=\"\(v)\""
         }
     }
 }

@@ -635,6 +635,11 @@ enum ToolKind: String, Sendable, Hashable, Codable, CaseIterable {
     // drawable and a click has to land), so this is how an agent reaches
     // what the fold clipped: scroll, then read the re-probed marks.
     case scrollIntoView = "scroll_into_view"
+    // WB-27 — web-only. Set an input/textarea/select behind a Set-of-Mark
+    // id to a value the controlled-component way (native setter + input/
+    // change events), for date/datetime-local/number/select fields that a
+    // synthetic-keystroke `type` cannot land.
+    case setValue       = "set_value"
 }
 
 /// Tagged-union payload for any tool. Field names match `https://github.com/awizemann/harness/wiki/Tool-Schema`.
@@ -689,6 +694,13 @@ enum ToolInput: Sendable, Hashable, Codable {
     /// last probe parked, so an id from a frame that has since navigated
     /// fails rather than scrolling to something else.
     case scrollIntoView(id: Int)
+    /// WB-27: Set the input/textarea/select behind a Set-of-Mark `id` to
+    /// `value`, driven the controlled-component way (native prototype value
+    /// setter + input/change events + blur), with a read-back so the driver
+    /// can report whether the value stuck. Web only — the value is
+    /// model-authored (not a staged credential), so it rides in the tool
+    /// call and the step log like any other action argument.
+    case setValue(id: Int, value: String)
 }
 
 /// Which slot of a stored credential `fill_credential` should type.

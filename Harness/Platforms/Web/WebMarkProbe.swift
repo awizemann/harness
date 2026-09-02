@@ -931,4 +931,133 @@ enum WebMarkProbe {
       }
       return parts.join('\n');
     """#
+
+    // MARK: - Value entry (WB-27)
+    //
+    // Two JS builders the `WebDriver` evaluates for text/value entry, kept
+    // here — beside the mark probe they depend on — so the test suite can
+    // run the IDENTICAL source against fixture pages in a live WKWebView
+    // rather than re-implementing it.
+
+    /// Escape a Swift string for interpolation into a `"…"` JS string
+    /// literal. The value/text entering these builders is model-authored
+    /// (never a staged credential — that path is `fill_credential`), so this
+    /// is escaping for correctness, not redaction.
+    static func jsStringEscape(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        for ch in s {
+            switch ch {
+            case "\\": out += "\\\\"
+            case "\"": out += "\\\""
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:   out.append(ch)
+            }
+        }
+        return out
+    }
+
+    /// `set_value(id, value)` — set the element behind Set-of-Mark `id` to
+    /// `value` the way a controlled (React/Vue) component demands: resolve
+    /// the element from the parked registry, focus it, drive the value
+    /// through the native prototype `value` setter (which the framework's
+    /// value tracker hooks — a plain `el.value = …` does not, so the next
+    /// render reverts it), dispatch `input` + `change` (bubbling), blur to
+    /// commit, then READ THE VALUE BACK so the driver can tell the caller
+    /// whether it actually stuck. `<select>` matches by option value first,
+    /// then visible label/text. No keystrokes, and no `selectionStart` read
+    /// (which THROWS on date/number/datetime-local inputs — the exact class
+    /// this act exists for).
+    static func setValueJS(id: Int, value: String) -> String {
+        let v = jsStringEscape(value)
+        return """
+        (() => {
+          const reg = window['\(elementRegistryKey)'];
+          if (!reg || !reg.length) return { status: "no-registry" };
+          const el = reg[\(id) - 1];
+          if (!el || !el.isConnected) return { status: "stale" };
+          const tag = el.tagName;
+          const requested = "\(v)";
+          let expected = requested;
+          try { el.focus(); } catch (e) {}
+          if (el instanceof HTMLSelectElement) {
+            let matched = null;
+            for (const opt of el.options) {
+              if (opt.value === requested || opt.label === requested || opt.text === requested) {
+                matched = opt.value; break;
+              }
+            }
+            expected = matched != null ? matched : requested;
+            const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+            if (desc && desc.set) { desc.set.call(el, expected); } else { el.value = expected; }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if ('value' in el) {
+            const proto = el instanceof HTMLTextAreaElement
+              ? HTMLTextAreaElement.prototype
+              : HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && desc.set) { desc.set.call(el, requested); } else { el.value = requested; }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else if (el.isContentEditable) {
+            el.textContent = requested;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            return { status: "not-settable", tag: tag };
+          }
+          try { el.blur(); } catch (e) {}
+          const after = (el instanceof HTMLSelectElement || ('value' in el))
+            ? el.value
+            : (el.isContentEditable ? el.textContent : null);
+          return { status: "ok", tag: tag, expected: expected, after: (after == null ? "" : after), stuck: (after === expected) };
+        })();
+        """
+    }
+
+    /// `type(text)` — insert `text` at the focused field's caret using the
+    /// native value setter + `input`/`change`, and REPORT whether the value
+    /// actually moved. Wrapping the `selectionStart`/`selectionEnd` read in
+    /// try/catch is load-bearing: those getters throw `InvalidStateError`
+    /// on inputs that don't support text selection (date, number,
+    /// datetime-local), which used to abort the whole entry. Returns
+    /// `{ had, ce, changed }`: `had` false = nothing was focused; `changed`
+    /// false = the field ignored/reverted the insert synchronously (a
+    /// controlled input, a readonly field). The driver turns those into an
+    /// honest warning so a no-op is never again reported as a clean type.
+    /// Never returns the field's value — only booleans — so the shared
+    /// `fill_credential` path leaks nothing.
+    static func typeJS(text: String) -> String {
+        let t = jsStringEscape(text)
+        return """
+        (() => {
+          const el = document.activeElement;
+          if (!el || el === document.body) return { had: false };
+          const text = "\(t)";
+          if (el.isContentEditable) {
+            const before = el.textContent;
+            if (document.execCommand) { document.execCommand('insertText', false, text); }
+            return { had: true, ce: true, changed: el.textContent !== before };
+          } else if ('value' in el) {
+            const before = el.value;
+            let start, end;
+            try { start = el.selectionStart; end = el.selectionEnd; } catch (e) { start = null; end = null; }
+            if (start == null) { start = before.length; end = before.length; }
+            const newValue = before.slice(0, start) + text + before.slice(end);
+            const proto = el instanceof HTMLTextAreaElement
+              ? HTMLTextAreaElement.prototype
+              : HTMLInputElement.prototype;
+            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && desc.set) { desc.set.call(el, newValue); } else { el.value = newValue; }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return { had: true, ce: false, changed: el.value !== before };
+          }
+          return { had: false };
+        })();
+        """
+    }
 }
