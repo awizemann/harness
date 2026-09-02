@@ -3,12 +3,12 @@
     <channel>
         <title>Harness</title>
         <item>
-            <title>0.8.3</title>
-            <pubDate>Wed, 02 Sep 2026 08:39:35 -0400</pubDate>
-            <sparkle:version>10</sparkle:version>
-            <sparkle:shortVersionString>0.8.3</sparkle:shortVersionString>
+            <title>0.8.4</title>
+            <pubDate>Wed, 02 Sep 2026 15:54:02 -0400</pubDate>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>0.8.4</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/awizemann/harness/releases/download/v0.8.3/Harness-v0.8.3-Universal.zip" length="14278857" type="application/octet-stream" sparkle:edSignature="XS4+05pnpEKibapfYdA7qGVsSPTiOpqKTWpfalHV2nvCbN5ayTqURQvOQlxim9PnK8MRrmVSeaZ0XiQqjoWZBQ=="/>
+            <enclosure url="https://github.com/awizemann/harness/releases/download/v0.8.4/Harness-v0.8.4-Universal.zip" length="14287432" type="application/octet-stream" sparkle:edSignature="x8mvPebPiVIdC+WorY9u3MOZkxVp+3sb9Bx2ZbiMAhKcb406Fnqt3Vl9u7LypWLtUX2yRBYz6MkvbwKqkk1EBQ=="/>
         </item>
     </channel>
 </rss>
